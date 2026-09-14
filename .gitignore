@@ -9,6 +9,8 @@ coverage/
 .env*
 !.env.example
 *.key
+*.key.pub
 src-tauri/*.key
+src-tauri/*.key.pub
 bun.lock
 bun.lockb

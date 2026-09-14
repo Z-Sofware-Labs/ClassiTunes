@@ -28,7 +28,7 @@ export interface UpdateState {
   message?: string;
 }
 
-export const CURRENT_VERSION = '1.1.1';
+export const CURRENT_VERSION = '1.1.2';
 
 // Canonical repository information
 export const GITHUB_REPO = 'Z-Sofware-Labs/ClassiTunes';

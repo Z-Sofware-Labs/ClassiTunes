@@ -36,6 +36,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "publisher": "Z Software Labs",
     "shortDescription": "ClassiTunes - Modern desktop audio player inspired by classic design",
     "longDescription": "ClassiTunes is a high performance audio player and library manager built with modern web technologies and Rust.",
@@ -57,7 +58,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE2QjI1RDM0NkNBRTkyNEMKUldSTWtxNXNORjJ5RnF6S3BxdVp0RDR3REQ1eVBOUEpYZ3h5UWk1M1BqL3FReGVmRnp3WmJEUGgK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU1NzNDQjNGNkYwNzgxQkMKUldTOGdRZHZQOHR6NVlLMU9pMGdEbk9PTGJrRm1Ob08vUlI5UGpoQk5vcGNJQ000YUFSVk5nbncK",
       "endpoints": [
         "https://github.com/Z-Sofware-Labs/ClassiTunes/releases/latest/download/latest.json"
       ]
