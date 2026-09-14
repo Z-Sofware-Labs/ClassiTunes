@@ -24,7 +24,7 @@
 
 **ClassiTunes** brings the golden era of classic desktop jukeboxes into the modern era. Combining the beloved, clean aesthetic of classic brushed metal and dark interface styling with high-performance native desktop capabilities, ClassiTunes offers local library indexing, gapless audio playback, a 10-band graphic equalizer, physical metadata tagging, and smart playlist automation.
 
-Available as a native desktop application powered by **Tauri v2** (ultra-lightweight Rust backend) and **Electron**, as well as a standalone web jukebox.
+Available as a native desktop application powered by **Tauri v2** (ultra-lightweight Rust backend).
 
 ---
 
