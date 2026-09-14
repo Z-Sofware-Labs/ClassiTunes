@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/itunes-icon.png" />
+    <title>ClassiPlayer</title>
+    <script>
+      (function() {
+        try {
+          var settings = localStorage.getItem('classitunes_settings');
+          var theme = (settings && JSON.parse(settings).defaultTheme) || localStorage.getItem('itunes_theme') || 'dark';
+          var bgColor = theme === 'light' ? '#f8fafc' : '#121212';
+          var textColor = theme === 'light' ? '#1e293b' : '#e5e5e5';
+          document.documentElement.style.backgroundColor = bgColor;
+          var style = document.createElement('style');
+          style.innerHTML = 'html, body { background-color: ' + bgColor + ' !important; color: ' + textColor + ' !important; }';
+          document.head.appendChild(style);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
