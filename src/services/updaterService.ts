@@ -28,7 +28,7 @@ export interface UpdateState {
   message?: string;
 }
 
-export const CURRENT_VERSION = '1.1.3';
+export const CURRENT_VERSION = '1.1.4';
 
 // Canonical repository information
 export const GITHUB_REPO = 'Z-Sofware-Labs/ClassiTunes';
@@ -88,7 +88,7 @@ function findBestAssetUrl(assets: any[]): string | undefined {
     const dmg = assets.find(a => typeof a.name === 'string' && (a.name.endsWith('.dmg') || a.name.endsWith('.zip')));
     if (dmg?.browser_download_url) return dmg.browser_download_url;
   } else if (platform === 'linux') {
-    const linuxPkg = assets.find(a => typeof a.name === 'string' && (a.name.endsWith('.AppImage') || a.name.endsWith('.deb')));
+    const linuxPkg = assets.find(a => typeof a.name === 'string' && (a.name.endsWith('.rpm') || a.name.endsWith('.deb')));
     if (linuxPkg?.browser_download_url) return linuxPkg.browser_download_url;
   }
 

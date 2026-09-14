@@ -118,10 +118,11 @@ Available as a native desktop application powered by **Tauri v2** (ultra-lightwe
 
 ### Linux
 
-#### AppImage
+#### RPM Package (`.rpm`) — Fedora / RHEL
 ```bash
-chmod +x ClassiTunes-*.AppImage
-./ClassiTunes-*.AppImage
+sudo dnf install ./ClassiTunes-*.rpm
+# Or on RHEL / CentOS:
+# sudo rpm -i ClassiTunes-*.rpm
 ```
 
 #### Debian / Ubuntu Package (`.deb`)
@@ -175,7 +176,7 @@ GEMINI_API_KEY="your-gemini-api-key-here"
 ### 4. Production Packaging
 
 ```bash
-# Build Tauri desktop bundle (Windows NSIS/MSI, macOS DMG, Linux AppImage/deb)
+# Build Tauri desktop bundle (Windows NSIS/MSI, macOS DMG, Linux RPM/deb)
 npm run tauri:build
 
 # Build Electron production package
