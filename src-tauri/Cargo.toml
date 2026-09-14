@@ -1,5 +1,5 @@
 [package]
-name = "shan"
+name = "classitunes"
 version = "1.1.1"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
@@ -24,9 +24,10 @@ id3 = "1.16"
 mp4ameta = "0.13"
 
 [profile.release]
-codegen-units = 16
-incremental = true
-lto = "thin"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
 
 [profile.dev]
 incremental = true

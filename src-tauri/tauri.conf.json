@@ -37,6 +37,9 @@
   "bundle": {
     "active": true,
     "publisher": "Z Software Labs",
+    "shortDescription": "ClassiTunes - Modern desktop audio player inspired by classic design",
+    "longDescription": "ClassiTunes is a high performance audio player and library manager built with modern web technologies and Rust.",
+    "category": "AudioVideo",
     "copyright": "Copyright © 2026 Z Software Labs. All rights reserved.",
     "targets": "all",
     "icon": [
