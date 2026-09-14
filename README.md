@@ -2,7 +2,7 @@
   <img src="public/icon.png" alt="ClassiTunes Icon" width="128" height="128" />
   <h1>ClassiTunes</h1>
   <p><strong>A nostalgic, high-performance desktop music player and metadata organizer</strong></p>
-  <p>Engineered with React 19, TypeScript, Vite, Tailwind CSS, Tauri v2, and Electron.</p>
+  <p>Engineered with React 19, TypeScript, Vite, Tailwind CSS, and Tauri v2.</p>
 
   <p>
     <a href="#key-features">Features</a> •
