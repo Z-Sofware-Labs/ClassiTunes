@@ -148,8 +148,8 @@ sudo apt-get install -f # Fix missing dependencies if required
 
 ### 1. Clone & Install
 ```bash
-git clone https://github.com/zsoftwarelabs/classitunes.git
-cd classitunes
+git clone https://github.com/Z-Sofware-Labs/ClassiTunes.git
+cd ClassiTunes
 npm install
 ```
 

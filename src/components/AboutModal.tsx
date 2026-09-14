@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { X, ExternalLink } from 'lucide-react';
 import { openExternalUrl } from '../utils/tauriWindow';
+import { CURRENT_VERSION } from '../services/updaterService';
 
 interface AboutModalProps {
   isOpen: boolean;
@@ -72,7 +73,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             ClassiTunes
           </h2>
           <p className={`text-xs font-mono font-medium mb-3.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            Version 1.1.0
+            Version {CURRENT_VERSION}
           </p>
 
           {/* Copyright with Z Software Labs Logo */}

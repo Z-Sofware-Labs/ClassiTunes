@@ -1,6 +1,6 @@
 [package]
 name = "shan"
-version = "1.1.0"
+version = "1.1.1"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
 edition = "2021"

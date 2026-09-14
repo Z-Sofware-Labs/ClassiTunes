@@ -28,10 +28,10 @@ export interface UpdateState {
   message?: string;
 }
 
-export const CURRENT_VERSION = '1.1.0';
+export const CURRENT_VERSION = '1.1.1';
 
 // Canonical repository information
-export const GITHUB_REPO = 'zsoftwarelabs/classitunes';
+export const GITHUB_REPO = 'Z-Sofware-Labs/ClassiTunes';
 export const RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 export const RELEASES_PAGE_URL = `https://github.com/${GITHUB_REPO}/releases`;
 
