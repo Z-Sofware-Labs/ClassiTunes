@@ -10,3 +10,5 @@ coverage/
 !.env.example
 *.key
 src-tauri/*.key
+bun.lock
+bun.lockb
