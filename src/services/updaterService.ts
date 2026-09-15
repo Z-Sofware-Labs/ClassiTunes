@@ -40,12 +40,12 @@ export async function getCurrentVersion(): Promise<string> {
       return _resolvedVersion;
     } catch { /* fall through */ }
   }
-  _resolvedVersion = '1.2.2'; // fallback (non-Tauri / web)
+  _resolvedVersion = '1.2.3'; // fallback (non-Tauri / web)
   return _resolvedVersion;
 }
 // Synchronous accessor for components that need it before the async call resolves.
 // Initialise eagerly so it's ready as soon as possible.
-export let CURRENT_VERSION = '1.2.2';
+export let CURRENT_VERSION = '1.2.3';
 getCurrentVersion().then(v => { CURRENT_VERSION = v; });
 
 // Canonical repository information
