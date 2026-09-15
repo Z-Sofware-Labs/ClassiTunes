@@ -350,6 +350,8 @@ export async function pickTauriFiles(): Promise<string[] | null> {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const selected = await open({
       multiple: true,
+      // Enable hidden files (those starting with a dot) to be selectable on Linux/macOS
+      allowHidden: true,
       filters: [{
         name: 'Audio Files',
         extensions: ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg', 'wma', 'aiff', 'alac']

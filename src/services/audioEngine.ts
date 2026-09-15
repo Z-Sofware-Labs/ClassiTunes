@@ -36,6 +36,8 @@ export class AudioEngine {
   private currentVolume = 0.8;
   private isInitialized = false;
   private normalizationEnabled = false;
+  // Prevents the same codec-missing dialog from appearing more than once per session.
+  private _codecPromptShown = false;
   private crossfadeActive = false;
   private normalizationCache = new Map<string, number>();
   private frequencies = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
@@ -86,6 +88,16 @@ export class AudioEngine {
     audio.addEventListener('loadedmetadata', () => {
       if (this.activeDeck === deck) this.loadedMetadataCallbacks.forEach(cb => cb());
     });
+    // Detect codec-level failures on the media element.
+    // MEDIA_ERR_DECODE (3) = codec cannot decode the stream.
+    // MEDIA_ERR_SRC_NOT_SUPPORTED (4) = container/codec not supported by the platform.
+    audio.addEventListener('error', () => {
+      const code = audio.error?.code;
+      if (code === MediaError.MEDIA_ERR_DECODE || code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+        console.warn('AudioEngine: media decode/codec error detected, code:', code);
+        this.showCodecInstallPrompt();
+      }
+    });
     this.applyDeckGain(deck);
     return deck;
   }
@@ -115,6 +127,27 @@ export class AudioEngine {
         this.applyDeckGain(deck);
       }
     });
+  }
+
+  // Informs Linux/Fedora users about missing audio codecs.
+  // Only fires once per session and only on Linux to avoid false positives on other platforms.
+  private showCodecInstallPrompt(): void {
+    const isLinux = typeof navigator !== 'undefined' &&
+      navigator.userAgent.toLowerCase().includes('linux');
+    if (!isLinux || this._codecPromptShown) return;
+    this._codecPromptShown = true;
+    const message =
+      'ClassiTunes could not decode this audio file.\n\n' +
+      'Your system may be missing required multimedia codecs.\n' +
+      'On Fedora / RPM-based distros, open a terminal and run:\n\n' +
+      '  sudo dnf install gstreamer1-plugins-base gstreamer1-plugins-good ' +
+      'gstreamer1-plugins-bad-free gstreamer1-plugins-ugly ffmpeg\n\n' +
+      'On Ubuntu / Debian-based distros run:\n\n' +
+      '  sudo apt install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad ' +
+      'gstreamer1.0-plugins-ugly ffmpeg\n\n' +
+      'After installing, restart the application.';
+    // alert() is intentional here: it blocks and ensures the user reads the message.
+    alert(message);
   }
 
   private async estimateNormalizationGain(url: string, replayGainDb?: number): Promise<number> {
@@ -161,6 +194,10 @@ export class AudioEngine {
       return gain;
     } catch (e) {
       console.warn('Audio normalization analysis failed:', e);
+      // decodeAudioData throws a DOMException when the codec is missing on Linux.
+      if (e instanceof DOMException || (e instanceof Error && e.name === 'EncodingError')) {
+        this.showCodecInstallPrompt();
+      }
       return 1;
     }
   }
@@ -185,7 +222,13 @@ export class AudioEngine {
     this.applyDeckGain(deck);
 
     try { await deck.audio.play(); }
-    catch (e) { console.warn('Playback error:', e); }
+    catch (e) {
+      console.warn('Playback error:', e);
+      // NotSupportedError is thrown by play() when the codec is not available.
+      if (e instanceof DOMException && (e.name === 'NotSupportedError' || e.name === 'NotAllowedError')) {
+        if (e.name === 'NotSupportedError') this.showCodecInstallPrompt();
+      }
+    }
   }
 
   public async crossfadeTo(url: string, seconds: number, replayGainDb?: number): Promise<void> {
