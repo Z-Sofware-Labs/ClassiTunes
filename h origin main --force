@@ -1,0 +1,12 @@
+[33mcommit bae6ba808e08f3ce25608eaddcefed039dfd0cd3[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: Pakwan Manuel Marquez <barreramarquez2003@gmail.com>
+Date:   Tue Sep 15 16:52:20 2026 +0800
+
+    chore: bump version to 1.1.5
+    
+    - Fix: allow hidden files (dot-prefixed names) in Tauri file picker on Linux
+    - Fix: enable window resizing under KDE (frameless windows)
+    - Fix: Linux audio codec detection with installer-level dependencies
+      - deb: add GStreamer base depends + postinst.sh for universe/multiverse codecs
+      - rpm: add GStreamer base depends + postin.sh for RPM Fusion codecs
+    - Fix: runtime codec-missing alert for Linux users (safety net)
