@@ -63,8 +63,7 @@
           "libgstreamer1.0-0",
           "gstreamer1.0-plugins-base",
           "gstreamer1.0-plugins-good"
-        ],
-        "postInstScript": "scripts/postinst.sh"
+        ]
       },
       "rpm": {
         "depends": [
@@ -72,8 +71,7 @@
           "gstreamer1",
           "gstreamer1-plugins-base",
           "gstreamer1-plugins-good"
-        ],
-        "postInstScript": "scripts/postin.sh"
+        ]
       }
     }
   },
