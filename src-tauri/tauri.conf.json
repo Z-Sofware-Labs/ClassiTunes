@@ -42,7 +42,7 @@
     "shortDescription": "ClassiTunes - Modern desktop audio player inspired by classic design",
     "longDescription": "ClassiTunes is a high performance audio player and library manager built with modern web technologies and Rust.",
     "copyright": "Copyright © 2026 Z Software Labs. All rights reserved.",
-    "targets": ["nsis", "msi", "app", "dmg", "deb", "rpm"],
+    "targets": ["nsis", "msi", "app", "dmg", "deb", "rpm", "appimage"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
