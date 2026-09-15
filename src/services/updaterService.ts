@@ -381,6 +381,74 @@ export async function startAutomaticUpdate(
         return;
       } catch (tauriDownloadErr: any) {
         await logToFile(`[Updater] Tauri plugin download failed, attempting fallback: ${tauriDownloadErr?.message || tauriDownloadErr}`);
+
+        // Option A2: Linux elevated install via pkexec (for system-wide deb/rpm installs)
+        if (isTauri() && getTargetPlatform() === 'linux') {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const { writeFile } = await import('@tauri-apps/plugin-fs');
+            const { downloadDir } = await import('@tauri-apps/api/path');
+
+            updateState({
+              status: 'downloading',
+              progress: 35,
+              info: updateInfo,
+              message: 'Fetching Linux package for elevated install...',
+            });
+
+            // Fetch the matching .deb or .rpm asset from the GitHub release
+            const ghRes = await fetch(RELEASES_API_URL, {
+              headers: { Accept: 'application/vnd.github.v3+json' },
+            });
+            const ghData = await ghRes.json();
+            const assets: any[] = ghData.assets || [];
+            const pkgAsset = assets.find((a: any) =>
+              typeof a.name === 'string' && /\.(deb|rpm)$/.test(a.name)
+            );
+
+            if (!pkgAsset?.browser_download_url) {
+              throw new Error('No .deb or .rpm package found in the latest GitHub release.');
+            }
+
+            updateState({
+              status: 'downloading',
+              progress: 50,
+              info: updateInfo,
+              message: `Downloading ${pkgAsset.name}...`,
+            });
+
+            const pkgRes = await fetch(pkgAsset.browser_download_url);
+            if (!pkgRes.ok) throw new Error(`Package download failed: HTTP ${pkgRes.status}`);
+            const pkgData = new Uint8Array(await pkgRes.arrayBuffer());
+
+            const dlDir = await downloadDir();
+            const pkgPath = `${dlDir}/${pkgAsset.name}`;
+            await writeFile(pkgPath, pkgData);
+
+            await logToFile(`[Updater] Saved package to ${pkgPath}, invoking pkexec...`);
+            updateState({
+              status: 'installing',
+              progress: 85,
+              info: updateInfo,
+              message: 'Installing update (elevated permissions required)...',
+            });
+
+            await invoke('install_linux_package_elevated', { pkgPath });
+
+            await logToFile('[Updater] Linux elevated install succeeded.');
+            updateState({
+              status: 'ready',
+              progress: 100,
+              info: updateInfo,
+              message: 'Update installed! Relaunching...',
+            });
+
+            try { await relaunch(); } catch { /* let the user relaunch manually if this fails */ }
+            return;
+          } catch (linuxErr: any) {
+            await logToFile(`[Updater] Linux elevated install failed: ${linuxErr?.message || linuxErr}`);
+          }
+        }
       }
     }
 

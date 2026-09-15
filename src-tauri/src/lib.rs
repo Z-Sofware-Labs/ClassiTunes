@@ -356,7 +356,42 @@ fn organize_music_file(
     Ok(destination.to_string_lossy().into_owned())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Install a downloaded .deb or .rpm package with pkexec elevation (Linux only).
+#[tauri::command]
+async fn install_linux_package_elevated(pkg_path: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let ext = std::path::Path::new(&pkg_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        let status = match ext {
+            "deb" => std::process::Command::new("pkexec")
+                .args(["dpkg", "--install", &pkg_path])
+                .status()
+                .map_err(|e| format!("Failed to run pkexec: {e}"))?,
+            "rpm" => std::process::Command::new("pkexec")
+                .args(["rpm", "-Uvh", &pkg_path])
+                .status()
+                .map_err(|e| format!("Failed to run pkexec: {e}"))?,
+            _ => return Err(format!("Unsupported package type: .{ext}")),
+        };
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("Installer exited with code {:?}", status.code()))
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pkg_path;
+        Err("install_linux_package_elevated is Linux-only".to_string())
+    }
+}
+
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -368,7 +403,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             write_id3_tags,
             write_music_metadata,
-            organize_music_file
+            organize_music_file,
+            install_linux_package_elevated
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
