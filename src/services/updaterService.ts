@@ -1,5 +1,6 @@
 // Automatic native updater service for ClassiTunes with Tauri Plugin Updater support
 import { isTauri, openExternalUrl, logToFile } from '../utils/tauriWindow';
+import { relaunch } from '@tauri-apps/plugin-process';
 
 export type UpdateStatus = 
   | 'idle'
@@ -28,7 +29,24 @@ export interface UpdateState {
   message?: string;
 }
 
-export const CURRENT_VERSION = '1.1.4';
+// Resolved at runtime from Tauri app metadata; falls back to package.json version.
+let _resolvedVersion: string | null = null;
+export async function getCurrentVersion(): Promise<string> {
+  if (_resolvedVersion) return _resolvedVersion;
+  if (isTauri()) {
+    try {
+      const { getVersion } = await import('@tauri-apps/api/app');
+      _resolvedVersion = await getVersion();
+      return _resolvedVersion;
+    } catch { /* fall through */ }
+  }
+  _resolvedVersion = '1.2.1'; // fallback (non-Tauri / web)
+  return _resolvedVersion;
+}
+// Synchronous accessor for components that need it before the async call resolves.
+// Initialise eagerly so it's ready as soon as possible.
+export let CURRENT_VERSION = '1.2.1';
+getCurrentVersion().then(v => { CURRENT_VERSION = v; });
 
 // Canonical repository information
 export const GITHUB_REPO = 'Z-Sofware-Labs/ClassiTunes';
@@ -353,15 +371,12 @@ export async function startAutomaticUpdate(
           message: 'Update installed successfully! Restarting...',
         });
 
-        // Prompt relaunch if available on macOS / Linux
+        // Relaunch the app after install (on Windows the NSIS /S flag handles restart;
+        // on macOS/Linux we trigger it explicitly).
         try {
-          // On Windows, the updater plugin automatically launches the installer and terminates
-          const processModule = await (Function('return import("@tauri-apps/plugin-process")')() as Promise<any>);
-          if (processModule && typeof processModule.relaunch === 'function') {
-            await processModule.relaunch();
-          }
+          await relaunch();
         } catch {
-          // Fallback or windows installer handled exit
+          // Installer already handled the relaunch (e.g. NSIS /S on Windows)
         }
         return;
       } catch (tauriDownloadErr: any) {
