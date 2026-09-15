@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "classitunes"
-version = "1.1.1"
+version = "1.1.5"
 dependencies = [
  "id3",
  "mp4ameta",

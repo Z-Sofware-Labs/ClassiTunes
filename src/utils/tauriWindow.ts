@@ -110,6 +110,33 @@ export async function tauriSetAlwaysOnTop(onTop: boolean): Promise<boolean> {
   return false;
 }
 
+/**
+ * Initiate OS-native window resize dragging from a specific edge.
+ * Call this from a mousedown handler on a custom resize handle element.
+ * edge: 'North' | 'South' | 'East' | 'West' | 'NorthEast' | 'NorthWest' | 'SouthEast' | 'SouthWest'
+ */
+export async function tauriStartResizeDragging(edge: string): Promise<boolean> {
+  if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
+    try {
+      const { getCurrentWindow, ResizeEdge } = await import('@tauri-apps/api/window');
+      const win = getCurrentWindow();
+      await win.startResizeDragging((ResizeEdge as any)[edge]);
+      return true;
+    } catch (e) {
+      // Fallback: try via global __TAURI__
+      try {
+        const winObj = (window as any).__TAURI__?.window?.getCurrentWindow?.();
+        if (winObj?.startResizeDragging) {
+          await winObj.startResizeDragging(edge);
+          return true;
+        }
+      } catch {}
+      console.warn('Tauri startResizeDragging notice:', e);
+    }
+  }
+  return false;
+}
+
 // Restore & save window position and size for Tauri runtime
 export async function setupWindowStatePersistence(): Promise<void> {
   if (typeof window === 'undefined') return;

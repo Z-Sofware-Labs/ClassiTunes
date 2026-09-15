@@ -358,6 +358,17 @@ fn organize_music_file(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // On Linux, WebKit2GTK's sandbox blocks system GStreamer plugins (including
+    // MP3/AAC decoders), producing MEDIA_ERR_SRC_NOT_SUPPORTED (error code 4).
+    // Disabling the sandbox allows gstreamer1-plugin-libav and other system
+    // codecs to be used. Must be set before the WebKit process is spawned.
+    #[cfg(target_os = "linux")]
+    {
+        std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+        // Also ensure GStreamer uses the system plugin registry
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())

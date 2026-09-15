@@ -8,7 +8,7 @@
     "opener:default",
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "**" }, { "path": "$APPLOCALDATA/**" }]
     },
     {
       "identifier": "opener:allow-reveal-item-in-dir",
@@ -18,16 +18,17 @@
     "fs:default",
     {
       "identifier": "fs:allow-write-text-file",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "**" }, { "path": "$APPLOCALDATA/**" }]
     },
     {
       "identifier": "fs:allow-exists",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "**" }, { "path": "$APPLOCALDATA/**" }]
     },
     {
       "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "**" }]
+      "allow": [{ "path": "**" }, { "path": "$APPLOCALDATA/**" }]
     },
+    "fs:allow-applocaldata-write-recursive",
     {
       "identifier": "fs:allow-read-file",
       "allow": [{ "path": "**" }]
