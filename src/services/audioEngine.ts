@@ -44,9 +44,6 @@ export class AudioEngine {
   private endedCallbacks = new Set<() => void>();
   private timeUpdateCallbacks = new Set<() => void>();
   private loadedMetadataCallbacks = new Set<() => void>();
-  private playbackErrorCallbacks = new Set<(error: Error) => void>();
-  // Tracks blob: URLs we created so we can revoke them after track changes (memory management).
-  private activeBlobUrls = new Set<string>();
 
   private get activeDeck(): Deck | null { return this.decks[this.activeIndex]; }
   private get activeAudio(): HTMLAudioElement | null { return this.activeDeck?.audio || null; }
@@ -55,82 +52,10 @@ export class AudioEngine {
     // Decks are created lazily after a user gesture so AudioContext creation remains autoplay-safe.
   }
 
-  // ── Blob URL helpers ─────────────────────────────────────────────────────────
-  //
-  // On Linux, WebKit2GTK runs its media pipeline in a sandboxed subprocess that
-  // cannot load system GStreamer plugins (e.g. avdec_mp3). Any asset:// URL fed
-  // to an HTMLAudioElement is decoded by that sandboxed process, so MP3/AAC/etc.
-  // fail with MEDIA_ERR_SRC_NOT_SUPPORTED (error code 4).
-  //
-  // The workaround: read the file bytes via the Tauri fs plugin (which runs in
-  // the privileged main process) and wrap them in a blob: URL. The browser then
-  // decodes the audio data in-process using WebKit's own codec stack rather than
-  // the sandboxed GStreamer pipeline, which resolves the error on Fedora/GNOME.
-
-  private isLinuxTauri(): boolean {
-    return typeof navigator !== 'undefined' &&
-      navigator.userAgent.toLowerCase().includes('linux') &&
-      typeof (window as any).__TAURI__ !== 'undefined';
-  }
-
-  private revokeStaleBlobUrls(keepUrl?: string): void {
-    for (const blobUrl of this.activeBlobUrls) {
-      if (blobUrl !== keepUrl) {
-        URL.revokeObjectURL(blobUrl);
-        this.activeBlobUrls.delete(blobUrl);
-      }
-    }
-  }
-
-  /**
-   * On Linux/Tauri: reads the file via the fs plugin and returns a blob: URL
-   * so the audio element never touches the GStreamer sandboxed pipeline.
-   * On other platforms: returns the original URL unchanged.
-   */
-  private async resolveAudioUrl(url: string): Promise<string> {
-    if (!this.isLinuxTauri()) return url;
-    // url is an asset:// URL; extract the original fs path from it.
-    // asset://localhost/%2Fhome%2F... → /home/...
-    try {
-      let fsPath: string;
-      if (url.startsWith('asset://')) {
-        const withoutProto = url.replace(/^asset:\/\/[^/]*/, '');
-        fsPath = decodeURIComponent(withoutProto);
-      } else {
-        // Already a plain path or blob: URL — use as-is
-        return url;
-      }
-      const { readFile } = await import('@tauri-apps/plugin-fs');
-      const bytes = await readFile(fsPath);
-      const ext = fsPath.split('.').pop()?.toLowerCase() || '';
-      const mime = (ext === 'm4a' || ext === 'aac' || ext === 'mp4') ? 'audio/mp4' : 'audio/mpeg';
-      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
-      this.activeBlobUrls.add(blobUrl);
-      return blobUrl;
-    } catch (e) {
-      console.warn('[AudioEngine] resolveAudioUrl fallback to original URL:', e);
-      return url;
-    }
-  }
-
   private buildDeck(index: number): Deck {
     const ctx = this.audioCtx!;
     const audio = new Audio();
-    // NOTE: Do NOT set audio.crossOrigin = 'anonymous' here.
-    //
-    // On Linux/WebKitGTK, setting crossOrigin on an HTMLAudioElement causes the
-    // browser to enforce CORS on the Tauri asset:// protocol URL. The Tauri asset
-    // handler does not return Access-Control-Allow-Origin headers for the media
-    // streaming path, so WebKitGTK silently refuses to load the resource.
-    // The result is: readyState stays HAVE_NOTHING (0), duration stays NaN,
-    // currentTime never advances, and no loadedmetadata/canplay/timeupdate events
-    // ever fire — the seek bar appears frozen and there is no audio output.
-    //
-    // crossOrigin is only needed when consuming decoded audio data from a
-    // cross-origin resource via Web Audio. For local asset:// URLs served by the
-    // same Tauri process, it provides no security benefit and actively breaks
-    // media loading on WebKitGTK (Linux). Windows/macOS WebViews are more lenient
-    // with local protocol CORS, which is why the bug only manifests on Linux.
+    audio.crossOrigin = 'anonymous';
     audio.preload = 'auto';
 
     const analyser = ctx.createAnalyser();
@@ -154,45 +79,6 @@ export class AudioEngine {
     master.connect(ctx.destination);
 
     const deck: Deck = { audio, filters, analyser, master, normalizationGain: 1, fadeGain: index === this.activeIndex ? 1 : 0 };
-
-    // ── Media lifecycle event listeners ──────────────────────────────────────────
-    // These fire in order: loadstart → loadedmetadata → loadeddata →
-    // canplay → canplaythrough → play → playing → timeupdate (repeating) →
-    // pause | ended | error
-    //
-    // In development mode, all events are logged so it is immediately visible
-    // exactly where the pipeline stalls (e.g. freezing after loadstart with no
-    // loadedmetadata is the key indicator of Case B: media element not loading).
-    if ((import.meta as any).env?.DEV) {
-      const dbg = (event: string) => {
-        const a = deck.audio;
-        console.debug(
-          `[AudioEngine] ${event} — ` +
-          `readyState: ${a.readyState}, networkState: ${a.networkState}, ` +
-          `duration: ${a.duration}, currentTime: ${a.currentTime}, ` +
-          `paused: ${a.paused}, error: ${a.error?.code ?? 'none'}, ` +
-          `src: ${a.src.slice(0, 80)}`
-        );
-      };
-      audio.addEventListener('loadstart', () => dbg('loadstart'));
-      audio.addEventListener('durationchange', () => dbg('durationchange'));
-      audio.addEventListener('loadedmetadata', () => dbg('loadedmetadata'));
-      audio.addEventListener('loadeddata', () => dbg('loadeddata'));
-      audio.addEventListener('canplay', () => dbg('canplay'));
-      audio.addEventListener('canplaythrough', () => dbg('canplaythrough'));
-      audio.addEventListener('play', () => dbg('play'));
-      audio.addEventListener('playing', () => dbg('playing'));
-      audio.addEventListener('waiting', () => dbg('waiting'));
-      audio.addEventListener('stalled', () => dbg('stalled'));
-      audio.addEventListener('suspend', () => dbg('suspend'));
-      audio.addEventListener('progress', () => dbg('progress'));
-      audio.addEventListener('abort', () => dbg('abort'));
-      audio.addEventListener('emptied', () => dbg('emptied'));
-      audio.addEventListener('ended', () => dbg('ended'));
-      audio.addEventListener('timeupdate', () => dbg('timeupdate'));
-      audio.addEventListener('error', () => dbg('error'));
-    }
-
     audio.addEventListener('ended', () => {
       if (this.activeDeck === deck && !this.crossfadeActive) this.endedCallbacks.forEach(cb => cb());
     });
@@ -329,62 +215,19 @@ export class AudioEngine {
       other.normalizationGain = 1;
       this.applyDeckGain(other);
     }
-
-    // On Linux/Tauri, convert the asset:// URL to a blob: URL to bypass the
-    // WebKit2GTK GStreamer sandbox that blocks system codec plugins (error 4).
-    const resolvedUrl = await this.resolveAudioUrl(url);
-    // Revoke any blob: URLs from previous tracks now that we have the new one.
-    this.revokeStaleBlobUrls(resolvedUrl);
-
-    deck.audio.src = resolvedUrl;
+    deck.audio.src = url;
     deck.audio.currentTime = 0;
     deck.fadeGain = 1;
-    // Start at unity gain immediately — normalization is resolved asynchronously
-    // after playback begins so that play() is never delayed by file analysis.
-    deck.normalizationGain = 1;
+    deck.normalizationGain = await this.estimateNormalizationGain(url, replayGainDb);
     this.applyDeckGain(deck);
 
-    // ── Start playback immediately — do NOT await normalization first ─────────
-    // Previously, estimateNormalizationGain() was awaited before play(), which
-    // meant playback only began after a full fetch+decode of the file. On Linux
-    // the CORS issue (now fixed by removing crossOrigin) also blocked this fetch,
-    // so play() was never called at all. Now we fire play() first and adjust the
-    // gain node asynchronously afterward.
-    try {
-      await deck.audio.play();
-      if ((import.meta as any).env?.DEV) {
-        console.debug(
-          `[AudioEngine] play() resolved — currentTime: ${deck.audio.currentTime}, ` +
-          `duration: ${deck.audio.duration}, paused: ${deck.audio.paused}`
-        );
-      }
-    } catch (e) {
+    try { await deck.audio.play(); }
+    catch (e) {
       console.warn('Playback error:', e);
       // NotSupportedError is thrown by play() when the codec is not available.
-      if (e instanceof DOMException && e.name === 'NotSupportedError') {
-        this.showCodecInstallPrompt();
+      if (e instanceof DOMException && (e.name === 'NotSupportedError' || e.name === 'NotAllowedError')) {
+        if (e.name === 'NotSupportedError') this.showCodecInstallPrompt();
       }
-      // Propagate all errors so the UI can reset isPlaying state.
-      if (e instanceof Error) {
-        this.playbackErrorCallbacks.forEach(cb => cb(e as Error));
-      }
-      return;
-    }
-
-    // ── Apply normalization asynchronously after playback has started ──────────
-    // Capture current deck/url so a rapid track-switch cannot apply a stale gain
-    // to a different track. Use resolvedUrl for the src comparison since that's
-    // what the audio element actually has.
-    if (this.normalizationEnabled) {
-      const capturedDeck = deck;
-      const capturedUrl = resolvedUrl;
-      this.estimateNormalizationGain(resolvedUrl, replayGainDb).then(gain => {
-        // Only apply if this deck is still playing the same track.
-        if (capturedDeck.audio.src === capturedUrl) {
-          capturedDeck.normalizationGain = gain;
-          this.applyDeckGain(capturedDeck);
-        }
-      }).catch(() => { /* Normalization failure is non-fatal; playback continues at unity gain. */ });
     }
   }
 
@@ -400,12 +243,8 @@ export class AudioEngine {
     const duration = Math.max(0.25, seconds || 1);
     const now = this.audioCtx.currentTime;
 
-    // Resolve blob: URL on Linux/Tauri before assigning to the audio element.
-    const resolvedUrl = await this.resolveAudioUrl(url);
-    this.revokeStaleBlobUrls(resolvedUrl);
-
     newDeck.audio.pause();
-    newDeck.audio.src = resolvedUrl;
+    newDeck.audio.src = url;
     newDeck.audio.currentTime = 0;
     newDeck.normalizationGain = 1;
     newDeck.fadeGain = 0;
@@ -480,15 +319,6 @@ export class AudioEngine {
   public onLoadedMetadata(callback: () => void): () => void {
     this.loadedMetadataCallbacks.add(callback);
     return () => this.loadedMetadataCallbacks.delete(callback);
-  }
-
-  /**
-   * Subscribe to playback errors from play().
-   * The callback receives the underlying Error so the UI can reset isPlaying state.
-   */
-  public onPlaybackError(callback: (error: Error) => void): () => void {
-    this.playbackErrorCallbacks.add(callback);
-    return () => this.playbackErrorCallbacks.delete(callback);
   }
 
 }

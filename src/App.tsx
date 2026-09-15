@@ -1168,18 +1168,8 @@ export default function App() {
               if (shouldOrganize) {
                 const metadataUrl = convertFileSrc ? convertFileSrc(originalPath) : originalPath;
                 const metadataRes = await fetch(metadataUrl);
-                let metadataBlob: Blob;
-                if (metadataRes.ok) {
-                  metadataBlob = await metadataRes.blob();
-                } else if (metadataRes.status === 403 && isTauri()) {
-                  const { readFile } = await import('@tauri-apps/plugin-fs');
-                  const bytes = await readFile(originalPath);
-                  const metadataExt0 = filename.split('.').pop()?.toLowerCase() || '';
-                  const metadataMime0 = metadataExt0 === 'm4a' || metadataExt0 === 'aac' || metadataExt0 === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
-                  metadataBlob = new Blob([bytes], { type: metadataMime0 });
-                } else {
-                  throw new Error(`Fetch failed with status ${metadataRes.status}`);
-                }
+                if (!metadataRes.ok) throw new Error(`Fetch failed with status ${metadataRes.status}`);
+                const metadataBlob = await metadataRes.blob();
                 const metadataExt = filename.split('.').pop()?.toLowerCase() || '';
                 const metadataMime = metadataExt === 'm4a' || metadataExt === 'aac' || metadataExt === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
                 const metadataFile = new File([metadataBlob], filename, { type: metadataMime });
@@ -1196,23 +1186,13 @@ export default function App() {
               }
 
               const assetUrl = convertFileSrc ? convertFileSrc(path) : path;
-              let blob: Blob;
-
               const res = await fetch(assetUrl);
-              if (res.ok) {
-                blob = await res.blob();
-              } else if (res.status === 403 && isTauri()) {
-                // WebKit2GTK on Linux rejects asset:// URLs for filenames starting with dots
-                // (e.g. "...Baby One More Time"). Fall back to reading via fs plugin directly.
-                const { readFile, BaseDirectory } = await import('@tauri-apps/plugin-fs');
-                const bytes = await readFile(path);
-                const ext2 = filename.split('.').pop()?.toLowerCase() || '';
-                const mime2 = ext2 === 'm4a' || ext2 === 'aac' || ext2 === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
-                blob = new Blob([bytes], { type: mime2 });
-              } else {
+              
+              if (!res.ok) {
                 throw new Error(`Fetch failed with status ${res.status}`);
               }
-
+              
+              const blob = await res.blob();
               const ext = filename.split('.').pop()?.toLowerCase() || '';
               const mimeType = ext === 'm4a' || ext === 'aac' || ext === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
               const file = new File([blob], filename, { type: mimeType });

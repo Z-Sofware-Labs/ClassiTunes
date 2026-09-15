@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Track, ViewMode } from '../types';
 import { audioEngine } from '../services/audioEngine';
-import { tauriMinimize, tauriMaximize, tauriClose, tauriStartResizeDragging } from '../utils/tauriWindow';
+import { tauriMinimize, tauriMaximize, tauriClose } from '../utils/tauriWindow';
 import { MarqueeText } from './MarqueeText';
 
 interface HeaderBarProps {
@@ -166,30 +166,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         ? 'bg-gradient-to-b from-[#e8edf5] via-[#cbd5e2] to-[#b0bed4] border-b border-[#707f96] shadow-md text-gray-950 font-medium' 
         : 'bg-[#212121] border-b border-black shadow-md text-gray-100'
     }`}>
-      {/* ── Window top-edge resize handle ───────────────────────────────────────
-          Frameless windows have no OS-provided resize grip at the top because
-          the drag region starts flush at y=0. This 8px transparent strip sits
-          above everything (z-50) and intercepts mousedown to call
-          startResizeDragging so the user can grab the top edge reliably.
-          Corner zones (16px wide) trigger diagonal NW/NE resize. */}
-      <div
-        className="absolute top-0 left-0 right-0 h-2 z-50"
-        style={{ cursor: 'n-resize' }}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const cornerZone = 16;
-          if (x < cornerZone) {
-            tauriStartResizeDragging('NorthWest');
-          } else if (x > rect.width - cornerZone) {
-            tauriStartResizeDragging('NorthEast');
-          } else {
-            tauriStartResizeDragging('North');
-          }
-        }}
-      />
-
+      {/* Top Titlebar Strip (Frameless Window Drag Region & Title) */}
       <div 
         data-tauri-drag-region
         className={`w-full px-3 py-1 flex items-center justify-between text-xs border-b ${
