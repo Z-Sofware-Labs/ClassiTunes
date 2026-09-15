@@ -63,3 +63,56 @@ jobs:
           releaseBody: 'See the assets to download this release and updater artifacts.'
           releaseDraft: false
           prerelease: false
+
+      # Tauri v2 does not support postinst scripts for .deb natively.
+      # We inject postinst.sh into the generated .deb after the build.
+      - name: Inject postinst.sh into .deb package
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          DEB_FILE=$(find src-tauri/target/release/bundle/deb -name "*.deb" | head -1)
+          if [ -z "$DEB_FILE" ]; then
+            echo "No .deb file found, skipping postinst injection."
+            exit 0
+          fi
+
+          WORK_DIR=$(mktemp -d)
+          cp "$DEB_FILE" "$WORK_DIR/package.deb"
+          cd "$WORK_DIR"
+
+          # Unpack the .deb (ar archive containing data + control archives)
+          ar x package.deb
+
+          # Unpack the control archive (may be .tar.gz, .tar.xz, or .tar.zst)
+          CTRL_ARCHIVE=$(ls control.tar.* 2>/dev/null | head -1)
+          mkdir control_dir
+          tar -xf "$CTRL_ARCHIVE" -C control_dir
+
+          # Install the postinst script and make it executable
+          cp "$GITHUB_WORKSPACE/src-tauri/scripts/postinst.sh" control_dir/postinst
+          chmod 0755 control_dir/postinst
+
+          # Repack the control archive preserving the original compression format
+          EXT="${CTRL_ARCHIVE##*.}"
+          case "$EXT" in
+            gz)  tar -czf "$CTRL_ARCHIVE" -C control_dir . ;;
+            xz)  tar -cJf "$CTRL_ARCHIVE" -C control_dir . ;;
+            zst) tar -c --zstd -f "$CTRL_ARCHIVE" -C control_dir . ;;
+            *)   tar -czf "$CTRL_ARCHIVE" -C control_dir . ;;
+          esac
+
+          # Reassemble the .deb
+          ar rcs package.deb debian-binary "$CTRL_ARCHIVE" data.tar.*
+
+          # Replace the original .deb with the patched one
+          cp package.deb "$GITHUB_WORKSPACE/$DEB_FILE"
+          echo "postinst.sh injected into $DEB_FILE"
+
+      - name: Upload patched .deb to release
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEB_FILE=$(find src-tauri/target/release/bundle/deb -name "*.deb" | head -1)
+          if [ -z "$DEB_FILE" ]; then exit 0; fi
+          TAG="${GITHUB_REF_NAME}"
+          gh release upload "$TAG" "$DEB_FILE" --clobber
