@@ -23,6 +23,7 @@ tauri-plugin-fs = "2"
 id3 = "1.16"
 mp4ameta = "0.13"
 tauri-plugin-process = "2"
+tiny_http = "0.12"
 
 [profile.release]
 codegen-units = 1

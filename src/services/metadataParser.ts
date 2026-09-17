@@ -941,12 +941,14 @@ export async function parseAudioFile(file: File): Promise<Track> {
   if (!album) album = 'Unknown Album';
   if (!genre) genre = 'Uncategorized';
 
-  // Fast duration determination chain
+  // Fast duration determination chain:
+  // 1. MP4 mvhd duration (accurate for m4a/aac/mp4)
   if (mp4Tags?.duration && mp4Tags.duration > 0) {
     duration = mp4Tags.duration;
   }
 
-  // Attempt header-level binary scanner (WAV, FLAC, MP3 Xing/VBRI/CBR)
+  // 2. Exact header scanner (WAV, FLAC, MP3 Xing/VBRI frame headers)
+  // Only override if duration not yet obtained from music-metadata or MP4 atoms
   if (!duration || duration === 0) {
     const headerInfo = await parseAudioFileHeader(file);
     if (headerInfo?.duration && headerInfo.duration > 0) {
@@ -956,12 +958,12 @@ export async function parseAudioFile(file: File): Promise<Track> {
     }
   }
 
-  // Check ID3 TLEN
+  // 3. Check ID3 TLEN tag
   if ((!duration || duration === 0) && binaryTags?.duration && binaryTags.duration > 0) {
     duration = binaryTags.duration;
   }
 
-  // Fallback duration using HTML Audio element with generous timeout
+  // 4. Fallback duration using HTML Audio element
   if (!duration || duration === 0) {
     duration = await getAudioDuration(objectUrl);
   }

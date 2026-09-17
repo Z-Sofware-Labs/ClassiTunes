@@ -275,6 +275,211 @@ fn write_mp4_tags(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> 
 }
 
 #[tauri::command]
+fn get_os() -> &'static str {
+    #[cfg(target_os = "linux")]
+    { "linux" }
+    #[cfg(target_os = "windows")]
+    { "windows" }
+    #[cfg(target_os = "macos")]
+    { "macos" }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    { "other" }
+}
+
+static AUDIO_SERVER_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+fn percent_decode_path(input: &str) -> String {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut chars = input.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next().unwrap_or(b'0');
+            let h2 = chars.next().unwrap_or(b'0');
+            let hex_str = [h1, h2];
+            if let Ok(s) = std::str::from_utf8(&hex_str) {
+                if let Ok(val) = u8::from_str_radix(s, 16) {
+                    bytes.push(val);
+                    continue;
+                }
+            }
+            bytes.push(b'%');
+            bytes.push(h1);
+            bytes.push(h2);
+        } else if b == b'+' {
+            bytes.push(b' ');
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+fn start_audio_stream_server_internal() -> u16 {
+    let existing = AUDIO_SERVER_PORT.load(std::sync::atomic::Ordering::SeqCst);
+    if existing != 0 {
+        return existing;
+    }
+
+    let server = match tiny_http::Server::http("127.0.0.1:0") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[AudioStreamServer] Failed to bind local server: {e}");
+            return 0;
+        }
+    };
+
+    let port = server.server_addr().to_ip().map(|addr| addr.port()).unwrap_or(0);
+    AUDIO_SERVER_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
+
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            std::thread::spawn(move || {
+                let url = request.url().to_string();
+                if request.method() == &tiny_http::Method::Options {
+                    let resp = tiny_http::Response::empty(204)
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, HEAD, OPTIONS"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Range, Content-Type, Accept"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Expose-Headers"[..], &b"Content-Range, Content-Length, Accept-Ranges"[..]).unwrap());
+                    let _ = request.respond(resp);
+                    return;
+                }
+
+                let path_param = if let Some(idx) = url.find("path=") {
+                    &url[idx + 5..]
+                } else {
+                    ""
+                };
+
+                let decoded_path = percent_decode_path(path_param);
+                let fs_path = decoded_path.as_str();
+                // Strip Windows drive letter leading slash if present (/C:/... -> C:/...)
+                #[cfg(target_os = "windows")]
+                let fs_path = if fs_path.starts_with('/') && fs_path.len() > 3 && fs_path.as_bytes()[2] == b':' {
+                    &fs_path[1..]
+                } else {
+                    fs_path
+                };
+
+                let mut file = match std::fs::File::open(fs_path) {
+                    Ok(f) => f,
+                    Err(_) => {
+                        let _ = request.respond(tiny_http::Response::empty(404));
+                        return;
+                    }
+                };
+
+                use std::io::Seek;
+                let total_len = match file.seek(std::io::SeekFrom::End(0)) {
+                    Ok(l) => l,
+                    Err(_) => {
+                        let _ = request.respond(tiny_http::Response::empty(500));
+                        return;
+                    }
+                };
+
+                let lower_path = fs_path.to_ascii_lowercase();
+                let mime_type = if lower_path.ends_with(".mp3") {
+                    "audio/mpeg"
+                } else if lower_path.ends_with(".m4a") || lower_path.ends_with(".mp4") || lower_path.ends_with(".aac") {
+                    "audio/mp4"
+                } else if lower_path.ends_with(".flac") {
+                    "audio/flac"
+                } else if lower_path.ends_with(".wav") {
+                    "audio/wav"
+                } else if lower_path.ends_with(".ogg") {
+                    "audio/ogg"
+                } else {
+                    "application/octet-stream"
+                };
+
+                let mut range_header = None;
+                for h in request.headers() {
+                    let field_name = format!("{}", h.field);
+                    if field_name.eq_ignore_ascii_case("range") {
+                        range_header = Some(format!("{}", h.value));
+                        break;
+                    }
+                }
+
+                if let Some(range_str) = range_header {
+                    let mut start = 0u64;
+                    let mut end = total_len.saturating_sub(1);
+
+                    if let Some(bytes_part) = range_str.strip_prefix("bytes=") {
+                        let parts: Vec<&str> = bytes_part.split('-').collect();
+                        if let Ok(s) = parts[0].parse::<u64>() {
+                            start = s;
+                        }
+                        if parts.len() > 1 && !parts[1].is_empty() {
+                            if let Ok(e) = parts[1].parse::<u64>() {
+                                end = std::cmp::min(e, total_len.saturating_sub(1));
+                            }
+                        }
+                    }
+
+                    if start > end || start >= total_len {
+                        let resp = tiny_http::Response::empty(416)
+                            .with_header(tiny_http::Header::from_bytes(&b"Content-Range"[..], format!("bytes */{total_len}").as_bytes()).unwrap());
+                        let _ = request.respond(resp);
+                        return;
+                    }
+
+                    if let Err(_) = file.seek(std::io::SeekFrom::Start(start)) {
+                        let _ = request.respond(tiny_http::Response::empty(500));
+                        return;
+                    }
+
+                    let chunk_len = (end - start + 1) as usize;
+                    use std::io::Read;
+                    let mut take_reader = file.take(chunk_len as u64);
+                    let mut buffer = Vec::with_capacity(chunk_len);
+                    let _ = take_reader.read_to_end(&mut buffer);
+
+                    let resp = tiny_http::Response::from_data(buffer)
+                        .with_status_code(206)
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], mime_type.as_bytes()).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Range"[..], format!("bytes {start}-{end}/{total_len}").as_bytes()).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Length"[..], format!("{}", end - start + 1).as_bytes()).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, HEAD, OPTIONS"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Range, Content-Type, Accept"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Expose-Headers"[..], &b"Content-Range, Content-Length, Accept-Ranges"[..]).unwrap());
+
+                    let _ = request.respond(resp);
+                } else {
+                    let _ = file.seek(std::io::SeekFrom::Start(0));
+                    let resp = tiny_http::Response::from_file(file)
+                        .with_status_code(200)
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], mime_type.as_bytes()).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Length"[..], format!("{total_len}").as_bytes()).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, HEAD, OPTIONS"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Range, Content-Type, Accept"[..]).unwrap())
+                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Expose-Headers"[..], &b"Content-Range, Content-Length, Accept-Ranges"[..]).unwrap());
+
+                    let _ = request.respond(resp);
+                }
+            });
+        }
+    });
+
+    port
+}
+
+#[tauri::command]
+fn get_audio_stream_port() -> u16 {
+    let port = AUDIO_SERVER_PORT.load(std::sync::atomic::Ordering::SeqCst);
+    if port != 0 {
+        port
+    } else {
+        start_audio_stream_server_internal()
+    }
+}
+
+#[tauri::command]
 fn write_music_metadata(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
     let lower = file_path.to_ascii_lowercase();
     if lower.ends_with(".m4a")
@@ -391,8 +596,15 @@ async fn install_linux_package_elevated(pkg_path: String) -> Result<(), String> 
     }
 }
 
-
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+        // Also ensure GStreamer uses the system plugin registry
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0");
+        start_audio_stream_server_internal();
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -401,6 +613,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            get_os,
+            get_audio_stream_port,
             write_id3_tags,
             write_music_metadata,
             organize_music_file,
