@@ -6,12 +6,14 @@ import { CURRENT_VERSION, getCurrentVersion } from '../services/updaterService';
 interface AboutModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenUpdate?: () => void;
   theme?: 'dark' | 'light';
 }
 
 export const AboutModal: React.FC<AboutModalProps> = ({
   isOpen,
   onClose,
+  onOpenUpdate,
   theme = 'dark',
 }) => {
   const isLight = theme === 'light';
@@ -133,17 +135,35 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             </p>
           </div>
 
-          {/* OK Button */}
-          <button
-            type="button"
-            onClick={onClose}
-            className={`px-6 py-1 text-xs font-semibold rounded-md shadow-sm border transition-all cursor-pointer ${isLight
-              ? 'bg-gradient-to-b from-white to-slate-100 hover:from-slate-50 hover:to-slate-200 text-slate-800 border-slate-300 hover:border-slate-400 active:shadow-inner'
-              : 'bg-gradient-to-b from-white/15 to-white/5 hover:from-white/20 hover:to-white/10 text-white border-white/15 hover:border-white/25 active:shadow-inner'
-              }`}
-          >
-            OK
-          </button>
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2">
+            {onOpenUpdate && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenUpdate();
+                }}
+                className={`px-4 py-1 text-xs font-semibold rounded-md shadow-sm border transition-all cursor-pointer ${
+                  isLight
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                    : 'bg-blue-950/40 text-blue-300 border-blue-800/50 hover:bg-blue-900/50'
+                }`}
+              >
+                Check for Updates
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-6 py-1 text-xs font-semibold rounded-md shadow-sm border transition-all cursor-pointer ${isLight
+                ? 'bg-gradient-to-b from-white to-slate-100 hover:from-slate-50 hover:to-slate-200 text-slate-800 border-slate-300 hover:border-slate-400 active:shadow-inner'
+                : 'bg-gradient-to-b from-white/15 to-white/5 hover:from-white/20 hover:to-white/10 text-white border-white/15 hover:border-white/25 active:shadow-inner'
+                }`}
+            >
+              OK
+            </button>
+          </div>
         </div>
       </div>
     </div>

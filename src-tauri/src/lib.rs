@@ -600,6 +600,8 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     {
         std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+        // Prevent WebKitGTK DMA-BUF rendering conflicts during window resize under Wayland/X11
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         // Also ensure GStreamer uses the system plugin registry
         std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0");
         start_audio_stream_server_internal();

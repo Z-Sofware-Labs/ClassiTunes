@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Track } from '../types';
-import { Sliders, Maximize2, Disc, Shuffle, Repeat, Repeat1, Sun, Moon, FileText, Info, Settings, ArrowDownCircle, Check, Loader2, AlertCircle } from 'lucide-react';
+import { Sliders, Maximize2, Disc, Shuffle, Repeat, Repeat1, Sun, Moon, FileText, Info, Settings, ArrowDownCircle } from 'lucide-react';
 import { openLogDirectory } from '../utils/tauriWindow';
-import { runOnDemandUpdate, UpdateState, CURRENT_VERSION } from '../services/updaterService';
+import { CURRENT_VERSION } from '../services/updaterService';
 
 interface StatusBarProps {
   tracks: Track[];
@@ -11,6 +11,7 @@ interface StatusBarProps {
   onOpenVisualizer: () => void;
   onOpenAbout: () => void;
   onOpenOptions: () => void;
+  onOpenUpdate?: () => void;
   isShuffle: boolean;
   onToggleShuffle: () => void;
   repeatMode: 'off' | 'all' | 'one';
@@ -26,6 +27,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   onOpenVisualizer,
   onOpenAbout,
   onOpenOptions,
+  onOpenUpdate,
   isShuffle,
   onToggleShuffle,
   repeatMode,
@@ -34,13 +36,6 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   onToggleTheme,
 }) => {
   const [showCoverPreview, setShowCoverPreview] = useState(false);
-  const [updateState, setUpdateState] = useState<UpdateState>({
-    status: 'idle',
-    progress: 0,
-    currentVersion: CURRENT_VERSION,
-    message: '',
-  });
-  const [showUpdateToast, setShowUpdateToast] = useState(false);
 
   const isLight = theme === 'light';
 
@@ -49,28 +44,11 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   const totalMinutes = (totalSeconds / 60).toFixed(1);
   const totalMB = (tracks.reduce((acc, t) => acc + (t.sizeBytes || 4000000), 0) / (1024 * 1024)).toFixed(1);
 
-  // Auto dismiss toast after 4.5 seconds if finished or up-to-date
-  useEffect(() => {
-    if (updateState.status === 'up-to-date') {
-      const timer = setTimeout(() => {
-        setShowUpdateToast(false);
-      }, 4500);
-      return () => clearTimeout(timer);
+  const handleTriggerUpdate = () => {
+    if (onOpenUpdate) {
+      onOpenUpdate();
     }
-  }, [updateState.status]);
-
-  const handleTriggerUpdate = async () => {
-    if (updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing') {
-      return; // Already in progress
-    }
-    setShowUpdateToast(true);
-    await runOnDemandUpdate((state) => {
-      setUpdateState(state);
-      setShowUpdateToast(true);
-    });
   };
-
-  const isUpdating = updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'installing';
 
   return (
     <footer className={`relative select-none border-t px-3 py-1 text-[11px] font-sans flex items-center justify-between z-20 shrink-0 transition-colors duration-200 ${isLight
@@ -119,99 +97,19 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
       {/* Right Quick Toggles */}
       <div className="flex items-center gap-1.5 min-w-[180px] justify-end relative">
-        {/* On-Demand Auto Updater Button */}
-        <div className="relative">
-          <button
-            onClick={handleTriggerUpdate}
-            disabled={isUpdating}
-            className={`p-1 rounded transition-all flex items-center justify-center relative ${
-              isUpdating
-                ? isLight ? 'bg-blue-100 text-blue-600 animate-pulse' : 'bg-blue-500/20 text-blue-400 animate-pulse'
-                : updateState.status === 'up-to-date'
-                ? isLight ? 'text-emerald-600 hover:bg-black/10' : 'text-emerald-400 hover:bg-white/10'
-                : isLight ? 'hover:bg-black/10 text-gray-700 hover:text-blue-600' : 'hover:bg-white/10 text-gray-400 hover:text-white'
-            }`}
-            title={
-              isUpdating
-                ? (updateState.message || 'Updating ClassiTunes...')
-                : updateState.status === 'up-to-date'
-                ? `ClassiTunes is up to date (v${CURRENT_VERSION})`
-                : 'Check for Updates'
-            }
-            aria-label="Check for Updates"
-          >
-            {isUpdating ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : updateState.status === 'up-to-date' ? (
-              <Check className="w-3.5 h-3.5" />
-            ) : (
-              <ArrowDownCircle className="w-3.5 h-3.5" />
-            )}
-          </button>
-
-          {/* Automatic Update Status Floating Toast / Popover */}
-          {showUpdateToast && (
-            <div
-              className={`absolute right-0 bottom-7 w-64 p-3 rounded-lg border shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150 ${
-                isLight ? 'bg-white border-gray-300 text-gray-800 shadow-slate-900/20' : 'bg-[#1e1e1e] border-[#383838] text-gray-100 shadow-black/80'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2 mb-1.5">
-                <div className="flex items-center gap-1.5">
-                  {isUpdating ? (
-                    <Loader2 className="w-4 h-4 text-blue-500 animate-spin shrink-0" />
-                  ) : updateState.status === 'up-to-date' || updateState.status === 'ready' ? (
-                    <Check className="w-4 h-4 text-emerald-500 shrink-0" />
-                  ) : updateState.status === 'error' ? (
-                    <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
-                  ) : (
-                    <ArrowDownCircle className="w-4 h-4 text-blue-500 shrink-0" />
-                  )}
-                  <span className="font-semibold text-[11px] leading-tight">
-                    {updateState.status === 'checking' && 'Checking for Updates…'}
-                    {updateState.status === 'downloading' && 'Downloading Update…'}
-                    {updateState.status === 'installing' && 'Installing & Restarting…'}
-                    {updateState.status === 'up-to-date' && 'Up to Date'}
-                    {updateState.status === 'error' && 'Update Check Failed'}
-                    {updateState.status === 'idle' && 'Software Update'}
-                  </span>
-                </div>
-                <button
-                  onClick={() => setShowUpdateToast(false)}
-                  className={`text-[10px] px-1 py-0.5 rounded transition-colors ${
-                    isLight ? 'text-gray-400 hover:text-gray-700 hover:bg-gray-100' : 'text-gray-500 hover:text-gray-300 hover:bg-white/10'
-                  }`}
-                  title="Dismiss"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <p className={`text-[10px] leading-relaxed mb-2 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
-                {updateState.message || `Current version: v${updateState.currentVersion || CURRENT_VERSION}`}
-              </p>
-
-              {/* Progress bar when checking or downloading */}
-              {isUpdating && (
-                <div className="w-full bg-black/10 dark:bg-white/10 rounded-full h-1.5 overflow-hidden mb-1">
-                  <div
-                    className="bg-blue-600 dark:bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
-                    style={{ width: `${Math.max(8, updateState.progress)}%` }}
-                  />
-                </div>
-              )}
-
-              {updateState.status === 'error' && (
-                <button
-                  onClick={handleTriggerUpdate}
-                  className="mt-1 w-full py-1 px-2 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-[10px] transition-colors"
-                >
-                  Retry Update Check
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        {/* On-Demand Update Dialog Trigger Button */}
+        <button
+          onClick={handleTriggerUpdate}
+          className={`p-1 rounded transition-all flex items-center justify-center ${
+            isLight
+              ? 'hover:bg-black/10 text-gray-700 hover:text-blue-600'
+              : 'hover:bg-white/10 text-gray-400 hover:text-white'
+          }`}
+          title="Check for Updates"
+          aria-label="Check for Updates"
+        >
+          <ArrowDownCircle className="w-3.5 h-3.5" />
+        </button>
 
         {/* Options Button */}
         <button

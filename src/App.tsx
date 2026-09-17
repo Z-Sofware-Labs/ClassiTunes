@@ -15,6 +15,7 @@ import { GetInfoModal } from './components/GetInfoModal';
 import { NewPlaylistModal } from './components/NewPlaylistModal';
 import { SmartPlaylistModal } from './components/SmartPlaylistModal';
 import { AboutModal } from './components/AboutModal';
+import { UpdateModal } from './components/UpdateModal';
 import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
@@ -321,6 +322,7 @@ export default function App() {
   const [isEQOpen, setIsEQOpen] = useState<boolean>(false);
   const [isVisualizerOpen, setIsVisualizerOpen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
+  const [isUpdateOpen, setIsUpdateOpen] = useState<boolean>(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState<boolean>(false);
   const [editingTrack, setEditingTrack] = useState<Track | null>(null);
   const [isNewPlaylistOpen, setIsNewPlaylistOpen] = useState<boolean>(false);
@@ -1723,6 +1725,7 @@ export default function App() {
         onOpenVisualizer={() => setIsVisualizerOpen(true)}
         onOpenAbout={() => setIsAboutOpen(true)}
         onOpenOptions={() => setIsOptionsOpen(true)}
+        onOpenUpdate={() => setIsUpdateOpen(true)}
         isShuffle={isShuffle}
         onToggleShuffle={() => setIsShuffle(!isShuffle)}
         repeatMode={repeatMode}
@@ -1842,6 +1845,13 @@ export default function App() {
       <AboutModal
         isOpen={isAboutOpen}
         onClose={() => setIsAboutOpen(false)}
+        onOpenUpdate={() => setIsUpdateOpen(true)}
+        theme={theme}
+      />
+
+      <UpdateModal
+        isOpen={isUpdateOpen}
+        onClose={() => setIsUpdateOpen(false)}
         theme={theme}
       />
 
