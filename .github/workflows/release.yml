@@ -64,3 +64,4 @@ jobs:
           releaseBody: 'See the assets to download this release and updater artifacts.'
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.args }}
