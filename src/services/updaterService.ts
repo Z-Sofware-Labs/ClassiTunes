@@ -1,36 +1,27 @@
-// Automatic native updater service for ClassiTunes with Tauri Plugin Updater support
-import { isTauri, openExternalUrl, logToFile } from '../utils/tauriWindow';
+// Pure on-demand Tauri native updater engine for ClassiTunes
+import { isTauri, logToFile } from '../utils/tauriWindow';
 import { relaunch } from '@tauri-apps/plugin-process';
 
 export type UpdateStatus = 
   | 'idle'
   | 'checking'
   | 'up-to-date'
-  | 'update-available'
   | 'downloading'
   | 'installing'
-  | 'ready'
   | 'error';
-
-export interface UpdateInfo {
-  currentVersion: string;
-  latestVersion: string;
-  releaseName?: string;
-  releaseNotes?: string;
-  downloadUrl?: string;
-  publishedAt?: string;
-}
 
 export interface UpdateState {
   status: UpdateStatus;
   progress: number; // 0 to 100
-  info: UpdateInfo | null;
+  currentVersion: string;
+  targetVersion?: string;
+  message: string;
   errorMessage?: string;
-  message?: string;
 }
 
-// Resolved at runtime from Tauri app metadata; falls back to package.json version.
+// Runtime cached version; falls back to package version
 let _resolvedVersion: string | null = null;
+
 export async function getCurrentVersion(): Promise<string> {
   if (_resolvedVersion) return _resolvedVersion;
   if (isTauri()) {
@@ -38,463 +29,140 @@ export async function getCurrentVersion(): Promise<string> {
       const { getVersion } = await import('@tauri-apps/api/app');
       _resolvedVersion = await getVersion();
       return _resolvedVersion;
-    } catch { /* fall through */ }
+    } catch { /* ignore fallback below */ }
   }
-  _resolvedVersion = '1.2.3'; // fallback (non-Tauri / web)
+  _resolvedVersion = '1.2.3';
   return _resolvedVersion;
 }
-// Synchronous accessor for components that need it before the async call resolves.
-// Initialise eagerly so it's ready as soon as possible.
+
 export let CURRENT_VERSION = '1.2.3';
-getCurrentVersion().then(v => { CURRENT_VERSION = v; });
-
-// Canonical repository information
-export const GITHUB_REPO = 'Z-Sofware-Labs/ClassiTunes';
-export const RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-export const RELEASES_PAGE_URL = `https://github.com/${GITHUB_REPO}/releases`;
-
-// Cached active Tauri update handle across check -> downloadAndInstall
-let activeTauriUpdate: any = null;
+getCurrentVersion().then((v) => { CURRENT_VERSION = v; });
 
 /**
- * Compare two semver strings: returns 1 if vA > vB, -1 if vA < vB, 0 if equal.
+ * Executes a fully on-demand, end-to-end update workflow:
+ * 1. Checks Tauri updater endpoint (signed latest.json manifest).
+ * 2. If no update available: cleanly informs the user that they're up to date.
+ * 3. If update found: automatically downloads chunk by chunk with real progress,
+ *    installs the update package, and relaunches the application without requiring
+ *    any additional user clicks.
  */
-export function compareVersions(vA: string, vB: string): number {
-  const cleanA = vA.replace(/^v/, '').split('.').map(x => parseInt(x, 10) || 0);
-  const cleanB = vB.replace(/^v/, '').split('.').map(x => parseInt(x, 10) || 0);
+export async function runOnDemandUpdate(
+  onStateChange: (state: UpdateState) => void
+): Promise<void> {
+  const currentVer = await getCurrentVersion();
 
-  const len = Math.max(cleanA.length, cleanB.length);
-  for (let i = 0; i < len; i++) {
-    const a = cleanA[i] || 0;
-    const b = cleanB[i] || 0;
-    if (a > b) return 1;
-    if (a < b) return -1;
-  }
-  return 0;
-}
-
-/**
- * Detect current platform for asset resolution
- */
-function getTargetPlatform(): 'win' | 'mac' | 'linux' | 'web' {
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.platform) {
-    const p = (window as any).electronAPI.platform;
-    if (p === 'win32') return 'win';
-    if (p === 'darwin') return 'mac';
-    return 'linux';
-  }
-  if (typeof navigator !== 'undefined') {
-    const ua = navigator.userAgent.toLowerCase();
-    if (ua.includes('win')) return 'win';
-    if (ua.includes('mac')) return 'mac';
-    if (ua.includes('linux')) return 'linux';
-  }
-  return 'web';
-}
-
-/**
- * Select the appropriate release asset URL for the current operating system.
- */
-function findBestAssetUrl(assets: any[]): string | undefined {
-  if (!Array.isArray(assets) || assets.length === 0) return undefined;
-  const platform = getTargetPlatform();
-
-  if (platform === 'win') {
-    const exe = assets.find(a => typeof a.name === 'string' && a.name.endsWith('.exe'));
-    if (exe?.browser_download_url) return exe.browser_download_url;
-  } else if (platform === 'mac') {
-    const dmg = assets.find(a => typeof a.name === 'string' && (a.name.endsWith('.dmg') || a.name.endsWith('.zip')));
-    if (dmg?.browser_download_url) return dmg.browser_download_url;
-  } else if (platform === 'linux') {
-    const linuxPkg = assets.find(a => typeof a.name === 'string' && (a.name.endsWith('.rpm') || a.name.endsWith('.deb')));
-    if (linuxPkg?.browser_download_url) return linuxPkg.browser_download_url;
-  }
-
-  return assets[0]?.browser_download_url;
-}
-
-/**
- * Execute on-demand check for updates using Tauri Plugin Updater (with fallback).
- */
-export async function checkForUpdate(
-  onProgress?: (state: UpdateState) => void
-): Promise<UpdateInfo | null> {
-  const notify = (state: UpdateState) => {
-    onProgress?.(state);
-  };
-
-  notify({
+  onStateChange({
     status: 'checking',
     progress: 10,
-    info: null,
+    currentVersion: currentVer,
     message: 'Checking for updates...',
   });
 
-  try {
-    await logToFile(`[Updater] Checking for updates (current: v${CURRENT_VERSION})...`);
-
-    // 1. Check with Tauri native updater plugin if running in Tauri
-    if (isTauri()) {
-      try {
-        const { check } = await import('@tauri-apps/plugin-updater');
-        const update = await check({ timeout: 8000 });
-        if (update) {
-          activeTauriUpdate = update;
-          const info: UpdateInfo = {
-            currentVersion: update.currentVersion || CURRENT_VERSION,
-            latestVersion: update.version,
-            releaseName: `ClassiTunes v${update.version}`,
-            releaseNotes: update.body || '',
-            publishedAt: update.date,
-          };
-          await logToFile(`[Updater] Tauri plugin detected new version: v${update.version}`);
-          notify({
-            status: 'update-available',
-            progress: 30,
-            info,
-            message: `New version v${update.version} available!`,
-          });
-          return info;
-        } else {
-          activeTauriUpdate = null;
-          await logToFile(`[Updater] Tauri plugin reports up to date.`);
-          const info: UpdateInfo = {
-            currentVersion: CURRENT_VERSION,
-            latestVersion: CURRENT_VERSION,
-            releaseName: `ClassiTunes v${CURRENT_VERSION}`,
-            releaseNotes: 'You are on the latest release.',
-          };
-          notify({
-            status: 'up-to-date',
-            progress: 100,
-            info,
-            message: `ClassiTunes is up to date (v${CURRENT_VERSION})`,
-          });
-          return null;
-        }
-      } catch (tauriErr: any) {
-        await logToFile(`[Updater] Tauri plugin check notice (falling back to GitHub API): ${tauriErr?.message || tauriErr}`);
-      }
-    }
-
-    // 2. Check with Electron IPC if running in Electron
-    if (typeof window !== 'undefined' && (window as any).electronAPI?.checkForUpdates) {
-      try {
-        const result = await (window as any).electronAPI.checkForUpdates();
-        if (result && result.updateAvailable) {
-          const info: UpdateInfo = {
-            currentVersion: CURRENT_VERSION,
-            latestVersion: result.version || CURRENT_VERSION,
-            releaseName: result.releaseName,
-            releaseNotes: result.releaseNotes,
-            downloadUrl: result.downloadUrl,
-          };
-          notify({
-            status: 'update-available',
-            progress: 30,
-            info,
-            message: `Update v${info.latestVersion} found!`,
-          });
-          return info;
-        }
-      } catch (err) {
-        console.warn('Electron native updater error, falling back to HTTP check:', err);
-      }
-    }
-
-    // 3. Direct GitHub Releases API check fallback
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    let data: any = null;
-    let fetchStatus: number | null = null;
-    let fetchError: string | null = null;
-
-    try {
-      const res = await fetch(RELEASES_API_URL, {
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/vnd.github.v3+json',
-        },
-      });
-      clearTimeout(timeoutId);
-      fetchStatus = res.status;
-
-      if (res.ok) {
-        data = await res.json();
-      } else {
-        await logToFile(`[Updater] GitHub API status ${res.status}.`);
-      }
-    } catch (e: any) {
-      clearTimeout(timeoutId);
-      fetchError = e?.message || String(e);
-      await logToFile(`[Updater] GitHub API fetch error: ${fetchError}`);
-    }
-
-    // If repository or release endpoint doesn't exist yet (404/403 or network failure)
-    if (!data || !data.tag_name) {
-      let failMessage = 'Unable to check for updates.';
-      if (fetchStatus === 404) {
-        failMessage = `Release repository not found (${GITHUB_REPO}). No releases published yet.`;
-      } else if (fetchStatus === 403) {
-        failMessage = 'GitHub API rate limit exceeded or access restricted.';
-      } else if (fetchError) {
-        failMessage = `Network error checking updates: ${fetchError}`;
-      }
-
-      await logToFile(`[Updater] ${failMessage}`);
-      notify({
-        status: 'error',
-        progress: 0,
-        info: null,
-        errorMessage: failMessage,
-        message: failMessage,
-      });
-      return null;
-    }
-
-    const latestVersion = data.tag_name.replace(/^v/, '');
-    const isNewer = compareVersions(latestVersion, CURRENT_VERSION) > 0;
-
-    const info: UpdateInfo = {
-      currentVersion: CURRENT_VERSION,
-      latestVersion,
-      releaseName: data.name || `ClassiTunes v${latestVersion}`,
-      releaseNotes: data.body || '',
-      downloadUrl: findBestAssetUrl(data.assets) || data.html_url || RELEASES_PAGE_URL,
-      publishedAt: data.published_at,
-    };
-
-    if (isNewer) {
-      notify({
-        status: 'update-available',
-        progress: 30,
-        info,
-        message: `New version v${latestVersion} available!`,
-      });
-      return info;
-    } else {
-      notify({
-        status: 'up-to-date',
-        progress: 100,
-        info,
-        message: `ClassiTunes is up to date (v${CURRENT_VERSION})`,
-      });
-      return null;
-    }
-  } catch (error: any) {
-    const errorMsg = error?.message || 'Failed to check for updates';
-    await logToFile(`[Updater] Update check failed: ${errorMsg}`);
-    notify({
+  if (!isTauri()) {
+    onStateChange({
       status: 'error',
       progress: 0,
-      info: null,
-      errorMessage: errorMsg,
-      message: 'Update check failed.',
+      currentVersion: currentVer,
+      message: 'Updates are only supported in the desktop application.',
+      errorMessage: 'Not running in Tauri environment',
     });
-    return null;
+    return;
   }
-}
-
-/**
- * Execute the automatic on-demand update process:
- * 1. Check for updates
- * 2. If update found in Tauri: download via plugin with real byte-level progress and install/relaunch!
- * 3. Fallback: Electron IPC or external download link
- */
-export async function startAutomaticUpdate(
-  onStateChange: (state: UpdateState) => void
-): Promise<void> {
-  const updateState = (state: UpdateState) => {
-    onStateChange(state);
-  };
 
   try {
-    const updateInfo = await checkForUpdate(updateState);
+    await logToFile(`[Updater] Starting on-demand check (current: v${currentVer})...`);
+    const { check } = await import('@tauri-apps/plugin-updater');
+    
+    const update = await check({ timeout: 12000 });
 
-    if (!updateInfo) {
+    if (!update) {
+      await logToFile('[Updater] Application is up to date.');
+      onStateChange({
+        status: 'up-to-date',
+        progress: 100,
+        currentVersion: currentVer,
+        targetVersion: currentVer,
+        message: `ClassiTunes is up to date (v${currentVer})`,
+      });
       return;
     }
 
-    await logToFile(`[Updater] Automatically starting download for v${updateInfo.latestVersion}...`);
-    
-    updateState({
+    const newVer = update.version;
+    await logToFile(`[Updater] Found new version: v${newVer}. Starting automatic download and install...`);
+
+    onStateChange({
       status: 'downloading',
       progress: 0,
-      info: updateInfo,
-      message: `Downloading v${updateInfo.latestVersion}...`,
+      currentVersion: currentVer,
+      targetVersion: newVer,
+      message: `Downloading update v${newVer}...`,
     });
 
-    // Option A: Native Tauri Updater Plugin download & install
-    if (isTauri() && activeTauriUpdate) {
-      try {
-        let totalBytes = 0;
-        let downloadedBytes = 0;
+    let totalBytes = 0;
+    let downloadedBytes = 0;
 
-        await activeTauriUpdate.downloadAndInstall((event: any) => {
-          if (event.event === 'Started') {
-            totalBytes = event.data.contentLength || 0;
-            updateState({
-              status: 'downloading',
-              progress: 5,
-              info: updateInfo,
-              message: `Starting download (v${updateInfo.latestVersion})...`,
-            });
-          } else if (event.event === 'Progress') {
-            downloadedBytes += event.data.chunkLength || 0;
-            const percent = totalBytes > 0 
-              ? Math.min(95, Math.round((downloadedBytes / totalBytes) * 100))
-              : 50;
-            updateState({
-              status: 'downloading',
-              progress: percent,
-              info: updateInfo,
-              message: totalBytes > 0 
-                ? `Downloading update (${percent}%)...` 
-                : 'Downloading update package...',
-            });
-          } else if (event.event === 'Finished') {
-            updateState({
-              status: 'installing',
-              progress: 98,
-              info: updateInfo,
-              message: 'Installing update...',
-            });
-          }
+    await update.downloadAndInstall((event: any) => {
+      if (event.event === 'Started') {
+        totalBytes = event.data.contentLength || 0;
+        onStateChange({
+          status: 'downloading',
+          progress: 5,
+          currentVersion: currentVer,
+          targetVersion: newVer,
+          message: `Starting download (v${newVer})...`,
         });
-
-        await logToFile('[Updater] Tauri plugin download and install finished.');
-        updateState({
-          status: 'ready',
-          progress: 100,
-          info: updateInfo,
-          message: 'Update installed successfully! Restarting...',
+      } else if (event.event === 'Progress') {
+        downloadedBytes += event.data.chunkLength || 0;
+        const percent = totalBytes > 0 
+          ? Math.min(95, Math.round((downloadedBytes / totalBytes) * 100))
+          : 50;
+        onStateChange({
+          status: 'downloading',
+          progress: percent,
+          currentVersion: currentVer,
+          targetVersion: newVer,
+          message: totalBytes > 0
+            ? `Downloading v${newVer} (${percent}%)...`
+            : `Downloading update package...`,
         });
-
-        // Relaunch the app after install (on Windows the NSIS /S flag handles restart;
-        // on macOS/Linux we trigger it explicitly).
-        try {
-          await relaunch();
-        } catch {
-          // Installer already handled the relaunch (e.g. NSIS /S on Windows)
-        }
-        return;
-      } catch (tauriDownloadErr: any) {
-        await logToFile(`[Updater] Tauri plugin download failed, attempting fallback: ${tauriDownloadErr?.message || tauriDownloadErr}`);
-
-        // Option A2: Linux elevated install via pkexec (for system-wide deb/rpm installs)
-        if (isTauri() && getTargetPlatform() === 'linux') {
-          try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            const { writeFile } = await import('@tauri-apps/plugin-fs');
-            const { downloadDir } = await import('@tauri-apps/api/path');
-
-            updateState({
-              status: 'downloading',
-              progress: 35,
-              info: updateInfo,
-              message: 'Fetching Linux package for elevated install...',
-            });
-
-            // Fetch the matching .deb or .rpm asset from the GitHub release
-            const ghRes = await fetch(RELEASES_API_URL, {
-              headers: { Accept: 'application/vnd.github.v3+json' },
-            });
-            const ghData = await ghRes.json();
-            const assets: any[] = ghData.assets || [];
-            const pkgAsset = assets.find((a: any) =>
-              typeof a.name === 'string' && /\.(deb|rpm)$/.test(a.name)
-            );
-
-            if (!pkgAsset?.browser_download_url) {
-              throw new Error('No .deb or .rpm package found in the latest GitHub release.');
-            }
-
-            updateState({
-              status: 'downloading',
-              progress: 50,
-              info: updateInfo,
-              message: `Downloading ${pkgAsset.name}...`,
-            });
-
-            const pkgRes = await fetch(pkgAsset.browser_download_url);
-            if (!pkgRes.ok) throw new Error(`Package download failed: HTTP ${pkgRes.status}`);
-            const pkgData = new Uint8Array(await pkgRes.arrayBuffer());
-
-            const dlDir = await downloadDir();
-            const pkgPath = `${dlDir}/${pkgAsset.name}`;
-            await writeFile(pkgPath, pkgData);
-
-            await logToFile(`[Updater] Saved package to ${pkgPath}, invoking pkexec...`);
-            updateState({
-              status: 'installing',
-              progress: 85,
-              info: updateInfo,
-              message: 'Installing update (elevated permissions required)...',
-            });
-
-            await invoke('install_linux_package_elevated', { pkgPath });
-
-            await logToFile('[Updater] Linux elevated install succeeded.');
-            updateState({
-              status: 'ready',
-              progress: 100,
-              info: updateInfo,
-              message: 'Update installed! Relaunching...',
-            });
-
-            try { await relaunch(); } catch { /* let the user relaunch manually if this fails */ }
-            return;
-          } catch (linuxErr: any) {
-            await logToFile(`[Updater] Linux elevated install failed: ${linuxErr?.message || linuxErr}`);
-          }
-        }
-      }
-    }
-
-    // Option B: Electron IPC
-    if (typeof window !== 'undefined' && (window as any).electronAPI?.downloadAndInstallUpdate) {
-      try {
-        updateState({
+      } else if (event.event === 'Finished') {
+        onStateChange({
           status: 'installing',
-          progress: 95,
-          info: updateInfo,
-          message: 'Applying update...',
+          progress: 98,
+          currentVersion: currentVer,
+          targetVersion: newVer,
+          message: `Installing update v${newVer}...`,
         });
-        await (window as any).electronAPI.downloadAndInstallUpdate(updateInfo.downloadUrl);
-        updateState({
-          status: 'ready',
-          progress: 100,
-          info: updateInfo,
-          message: 'Update complete!',
-        });
-        return;
-      } catch (err) {
-        console.warn('Electron native install failed, opening download asset:', err);
       }
-    }
-
-    // Option C: Browser / External URL Download Fallback
-    if (updateInfo.downloadUrl) {
-      await logToFile(`[Updater] Triggering automated download of: ${updateInfo.downloadUrl}`);
-      await openExternalUrl(updateInfo.downloadUrl);
-    }
-
-    updateState({
-      status: 'ready',
-      progress: 100,
-      info: updateInfo,
-      message: `Downloaded v${updateInfo.latestVersion}! Follow installer to complete.`,
     });
+
+    await logToFile('[Updater] Installation completed successfully. Relaunching application...');
+
+    onStateChange({
+      status: 'installing',
+      progress: 100,
+      currentVersion: currentVer,
+      targetVersion: newVer,
+      message: `Update installed! Restarting ClassiTunes...`,
+    });
+
+    // Automatically relaunch into the updated app
+    try {
+      await relaunch();
+    } catch (relaunchErr) {
+      console.warn('[Updater] Relaunch triggered (may be handled by installer):', relaunchErr);
+    }
   } catch (err: any) {
-    const errMsg = err?.message || 'Error occurred during automatic update';
-    await logToFile(`[Updater] Auto-update failed: ${errMsg}`);
-    updateState({
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    await logToFile(`[Updater] Update error: ${errorMsg}`);
+    console.error('[Updater] Update process failed:', err);
+
+    onStateChange({
       status: 'error',
       progress: 0,
-      info: null,
-      errorMessage: errMsg,
-      message: 'Failed to complete update.',
+      currentVersion: currentVer,
+      message: 'Failed to update ClassiTunes.',
+      errorMessage: errorMsg,
     });
   }
 }

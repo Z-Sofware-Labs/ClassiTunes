@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Track } from '../types';
 import { Sliders, Maximize2, Disc, Shuffle, Repeat, Repeat1, Sun, Moon, FileText, Info, Settings, ArrowDownCircle, Check, Loader2, AlertCircle } from 'lucide-react';
 import { openLogDirectory } from '../utils/tauriWindow';
-import { startAutomaticUpdate, UpdateState, CURRENT_VERSION } from '../services/updaterService';
+import { runOnDemandUpdate, UpdateState, CURRENT_VERSION } from '../services/updaterService';
 
 interface StatusBarProps {
   tracks: Track[];
@@ -37,7 +37,8 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   const [updateState, setUpdateState] = useState<UpdateState>({
     status: 'idle',
     progress: 0,
-    info: null,
+    currentVersion: CURRENT_VERSION,
+    message: '',
   });
   const [showUpdateToast, setShowUpdateToast] = useState(false);
 
@@ -50,7 +51,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
   // Auto dismiss toast after 4.5 seconds if finished or up-to-date
   useEffect(() => {
-    if (updateState.status === 'up-to-date' || updateState.status === 'ready' || updateState.status === 'error') {
+    if (updateState.status === 'up-to-date') {
       const timer = setTimeout(() => {
         setShowUpdateToast(false);
       }, 4500);
@@ -63,7 +64,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
       return; // Already in progress
     }
     setShowUpdateToast(true);
-    await startAutomaticUpdate((state) => {
+    await runOnDemandUpdate((state) => {
       setUpdateState(state);
       setShowUpdateToast(true);
     });
@@ -169,8 +170,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
                   <span className="font-semibold text-[11px] leading-tight">
                     {updateState.status === 'checking' && 'Checking for Updates…'}
                     {updateState.status === 'downloading' && 'Downloading Update…'}
-                    {updateState.status === 'installing' && 'Installing Update…'}
-                    {updateState.status === 'ready' && 'Update Ready'}
+                    {updateState.status === 'installing' && 'Installing & Restarting…'}
                     {updateState.status === 'up-to-date' && 'Up to Date'}
                     {updateState.status === 'error' && 'Update Check Failed'}
                     {updateState.status === 'idle' && 'Software Update'}
@@ -188,7 +188,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
               </div>
 
               <p className={`text-[10px] leading-relaxed mb-2 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
-                {updateState.message || `Current version: v${CURRENT_VERSION}`}
+                {updateState.message || `Current version: v${updateState.currentVersion || CURRENT_VERSION}`}
               </p>
 
               {/* Progress bar when checking or downloading */}
@@ -201,15 +201,13 @@ export const StatusBar: React.FC<StatusBarProps> = ({
                 </div>
               )}
 
-              {updateState.status === 'ready' && updateState.info?.downloadUrl && (
-                <a
-                  href={updateState.info.downloadUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-1 block text-center py-1 px-2 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-[10px] transition-colors"
+              {updateState.status === 'error' && (
+                <button
+                  onClick={handleTriggerUpdate}
+                  className="mt-1 w-full py-1 px-2 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-[10px] transition-colors"
                 >
-                  Open Download / Installer
-                </a>
+                  Retry Update Check
+                </button>
               )}
             </div>
           )}

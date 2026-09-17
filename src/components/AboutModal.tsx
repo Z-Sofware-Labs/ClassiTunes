@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { X, ExternalLink } from 'lucide-react';
 import { openExternalUrl } from '../utils/tauriWindow';
-import { CURRENT_VERSION } from '../services/updaterService';
+import { CURRENT_VERSION, getCurrentVersion } from '../services/updaterService';
 
 interface AboutModalProps {
   isOpen: boolean;
@@ -15,6 +15,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({
   theme = 'dark',
 }) => {
   const isLight = theme === 'light';
+  const [version, setVersion] = React.useState<string>(CURRENT_VERSION);
+
+  useEffect(() => {
+    getCurrentVersion().then(setVersion);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -73,7 +78,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             ClassiTunes
           </h2>
           <p className={`text-xs font-mono font-medium mb-3.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            Version {CURRENT_VERSION}
+            Version {version}
           </p>
 
           {/* Copyright with Z Software Labs Logo */}
