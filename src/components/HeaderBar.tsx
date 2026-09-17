@@ -129,6 +129,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const progressPercent = activeDuration > 0 ? ((isDraggingSeek ? seekVal : currentTime) / activeDuration) * 100 : 0;
 
   const isMac = typeof window !== 'undefined' && (/Mac|iPod|iPhone|iPad/i.test(navigator.platform) || /Mac OS X/i.test(navigator.userAgent) || (window as any).electronAPI?.platform === 'darwin');
+  const isLinux = typeof window !== 'undefined' && (/Linux/i.test(navigator.platform) || /Linux/i.test(navigator.userAgent) || (window as any).electronAPI?.platform === 'linux');
   const isAppWindow = typeof window !== 'undefined' && (
     !!(window as any).__TAURI__ || 
     !!(window as any).__TAURI_INTERNALS__ || 
@@ -219,7 +220,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <div className="flex-1" />
 
         {/* Right: Windows-style controls fallback */}
-        {!isMac && isAppWindow && (
+        {!isMac && !isLinux && isAppWindow && (
           <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
             <button
               type="button"
