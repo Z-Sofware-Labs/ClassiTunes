@@ -58,14 +58,9 @@ jobs:
         run: npm ci
 
       - name: Build Tauri Frontend & Binary
-        uses: tauri-apps/tauri-action@v0
+        run: npm run tauri build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        with:
-          tagName: false
-          releaseDraft: false
-          prerelease: false
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
