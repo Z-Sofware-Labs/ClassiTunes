@@ -61,6 +61,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: false
           releaseDraft: false
@@ -72,4 +73,6 @@ jobs:
           name: classitunes-${{ matrix.os_name }}-binaries
           path: |
             src-tauri/target/release/bundle/**
+            src-tauri/target/release/classitunes
+            src-tauri/target/release/classitunes.exe
           if-no-files-found: warn
