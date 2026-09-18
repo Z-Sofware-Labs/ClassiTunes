@@ -245,21 +245,48 @@ export default function App() {
     };
   }, []);
 
-  const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() =>
-    typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-  );
+  const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => {
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+      if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+    }
+    return 'dark';
+  });
 
   useEffect(() => {
-    const media = window.matchMedia?.('(prefers-color-scheme: light)');
-    if (!media) return;
-    const updateSystemTheme = (event: MediaQueryListEvent) => setSystemTheme(event.matches ? 'light' : 'dark');
-    media.addEventListener?.('change', updateSystemTheme);
-    return () => media.removeEventListener?.('change', updateSystemTheme);
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    
+    const updateFromMedia = () => {
+      setSystemTheme(darkMedia.matches ? 'dark' : 'light');
+    };
+
+    updateFromMedia();
+    darkMedia.addEventListener?.('change', updateFromMedia);
+    return () => darkMedia.removeEventListener?.('change', updateFromMedia);
   }, []);
 
   const theme: 'dark' | 'light' = appSettings.defaultTheme === 'system'
     ? systemTheme
     : appSettings.defaultTheme;
+
+  // Sync document root classes, styling and meta theme-color with active theme
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    const isLight = theme === 'light';
+    if (isLight) {
+      root.classList.add('light');
+      root.classList.remove('dark');
+      root.style.backgroundColor = '#f8fafc';
+      root.style.colorScheme = 'light';
+    } else {
+      root.classList.add('dark');
+      root.classList.remove('light');
+      root.style.backgroundColor = '#121212';
+      root.style.colorScheme = 'dark';
+    }
+  }, [theme]);
 
   const handleSaveSettings = useCallback((nextSettings: AppSettings) => {
     setAppSettings(nextSettings);

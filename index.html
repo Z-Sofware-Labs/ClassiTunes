@@ -9,10 +9,20 @@
       (function() {
         try {
           var settings = localStorage.getItem('classitunes_settings');
-          var theme = (settings && JSON.parse(settings).defaultTheme) || localStorage.getItem('itunes_theme') || 'dark';
+          var pref = (settings && JSON.parse(settings).defaultTheme) || localStorage.getItem('itunes_theme') || 'system';
+          var isDark = pref === 'dark' || (pref === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (pref === 'system' && !window.matchMedia && !isDark) isDark = true;
+          var theme = isDark ? 'dark' : 'light';
           var bgColor = theme === 'light' ? '#f8fafc' : '#121212';
           var textColor = theme === 'light' ? '#1e293b' : '#e5e5e5';
           document.documentElement.style.backgroundColor = bgColor;
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.classList.remove('light');
+          } else {
+            document.documentElement.classList.add('light');
+            document.documentElement.classList.remove('dark');
+          }
           var style = document.createElement('style');
           style.innerHTML = 'html, body { background-color: ' + bgColor + ' !important; color: ' + textColor + ' !important; }';
           document.head.appendChild(style);

@@ -167,91 +167,95 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         ? 'bg-gradient-to-b from-[#e8edf5] via-[#cbd5e2] to-[#b0bed4] border-b border-[#707f96] shadow-md text-gray-950 font-medium' 
         : 'bg-[#212121] border-b border-black shadow-md text-gray-100'
     }`}>
-      {/* Top Titlebar Strip (Frameless Window Drag Region & Title) */}
-      <div 
-        data-tauri-drag-region
-        className={`w-full px-3 py-1 flex items-center justify-between text-xs border-b ${
-          isLight 
-            ? 'bg-[#2b2b2b] border-black text-white font-bold' 
-            : 'bg-[#181818] border-[#2a2a2a] text-gray-300'
-        }`}
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        {/* Left: Stoplight Window Controls & App Branding */}
-        <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          {isMac && isAppWindow && (
-            <div className="flex items-center gap-1.5 mr-1">
-              <button
-                type="button"
-                onClick={handleClose}
-                className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer"
-                title="Close"
-                id="titlebar-close-btn"
-              >
-                <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
-              </button>
-              <button
-                type="button"
-                onClick={handleMinimize}
-                className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123] hover:bg-[#ffcc00] flex items-center justify-center group cursor-pointer"
-                title="Minimize"
-                id="titlebar-minimize-btn"
-              >
-                <Minus className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
-              </button>
-              <button
-                type="button"
-                onClick={handleMaximize}
-                className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29] hover:bg-[#34c759] flex items-center justify-center group cursor-pointer"
-                title="Maximize / Zoom"
-                id="titlebar-maximize-btn"
-              >
-                <Square className="w-1.5 h-1.5 text-black/70 opacity-0 group-hover:opacity-100" />
-              </button>
+      {/* Top Titlebar Strip (Frameless Window Drag Region & Title) - Hidden on Linux for pure native KDE/system window titlebar */}
+      {!isLinux && (
+        <>
+          <div 
+            data-tauri-drag-region
+            className={`w-full px-3 py-1 flex items-center justify-between text-xs border-b ${
+              isLight 
+                ? 'bg-[#2b2b2b] border-black text-white font-bold' 
+                : 'bg-[#181818] border-[#2a2a2a] text-gray-300'
+            }`}
+            style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+          >
+            {/* Left: Stoplight Window Controls & App Branding */}
+            <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+              {isMac && isAppWindow && (
+                <div className="flex items-center gap-1.5 mr-1">
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer"
+                    title="Close"
+                    id="titlebar-close-btn"
+                  >
+                    <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleMinimize}
+                    className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123] hover:bg-[#ffcc00] flex items-center justify-center group cursor-pointer"
+                    title="Minimize"
+                    id="titlebar-minimize-btn"
+                  >
+                    <Minus className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleMaximize}
+                    className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29] hover:bg-[#34c759] flex items-center justify-center group cursor-pointer"
+                    title="Maximize / Zoom"
+                    id="titlebar-maximize-btn"
+                  >
+                    <Square className="w-1.5 h-1.5 text-black/70 opacity-0 group-hover:opacity-100" />
+                  </button>
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 font-bold tracking-tight text-[11px] text-white dark:text-gray-100">
+                <Disc className="w-4 h-4 text-cyan-400 dark:text-cyan-400" />
+                <span>ClassiTunes</span>
+              </div>
             </div>
-          )}
-          <div className="flex items-center gap-1.5 font-bold tracking-tight text-[11px] text-white dark:text-gray-100">
-            <Disc className="w-4 h-4 text-cyan-400 dark:text-cyan-400" />
-            <span>ClassiTunes</span>
+
+            {/* Center: Blank Spacer */}
+            <div className="flex-1" />
+
+            {/* Right: Windows-style controls fallback */}
+            {!isMac && isAppWindow && (
+              <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                <button
+                  type="button"
+                  onClick={handleMinimize}
+                  className={`p-1 rounded hover:bg-white/10 dark:hover:bg-white/10 ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
+                  title="Minimize"
+                >
+                  <Minus className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleMaximize}
+                  className={`p-1 rounded hover:bg-white/10 dark:hover:bg-white/10 ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
+                  title="Maximize"
+                >
+                  <Square className="w-2.5 h-2.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className={`p-1 rounded hover:bg-red-500 hover:text-white ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
+                  title="Close"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
           </div>
-        </div>
 
-        {/* Center: Blank Spacer */}
-        <div className="flex-1" />
-
-        {/* Right: Windows-style controls fallback */}
-        {!isMac && !isLinux && isAppWindow && (
-          <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            <button
-              type="button"
-              onClick={handleMinimize}
-              className={`p-1 rounded hover:bg-white/10 dark:hover:bg-white/10 ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
-              title="Minimize"
-            >
-              <Minus className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={handleMaximize}
-              className={`p-1 rounded hover:bg-white/10 dark:hover:bg-white/10 ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
-              title="Maximize"
-            >
-              <Square className="w-2.5 h-2.5" />
-            </button>
-            <button
-              type="button"
-              onClick={handleClose}
-              className={`p-1 rounded hover:bg-red-500 hover:text-white ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
-              title="Close"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Top Brushed Highlight line */}
-      <div className={`h-[1px] w-full ${isLight ? 'bg-white/80' : 'bg-white/10'}`} />
+          {/* Top Brushed Highlight line */}
+          <div className={`h-[1px] w-full ${isLight ? 'bg-white/80' : 'bg-white/10'}`} />
+        </>
+      )}
 
       <div 
         className="px-3 py-2 grid grid-cols-[auto_1fr_auto] md:grid-cols-[1fr_auto_1fr] items-center gap-2 sm:gap-3 w-full"
