@@ -822,8 +822,14 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
         // Prevent WebKitGTK DMA-BUF rendering conflicts during window resize under Wayland/X11
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        // Also ensure GStreamer uses the system plugin registry
-        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0");
+        // Ensure GStreamer discovers plugins on Debian/Ubuntu/Mint (multiarch), Fedora/RHEL, and generic Linux
+        let current_gst_path = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0").unwrap_or_default();
+        let standard_paths = "/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0";
+        if current_gst_path.is_empty() {
+            std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", standard_paths);
+        } else {
+            std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", format!("{standard_paths}:{current_gst_path}"));
+        }
         start_audio_stream_server_internal();
     }
 

@@ -333,7 +333,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* Center Section: LCD Display (True Dead Center) */}
         <div className="flex items-center justify-center w-full min-w-0 sm:min-w-[340px] md:min-w-[440px] lg:min-w-[512px] max-w-[640px] mx-auto">
-          <div className={`relative border rounded-md px-2.5 py-0.5 text-center overflow-hidden transition-colors w-full ${isLight
+          <div className={`relative border rounded-md px-2.5 pt-1.5 pb-1 text-center overflow-hidden transition-colors w-full ${isLight
             ? 'bg-gradient-to-b from-white via-[#f0f4fa] to-[#dbe5f2] border-[#8a97a8] shadow-[inset_0_1px_3px_rgba(0,0,0,0.15)] text-gray-900'
             : 'bg-gradient-to-b from-[#2a2a2a] to-[#1a1a1a] border-[#333] shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)] text-gray-100'
             }`}>
@@ -344,7 +344,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             {currentTrack ? (
               <div className="flex flex-col items-center relative w-full">
                 {/* Row 1: Title (matches song list Title column: 11px font-medium) */}
-                <div className="w-full text-center px-4 leading-none pb-[1px]">
+                <div className="w-full text-center px-4 leading-none pt-[1px] pb-[1px]">
                   <MarqueeText
                     text={currentTrack.title}
                     className={`text-[11.5px] font-medium tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
