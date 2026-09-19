@@ -226,13 +226,17 @@ try {
   }
 } catch (e) {}
 
+let isDirEnsured = false;
+
 export async function logToFile(message: string): Promise<void> {
   if (typeof window === 'undefined') return;
   const timestamp = new Date().toISOString();
   const logLine = `[${timestamp}] ${message}`;
   
+  // Always log to console as well so running from terminal in Linux/macOS/Windows always shows logs
+  console.log(`[ClassiTunes] ${logLine}`);
+
   if (!isTauri()) {
-    console.log(`[LOG] ${logLine}`);
     webLogs.push(logLine);
     if (webLogs.length > 2000) webLogs.shift();
     try {
@@ -242,7 +246,16 @@ export async function logToFile(message: string): Promise<void> {
   }
 
   try {
-    const { writeTextFile, BaseDirectory } = await import('@tauri-apps/plugin-fs');
+    const { writeTextFile, mkdir, BaseDirectory } = await import('@tauri-apps/plugin-fs');
+    if (!isDirEnsured) {
+      try {
+        await mkdir('', { baseDir: BaseDirectory.AppLocalData, recursive: true });
+        isDirEnsured = true;
+      } catch (mkdirErr) {
+        // May already exist or will fail on write
+      }
+    }
+
     const logMessage = `${logLine}\n`;
 
     await writeTextFile('app_log.txt', logMessage, {
@@ -511,15 +524,12 @@ export async function scanTauriDirectory(
               ignoredFolderNames.includes(nameLower);
             
             if (shouldIgnore) {
-              await logToFile(`Skipping ignored folder: ${fullPath}`);
               continue;
             }
 
             try {
               await traverse(fullPath);
             } catch (innerErr: any) {
-              const errMsg = innerErr instanceof Error ? innerErr.message : String(innerErr);
-              await logToFile(`Error reading folder: ${fullPath} - ${errMsg}`);
               console.warn(`Skipping subdirectory due to read error: ${fullPath}`, innerErr);
             }
           } else if (entry.isFile) {
@@ -690,6 +700,17 @@ export async function writeTauriMusicMetadata(filePath: string, tags: Record<str
   } catch (error) {
     console.error('Could not write music metadata:', error);
     throw error;
+  }
+}
+
+export async function readTauriMusicMetadata(filePath: string): Promise<any | null> {
+  if (!filePath || !isTauri()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke('read_music_metadata', { filePath });
+  } catch (error) {
+    console.warn(`Native metadata reading failed for ${filePath}:`, error);
+    return null;
   }
 }
 

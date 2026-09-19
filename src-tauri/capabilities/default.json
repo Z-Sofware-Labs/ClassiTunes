@@ -52,6 +52,10 @@
       "identifier": "fs:allow-copy-file",
       "allow": [{ "path": "**" }]
     },
+    "fs:allow-app-read-recursive",
+    "fs:allow-app-write-recursive",
+    "fs:allow-applocaldata-read-recursive",
+    "fs:allow-applocaldata-write-recursive",
     "fs:allow-home-read-recursive",
     "fs:allow-home-meta-recursive",
     "fs:allow-audio-read-recursive",

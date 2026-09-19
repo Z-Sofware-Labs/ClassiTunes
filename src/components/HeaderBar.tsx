@@ -347,7 +347,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                 <div className="w-full text-center px-4 leading-none pb-[1px]">
                   <MarqueeText
                     text={currentTrack.title}
-                    className={`text-[11px] font-medium tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
+                    className={`text-[11.5px] font-medium tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
                   />
                 </div>
 

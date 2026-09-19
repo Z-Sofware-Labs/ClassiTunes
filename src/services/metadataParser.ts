@@ -4,6 +4,7 @@ import jsmediatags from 'jsmediatags/dist/jsmediatags.min.js';
 import { Track } from '../types';
 import { generateAlbumArtwork } from '../utils/artworkGenerator';
 import { saveMediaFile, getMediaFile, dataURLtoBlob } from './mediaStorage';
+import { readTauriMusicMetadata } from '../utils/tauriWindow';
 
 function bufferToBase64(buffer: ArrayBuffer | Uint8Array | number[], mimeType: string): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -734,6 +735,53 @@ export async function parseAudioFile(file: File): Promise<Track> {
       objectUrl = convertFileSrc(filePath);
     } catch (e) {
       objectUrl = URL.createObjectURL(file);
+    }
+
+    // Fast-path for Tauri: Extract metadata via native Rust command without loading blobs into WebKit memory
+    try {
+      const nativeMeta = await readTauriMusicMetadata(filePath);
+      if (nativeMeta) {
+        const cleanFileName = (file.name || filePath.split(/[/\\]/).pop() || 'Unknown Track').replace(/\.[^/.]+$/, '').trim();
+        const finalTitle = nativeMeta.title?.trim() || cleanFileName;
+        const finalArtist = nativeMeta.artist?.trim() || 'Unknown Artist';
+        const finalAlbum = nativeMeta.album?.trim() || 'Unknown Album';
+        const finalCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
+        const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        return {
+          id: trackId,
+          title: finalTitle,
+          artist: finalArtist,
+          albumArtist: nativeMeta.albumArtist?.trim() || undefined,
+          album: finalAlbum,
+          composer: nativeMeta.composer?.trim() || undefined,
+          publisher: nativeMeta.publisher?.trim() || undefined,
+          lyrics: nativeMeta.lyrics?.trim() || undefined,
+          genre: nativeMeta.genre?.trim() || 'Uncategorized',
+          duration: nativeMeta.duration ? Math.round(nativeMeta.duration * 100) / 100 : 0,
+          year: nativeMeta.year,
+          trackNumber: nativeMeta.trackNumber,
+          trackTotal: nativeMeta.trackTotal,
+          discNumber: nativeMeta.discNumber,
+          discTotal: nativeMeta.discTotal,
+          bpm: nativeMeta.bpm,
+          mediaKind: nativeMeta.mediaKind || 'Music',
+          comments: nativeMeta.comments?.trim() || undefined,
+          rating: 0,
+          playCount: 0,
+          coverUrl: finalCoverUrl,
+          audioUrl: objectUrl,
+          file: undefined, // Do not store memory Blob for local Tauri files
+          format: nativeMeta.format || getReadableAudioFormat(file),
+          bitrate: nativeMeta.bitrate || 320,
+          sampleRate: nativeMeta.sampleRate || 44100,
+          sizeBytes: nativeMeta.sizeBytes || file.size,
+          dateAdded: new Date().toISOString(),
+          filePath,
+        };
+      }
+    } catch (nativeErr) {
+      console.warn(`Native metadata probe failed for ${filePath}, falling back to browser parser:`, nativeErr);
     }
   } else {
     objectUrl = URL.createObjectURL(file);

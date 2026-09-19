@@ -1195,15 +1195,10 @@ export default function App() {
               let path = originalPath;
               const shouldOrganize = isTauri() && appSettings.organizeMusicFolders && !!appSettings.defaultMusicPath;
               if (shouldOrganize) {
-                const metadataUrl = convertFileSrc ? convertFileSrc(originalPath) : originalPath;
-                const metadataRes = await fetch(metadataUrl);
-                if (!metadataRes.ok) throw new Error(`Fetch failed with status ${metadataRes.status}`);
-                const metadataBlob = await metadataRes.blob();
-                const metadataExt = filename.split('.').pop()?.toLowerCase() || '';
-                const metadataMime = metadataExt === 'm4a' || metadataExt === 'aac' || metadataExt === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
-                const metadataFile = new File([metadataBlob], filename, { type: metadataMime });
-                Object.defineProperty(metadataFile, 'path', { value: originalPath, writable: true, configurable: true, enumerable: true });
-                const metadataTrack = await parseAudioFile(metadataFile);
+                // Read metadata using lightweight File with path property (never fetch full blob into RAM)
+                const dummyFile = new File([], filename);
+                Object.defineProperty(dummyFile, 'path', { value: originalPath, writable: true, configurable: true, enumerable: true });
+                const metadataTrack = await parseAudioFile(dummyFile);
                 path = await organizeTauriMusicFile(
                   originalPath,
                   appSettings.defaultMusicPath,
@@ -1214,19 +1209,8 @@ export default function App() {
                 );
               }
 
-              const assetUrl = convertFileSrc ? convertFileSrc(path) : path;
-              const res = await fetch(assetUrl);
-              
-              if (!res.ok) {
-                throw new Error(`Fetch failed with status ${res.status}`);
-              }
-              
-              const blob = await res.blob();
-              const ext = filename.split('.').pop()?.toLowerCase() || '';
-              const mimeType = ext === 'm4a' || ext === 'aac' || ext === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
-              const file = new File([blob], filename, { type: mimeType });
-              
-              // Attach the path property so metadataParser knows it's a local file
+              // Create lightweight File descriptor referencing the filesystem path
+              const file = new File([], filename);
               Object.defineProperty(file, 'path', {
                 value: path,
                 writable: true,

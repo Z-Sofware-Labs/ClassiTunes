@@ -274,6 +274,226 @@ fn write_mp4_tags(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> 
     Ok(true)
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadMetadataResult {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub composer: Option<String>,
+    pub publisher: Option<String>,
+    pub lyrics: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i32>,
+    pub track_number: Option<i32>,
+    pub track_total: Option<i32>,
+    pub disc_number: Option<i32>,
+    pub disc_total: Option<i32>,
+    pub bpm: Option<i32>,
+    pub comments: Option<String>,
+    pub media_kind: Option<String>,
+    pub cover_url: Option<String>,
+    pub duration: Option<f64>,
+    pub bitrate: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub format: Option<String>,
+    pub size_bytes: Option<u64>,
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0xf) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> {
+    use id3::TagLike;
+    use std::path::Path;
+
+    let path = Path::new(&file_path);
+    if !path.is_file() {
+        return Err(format!("File does not exist: {file_path}"));
+    }
+
+    let file_meta = std::fs::metadata(path).ok();
+    let size_bytes = file_meta.map(|m| m.len());
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+
+    let mut res = ReadMetadataResult {
+        title: None,
+        artist: None,
+        album_artist: None,
+        album: None,
+        composer: None,
+        publisher: None,
+        lyrics: None,
+        genre: None,
+        year: None,
+        track_number: None,
+        track_total: None,
+        disc_number: None,
+        disc_total: None,
+        bpm: None,
+        comments: None,
+        media_kind: Some("Music".to_string()),
+        cover_url: None,
+        duration: None,
+        bitrate: None,
+        sample_rate: None,
+        format: match ext.as_str() {
+            "mp3" => Some("MPEG audio file".to_string()),
+            "m4a" | "aac" | "alac" => Some("AAC audio file".to_string()),
+            "flac" => Some("FLAC audio file".to_string()),
+            "wav" => Some("WAV audio file".to_string()),
+            "ogg" => Some("Ogg Vorbis audio file".to_string()),
+            _ => None,
+        },
+        size_bytes,
+    };
+
+    // 1. Try reading MP4/M4A metadata if applicable
+    let is_mp4 = ext == "m4a" || ext == "mp4" || ext == "m4b" || ext == "m4p" || ext == "m4r";
+    if is_mp4 {
+        if let Ok(tag) = mp4ameta::Tag::read_from_path(&file_path) {
+            res.title = tag.title().map(|s| s.to_string());
+            res.artist = tag.artist().map(|s| s.to_string());
+            res.album_artist = tag.album_artist().map(|s| s.to_string());
+            res.album = tag.album().map(|s| s.to_string());
+            res.composer = tag.composer().map(|s| s.to_string());
+            res.genre = tag.genre().map(|s| s.to_string());
+            if let Some(yr) = tag.year() {
+                res.year = yr.parse::<i32>().ok();
+            }
+            let (trkn_no, trkn_of) = tag.track();
+            res.track_number = trkn_no.map(|t| t as i32);
+            res.track_total = trkn_of.map(|t| t as i32);
+
+            let (disc_no, disc_of) = tag.disc();
+            res.disc_number = disc_no.map(|d| d as i32);
+            res.disc_total = disc_of.map(|d| d as i32);
+
+            if let Some(bpm) = tag.bpm() {
+                res.bpm = Some(bpm as i32);
+            }
+            if let Some(cmt) = tag.comment() {
+                res.comments = Some(cmt.to_string());
+            }
+            if let Some(art) = tag.artwork() {
+                let mime = match art.fmt {
+                    mp4ameta::ImgFmt::Png => "image/png",
+                    mp4ameta::ImgFmt::Jpeg => "image/jpeg",
+                    _ => "image/jpeg",
+                };
+                let b64 = encode_base64(art.data);
+                res.cover_url = Some(format!("data:{mime};base64,{b64}"));
+            }
+            let dur = tag.duration();
+            if dur.as_secs_f64() > 0.0 {
+                res.duration = Some(dur.as_secs_f64());
+            }
+        }
+    }
+
+    // 2. Try ID3 tag (for MP3, FLAC with ID3, AAC, WAV)
+    if !is_mp4 || res.title.is_none() {
+        if let Ok(tag) = id3::Tag::read_from_path(&file_path) {
+            if res.title.is_none() { res.title = tag.title().map(|s| s.to_string()); }
+            if res.artist.is_none() { res.artist = tag.artist().map(|s| s.to_string()); }
+            if res.album_artist.is_none() { res.album_artist = tag.album_artist().map(|s| s.to_string()); }
+            if res.album.is_none() { res.album = tag.album().map(|s| s.to_string()); }
+            if res.genre.is_none() { res.genre = tag.genre().map(|s| s.to_string()); }
+            if res.year.is_none() { res.year = tag.year(); }
+            if res.track_number.is_none() { res.track_number = tag.track().map(|t| t as i32); }
+            if res.track_total.is_none() { res.track_total = tag.total_tracks().map(|t| t as i32); }
+            if res.disc_number.is_none() { res.disc_number = tag.disc().map(|d| d as i32); }
+            if res.disc_total.is_none() { res.disc_total = tag.total_discs().map(|d| d as i32); }
+            if res.comments.is_none() {
+                res.comments = tag.comments().next().map(|c| c.text.clone());
+            }
+            if res.cover_url.is_none() {
+                if let Some(pic) = tag.pictures().next() {
+                    let mime = if pic.mime_type.is_empty() { "image/jpeg" } else { &pic.mime_type };
+                    let b64 = encode_base64(&pic.data);
+                    res.cover_url = Some(format!("data:{mime};base64,{b64}"));
+                }
+            }
+            // ID3 TLEN tag for duration
+            if res.duration.is_none() {
+                if let Some(dur_frame) = tag.get("TLEN").and_then(|f| f.content().text()) {
+                    if let Ok(ms) = dur_frame.parse::<f64>() {
+                        if ms > 0.0 {
+                            res.duration = Some(ms / 1000.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Audio file probe via Lofty (supports MP3, M4A, FLAC, WAV, OGG, etc. for accurate duration and properties)
+    if res.duration.is_none() || res.sample_rate.is_none() {
+        use lofty::file::{AudioFile, TaggedFileExt};
+        use lofty::probe::Probe;
+        use lofty::tag::Accessor;
+
+        if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+            let props = tagged_file.properties();
+            if res.duration.is_none() {
+                let dur = props.duration().as_secs_f64();
+                if dur > 0.0 {
+                    res.duration = Some(dur);
+                }
+            }
+            if res.sample_rate.is_none() {
+                res.sample_rate = props.sample_rate();
+            }
+            if res.bitrate.is_none() {
+                res.bitrate = props.audio_bitrate();
+            }
+
+            // Fallback tags if still missing
+            if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
+                if res.title.is_none() { res.title = tag.title().as_deref().map(|s| s.to_string()); }
+                if res.artist.is_none() { res.artist = tag.artist().as_deref().map(|s| s.to_string()); }
+                if res.album.is_none() { res.album = tag.album().as_deref().map(|s| s.to_string()); }
+                if res.genre.is_none() { res.genre = tag.genre().as_deref().map(|s| s.to_string()); }
+                if res.track_number.is_none() { res.track_number = tag.track().map(|t| t as i32); }
+                if res.track_total.is_none() { res.track_total = tag.track_total().map(|t| t as i32); }
+                if res.disc_number.is_none() { res.disc_number = tag.disk().map(|d| d as i32); }
+                if res.disc_total.is_none() { res.disc_total = tag.disk_total().map(|d| d as i32); }
+                if res.cover_url.is_none() {
+                    if let Some(pic) = tag.pictures().first() {
+                        let mime_str = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
+                        let b64 = encode_base64(pic.data());
+                        res.cover_url = Some(format!("data:{mime_str};base64,{b64}"));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(res)
+}
+
 #[tauri::command]
 fn get_os() -> &'static str {
     #[cfg(target_os = "linux")]
@@ -627,6 +847,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_os,
             get_audio_stream_port,
+            read_music_metadata,
             write_id3_tags,
             write_music_metadata,
             organize_music_file,
