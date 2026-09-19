@@ -820,8 +820,15 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     {
         std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
-        // Prevent WebKitGTK DMA-BUF rendering conflicts during window resize under Wayland/X11
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        // Only disable DMA-BUF renderer if explicitly requested or under software Mesa drivers;
+        // completely forcing WEBKIT_DISABLE_DMABUF_RENDERER=1 disables GPU compositing and causes sluggish software rendering on Linux Mint.
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            // Check if user has software rendering or requested it; otherwise allow hardware accelerated compositing
+            // for smooth 60fps scrolling and responsive window controls
+            if std::env::var("LIBGL_ALWAYS_SOFTWARE").as_deref() == Ok("1") {
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            }
+        }
         // Ensure GStreamer discovers plugins on Debian/Ubuntu/Mint (multiarch), Fedora/RHEL, and generic Linux
         let current_gst_path = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0").unwrap_or_default();
         let standard_paths = "/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0";

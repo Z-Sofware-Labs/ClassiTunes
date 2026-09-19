@@ -748,6 +748,16 @@ export async function parseAudioFile(file: File): Promise<Track> {
         const finalCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
         const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+        // Persist cover to IndexedDB cache so it rehydrates across restarts
+        if (finalCoverUrl && finalCoverUrl.startsWith('data:')) {
+          const blob = dataURLtoBlob(finalCoverUrl);
+          if (blob) {
+            try {
+              await saveMediaFile(`cover_${trackId}`, blob);
+            } catch (e) {}
+          }
+        }
+
         return {
           id: trackId,
           title: finalTitle,
@@ -874,7 +884,8 @@ export async function parseAudioFile(file: File): Promise<Track> {
     if (!coverUrl && common.picture && common.picture.length > 0) {
       const pic = common.picture[0];
       try {
-        const blob = new Blob([pic.data], { type: pic.format || 'image/jpeg' });
+        const u8 = new Uint8Array(pic.data);
+        const blob = new Blob([u8 as BlobPart], { type: pic.format || 'image/jpeg' });
         coverUrl = URL.createObjectURL(blob);
       } catch (e) {
         coverUrl = bufferToBase64(pic.data, pic.format);
@@ -1185,7 +1196,8 @@ export async function extractID3TagsFromFile(file: File | Blob): Promise<Extract
     if (common.picture && common.picture.length > 0 && !result.coverUrl) {
       const pic = common.picture[0];
       try {
-        const blob = new Blob([pic.data], { type: pic.format || 'image/jpeg' });
+        const u8 = new Uint8Array(pic.data);
+        const blob = new Blob([u8 as BlobPart], { type: pic.format || 'image/jpeg' });
         result.coverUrl = URL.createObjectURL(blob);
       } catch (e) {
         result.coverUrl = bufferToBase64(pic.data, pic.format);

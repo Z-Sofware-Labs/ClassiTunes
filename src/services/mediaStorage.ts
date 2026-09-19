@@ -178,6 +178,21 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
       saveMediaFile(`cover_${track.id}`, b);
       updatedTrack.coverUrl = URL.createObjectURL(b);
     }
+  } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauri && track.filePath) {
+    try {
+      const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
+      const meta = await readTauriMusicMetadata(track.filePath);
+      if (meta?.coverUrl) {
+        updatedTrack.coverUrl = meta.coverUrl;
+        if (meta.coverUrl.startsWith('data:')) {
+          const b = dataURLtoBlob(meta.coverUrl);
+          if (b) {
+            saveMediaFile(`cover_${track.id}`, b);
+            updatedTrack.coverUrl = URL.createObjectURL(b);
+          }
+        }
+      }
+    } catch (e) {}
   }
 
   return updatedTrack;
