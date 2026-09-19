@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, 
+import {
+  Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Search, List, LayoutGrid, Sliders, Shuffle, Repeat, Repeat1, Star,
   Sun, Moon, Minus, Square, X, Disc
 } from 'lucide-react';
@@ -81,10 +81,20 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
   useEffect(() => {
     if (currentTrack) {
+      // Immediately reset position to 0 to prevent the previous song's time offset
+      // from temporarily rendering against the new song's duration.
+      setCurrentTime(0);
+      setSeekVal(0);
+      setIsDraggingSeek(false);
       const engDur = audioEngine.getDuration();
       setDuration(engDur && isFinite(engDur) && engDur > 0 ? engDur : (currentTrack.duration || 0));
+    } else {
+      setCurrentTime(0);
+      setDuration(0);
+      setSeekVal(0);
+      setIsDraggingSeek(false);
     }
-  }, [currentTrack]);
+  }, [currentTrack?.id]);
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
@@ -131,9 +141,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const isMac = typeof window !== 'undefined' && (/Mac|iPod|iPhone|iPad/i.test(navigator.platform) || /Mac OS X/i.test(navigator.userAgent) || (window as any).electronAPI?.platform === 'darwin');
   const isLinux = typeof window !== 'undefined' && (/Linux/i.test(navigator.platform) || /Linux/i.test(navigator.userAgent) || (window as any).electronAPI?.platform === 'linux');
   const isAppWindow = typeof window !== 'undefined' && (
-    !!(window as any).__TAURI__ || 
-    !!(window as any).__TAURI_INTERNALS__ || 
-    !!(window as any).__TAURI_METADATA__ || 
+    !!(window as any).__TAURI__ ||
+    !!(window as any).__TAURI_INTERNALS__ ||
+    !!(window as any).__TAURI_METADATA__ ||
     !!(window as any).electronAPI
   );
 
@@ -145,9 +155,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     const handled = await tauriMaximize();
     if (!handled) {
       if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {});
+        document.documentElement.requestFullscreen().catch(() => { });
       } else {
-        document.exitFullscreen().catch(() => {});
+        document.exitFullscreen().catch(() => { });
       }
     }
   };
@@ -162,21 +172,19 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   };
 
   return (
-    <header className={`relative select-none z-30 transition-colors duration-200 ${
-      isLight 
-        ? 'bg-gradient-to-b from-[#e8edf5] via-[#cbd5e2] to-[#b0bed4] border-b border-[#707f96] shadow-md text-gray-950 font-medium' 
-        : 'bg-[#212121] border-b border-black shadow-md text-gray-100'
-    }`}>
+    <header className={`relative select-none z-30 transition-colors duration-200 ${isLight
+      ? 'bg-gradient-to-b from-[#e8edf5] via-[#cbd5e2] to-[#b0bed4] border-b border-[#707f96] shadow-md text-gray-950 font-medium'
+      : 'bg-[#212121] border-b border-black shadow-md text-gray-100'
+      }`}>
       {/* Top Titlebar Strip (Frameless Window Drag Region & Title) - Hidden on Linux for pure native KDE/system window titlebar */}
       {!isLinux && (
         <>
-          <div 
+          <div
             data-tauri-drag-region
-            className={`w-full px-3 py-1 flex items-center justify-between text-xs border-b ${
-              isLight 
-                ? 'bg-[#2b2b2b] border-black text-white font-bold' 
-                : 'bg-[#181818] border-[#2a2a2a] text-gray-300'
-            }`}
+            className={`w-full px-3 py-1 flex items-center justify-between text-xs border-b ${isLight
+              ? 'bg-[#2b2b2b] border-black text-white font-bold'
+              : 'bg-[#181818] border-[#2a2a2a] text-gray-300'
+              }`}
             style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
           >
             {/* Left: Stoplight Window Controls & App Branding */}
@@ -257,25 +265,23 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </>
       )}
 
-      <div 
+      <div
         className="px-3 py-2 grid grid-cols-[auto_1fr_auto] md:grid-cols-[1fr_auto_1fr] items-center gap-2 sm:gap-3 w-full"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         {/* Left Section: Transport & Playback Controls (Equal Width Column) */}
         <div className="flex items-center justify-start gap-2 sm:gap-3 min-w-0">
           {/* Transport Buttons */}
-          <div className={`flex items-center p-1 rounded-full border shadow-inner shrink-0 ${
-            isLight 
-              ? 'bg-gradient-to-b from-white to-[#d6dc8f/20] bg-white/60 border-[#9fa8b8]' 
-              : 'bg-[#1a1a1a] border-[#333]'
-          }`}>
+          <div className={`flex items-center p-1 rounded-full border shadow-inner shrink-0 ${isLight
+            ? 'bg-gradient-to-b from-white to-[#d6dc8f/20] bg-white/60 border-[#9fa8b8]'
+            : 'bg-[#1a1a1a] border-[#333]'
+            }`}>
             <button
               onClick={onPrevTrack}
-              className={`p-1.5 rounded-full transition-colors ${
-                isLight 
-                  ? 'hover:bg-black/10 active:bg-black/20 text-gray-700 hover:text-black' 
-                  : 'hover:bg-white/10 active:bg-white/20 text-gray-300 hover:text-white'
-              }`}
+              className={`p-1.5 rounded-full transition-colors ${isLight
+                ? 'hover:bg-black/10 active:bg-black/20 text-gray-700 hover:text-black'
+                : 'hover:bg-white/10 active:bg-white/20 text-gray-300 hover:text-white'
+                }`}
               title="Previous Track"
               id="prev-track-btn"
             >
@@ -283,11 +289,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             </button>
             <button
               onClick={onTogglePlay}
-              className={`p-2 mx-0.5 rounded-full shadow-lg transition-all ${
-                isLight
-                  ? 'bg-gradient-to-b from-[#3b82f6] to-[#1d4ed8] text-white border border-[#1d4ed8] hover:from-[#4087fa] hover:to-[#2255e0]'
-                  : 'bg-[#2a2a2a] hover:bg-[#383838] active:bg-[#444] text-white border border-[#444]'
-              }`}
+              className={`p-2 mx-0.5 rounded-full shadow-lg transition-all ${isLight
+                ? 'bg-gradient-to-b from-[#3b82f6] to-[#1d4ed8] text-white border border-[#1d4ed8] hover:from-[#4087fa] hover:to-[#2255e0]'
+                : 'bg-[#2a2a2a] hover:bg-[#383838] active:bg-[#444] text-white border border-[#444]'
+                }`}
               title={isPlaying ? 'Pause' : 'Play'}
               id="play-pause-btn"
             >
@@ -295,11 +300,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             </button>
             <button
               onClick={onNextTrack}
-              className={`p-1.5 rounded-full transition-colors ${
-                isLight 
-                  ? 'hover:bg-black/10 active:bg-black/20 text-gray-700 hover:text-black' 
-                  : 'hover:bg-white/10 active:bg-white/20 text-gray-300 hover:text-white'
-              }`}
+              className={`p-1.5 rounded-full transition-colors ${isLight
+                ? 'hover:bg-black/10 active:bg-black/20 text-gray-700 hover:text-black'
+                : 'hover:bg-white/10 active:bg-white/20 text-gray-300 hover:text-white'
+                }`}
               title="Next Track"
               id="next-track-btn"
             >
@@ -319,9 +323,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               step="0.01"
               value={isMuted ? 0 : volume}
               onChange={handleVolumeChange}
-              className={`w-12 sm:w-16 h-1 rounded-lg appearance-none cursor-pointer ${
-                isLight ? 'bg-[#adb8c8] accent-blue-600' : 'bg-[#333] accent-indigo-500'
-              }`}
+              className={`w-12 sm:w-16 h-1 rounded-lg appearance-none cursor-pointer ${isLight ? 'bg-[#adb8c8] accent-blue-600' : 'bg-[#333] accent-indigo-500'
+                }`}
               title="Volume"
               id="volume-slider"
             />
@@ -330,52 +333,57 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* Center Section: LCD Display (True Dead Center) */}
         <div className="flex items-center justify-center w-full min-w-0 sm:min-w-[340px] md:min-w-[440px] lg:min-w-[512px] max-w-[640px] mx-auto">
-          <div className={`relative border rounded-md px-2.5 py-1 text-center overflow-hidden transition-colors w-full ${
-            isLight
-              ? 'bg-gradient-to-b from-white via-[#f0f4fa] to-[#dbe5f2] border-[#8a97a8] shadow-[inset_0_1px_3px_rgba(0,0,0,0.15)] text-gray-900'
-              : 'bg-gradient-to-b from-[#2a2a2a] to-[#1a1a1a] border-[#333] shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)] text-gray-100'
-          }`}>
+          <div className={`relative border rounded-md px-2.5 py-0.5 text-center overflow-hidden transition-colors w-full ${isLight
+            ? 'bg-gradient-to-b from-white via-[#f0f4fa] to-[#dbe5f2] border-[#8a97a8] shadow-[inset_0_1px_3px_rgba(0,0,0,0.15)] text-gray-900'
+            : 'bg-gradient-to-b from-[#2a2a2a] to-[#1a1a1a] border-[#333] shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)] text-gray-100'
+            }`}>
             {/* Gloss reflection overlay */}
-            <div className={`absolute top-0 left-0 right-0 h-1/2 pointer-events-none ${
-              isLight ? 'bg-gradient-to-b from-white/60 to-transparent' : 'bg-gradient-to-b from-white/5 to-transparent'
-            }`} />
+            <div className={`absolute top-0 left-0 right-0 h-1/2 pointer-events-none ${isLight ? 'bg-gradient-to-b from-white/60 to-transparent' : 'bg-gradient-to-b from-white/5 to-transparent'
+              }`} />
 
             {currentTrack ? (
-              <div className="flex flex-col items-center relative">
-                {/* Absolute rating stars in top right so they don't block/shift the centered text */}
-                <div className="absolute top-0 right-1 flex items-center gap-0.5" title="Song Rating">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <Star
-                      key={star}
-                      className={`w-2 h-2 cursor-pointer ${
-                        star <= currentTrack.rating ? 'fill-amber-400 text-amber-400' : isLight ? 'text-gray-400/60' : 'text-gray-600'
-                      }`}
-                      onClick={() => onUpdateRating(currentTrack.id, star === currentTrack.rating ? 0 : star)}
-                    />
-                  ))}
-                </div>
-
-                {/* Row 1: Title — Album */}
-                <div className="w-full text-center px-12 leading-none">
-                  <MarqueeText 
-                    text={`${currentTrack.title} ${currentTrack.album ? `— ${currentTrack.album}` : ''}`}
-                    className={`text-[11px] font-bold tracking-tight block ${isLight ? 'text-gray-900' : 'text-white'}`}
+              <div className="flex flex-col items-center relative w-full">
+                {/* Row 1: Title (matches song list Title column: 11px font-medium) */}
+                <div className="w-full text-center px-4 leading-none pb-[1px]">
+                  <MarqueeText
+                    text={currentTrack.title}
+                    className={`text-[11px] font-medium tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
                   />
                 </div>
 
-                {/* Row 2: Artist */}
-                <div className="w-full text-center mt-0.5 leading-none">
-                  <span className={`text-[10px] tracking-tight truncate block ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
-                    {currentTrack.artist}
-                  </span>
+                {/* Row 2: Artist — Album with Marquee support for long text (11px font-normal) */}
+                <div className="w-full text-center px-4 leading-none pb-[1px]">
+                  <MarqueeText
+                    text={`${currentTrack.artist}${currentTrack.album ? ` — ${currentTrack.album}` : ''}`}
+                    className={`text-[11px] font-normal tracking-normal block leading-none ${isLight ? 'text-gray-700' : 'text-gray-300'}`}
+                  />
                 </div>
 
-                {/* Row 3: LCD Scrubber & Times (centered) */}
-                <div className="w-full flex items-center gap-1.5 mt-1 px-1">
-                  <span className={`text-[9px] font-mono min-w-[28px] text-left leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
+                {/* Row 3: LCD Scrubber & Times (typeface matches 2nd row: system sans, 12px font-normal, tabular-nums, normal spacing) */}
+                <div className="w-full flex items-center gap-1.5 mt-0.5 px-1">
+                  <span
+                    className={`text-[10px] tabular-nums font-normal tracking-normal min-w-[34px] text-left leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
+                  >
                     {formatTime(isDraggingSeek ? seekVal : currentTime)}
                   </span>
-                  <div className="relative flex-1 flex items-center">
+                  <div className="relative flex-1 flex items-center h-3">
+                    {/* Flat Recessed Track Background */}
+                    <div
+                      className={`absolute left-0 right-0 h-[3px] pointer-events-none rounded-[1px] ${isLight
+                        ? 'bg-[#c5cfe0] border-t border-[#a0abbd]'
+                        : 'bg-[#151515] border-t border-[#0a0a0a] border-b border-[#262626]'
+                        }`}
+                    >
+                      {/* Flat Progress Bar Fill */}
+                      <div
+                        className={`h-full pointer-events-none ${isLight
+                          ? 'bg-[#43628e]'
+                          : 'bg-[#5b7294]'
+                          }`}
+                        style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }}
+                      />
+                    </div>
+
                     <input
                       type="range"
                       min="0"
@@ -385,28 +393,21 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                       onChange={handleSeekChange}
                       onMouseDown={handleSeekMouseDown}
                       onMouseUp={handleSeekMouseUp}
-                      className={`w-full h-1 border rounded appearance-none cursor-pointer z-10 ${
-                        isLight
-                          ? 'bg-gray-300 border-gray-400 accent-blue-600'
-                          : 'bg-black/40 border-[#444] accent-white'
-                       }`}
+                      className="w-full h-full cursor-pointer z-10 relative"
                       id="track-scrubber"
                     />
-                    {/* Simulated Aqua/Blue Progress Bar fill */}
-                    <div 
-                      className={`absolute left-0 top-0 bottom-0 rounded-l pointer-events-none ${
-                        isLight ? 'bg-blue-500/80' : 'bg-white/80'
-                      }`}
-                      style={{ width: `${Math.min(100, progressPercent)}%` }}
-                    />
                   </div>
-                  <span className={`text-[9px] font-mono min-w-[28px] text-right leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
+                  <span
+                    className={`text-[10px] tabular-nums font-normal tracking-normal min-w-[34px] text-right leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
+                  >
                     -{formatTime(remainingTime)}
                   </span>
                 </div>
               </div>
             ) : (
-              <div className={`py-0.5 text-[11px] flex items-center justify-center gap-1.5 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
+              <div
+                className={`py-0.5 text-[11px] font-normal tracking-normal flex items-center justify-center gap-1.5 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
+              >
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
                 <span>ClassiTunes — Select or drop tracks to play</span>
               </div>
@@ -417,16 +418,14 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         {/* Right Section: View Mode, Tools & Theme Switcher (Equal Width Column) */}
         <div className="flex items-center justify-end gap-1 sm:gap-2 min-w-0">
           {/* Mode Toggles */}
-          <div className={`flex items-center p-0.5 rounded-md border shrink-0 ${
-            isLight ? 'bg-[#d8e0ed] border-[#9aa7b9]' : 'bg-[#1a1a1a] border-[#333]'
-          }`}>
+          <div className={`flex items-center p-0.5 rounded-md border shrink-0 ${isLight ? 'bg-[#d8e0ed] border-[#9aa7b9]' : 'bg-[#1a1a1a] border-[#333]'
+            }`}>
             <button
               onClick={() => onViewModeChange('list')}
-              className={`p-1 sm:p-1.5 rounded transition-all ${
-                viewMode === 'list'
-                  ? isLight ? 'bg-white text-blue-600 shadow-sm font-bold' : 'bg-[#3a3a3a] text-white shadow'
-                  : isLight ? 'text-gray-600 hover:text-black' : 'text-gray-400 hover:text-white'
-              }`}
+              className={`p-1 sm:p-1.5 rounded transition-all ${viewMode === 'list'
+                ? isLight ? 'bg-white text-blue-600 shadow-sm font-bold' : 'bg-[#3a3a3a] text-white shadow'
+                : isLight ? 'text-gray-600 hover:text-black' : 'text-gray-400 hover:text-white'
+                }`}
               title="List View"
               id="view-list-btn"
             >
@@ -434,11 +433,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             </button>
             <button
               onClick={() => onViewModeChange('grid')}
-              className={`p-1 sm:p-1.5 rounded transition-all ${
-                viewMode === 'grid'
-                  ? isLight ? 'bg-white text-blue-600 shadow-sm font-bold' : 'bg-[#3a3a3a] text-white shadow'
-                  : isLight ? 'text-gray-600 hover:text-black' : 'text-gray-400 hover:text-white'
-              }`}
+              className={`p-1 sm:p-1.5 rounded transition-all ${viewMode === 'grid'
+                ? isLight ? 'bg-white text-blue-600 shadow-sm font-bold' : 'bg-[#3a3a3a] text-white shadow'
+                : isLight ? 'text-gray-600 hover:text-black' : 'text-gray-400 hover:text-white'
+                }`}
               title="Grid / Album View"
               id="view-grid-btn"
             >
@@ -454,11 +452,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               placeholder="Search Library"
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
-              className={`pl-6 pr-2 py-1 text-[11px] rounded-full focus:outline-none w-16 xs:w-24 sm:w-32 lg:w-40 transition-all ${
-                isLight
-                  ? 'bg-white border border-[#9aa7b9] text-gray-900 placeholder-gray-500 focus:border-blue-500 shadow-inner'
-                  : 'bg-[#1a1a1a] border border-[#333] text-white placeholder-gray-500 focus:border-indigo-500'
-              }`}
+              className={`pl-6 pr-2 py-1 text-[11px] rounded-full focus:outline-none w-16 xs:w-24 sm:w-32 lg:w-40 transition-all ${isLight
+                ? 'bg-white border border-[#9aa7b9] text-gray-900 placeholder-gray-500 focus:border-blue-500 shadow-inner'
+                : 'bg-[#1a1a1a] border border-[#333] text-white placeholder-gray-500 focus:border-indigo-500'
+                }`}
               id="search-input"
             />
             {searchQuery && (

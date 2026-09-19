@@ -425,6 +425,7 @@ export class AudioEngine {
       deck.audio.removeAttribute('crossorigin');
     }
     deck.audio.src = resolvedUrl;
+    try { deck.audio.currentTime = 0; } catch (_) {}
     deck.audio.load();
     deck.fadeGain = 1;
     deck.normalizationGain = 1;

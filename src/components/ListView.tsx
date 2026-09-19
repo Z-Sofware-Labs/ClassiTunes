@@ -183,7 +183,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="trackNumber"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-center font-mono text-[11px]`}
+                className={`${pyClass} px-2 text-center font-mono text-[12px]`}
               >
                 {isCurrentPlaying ? (
                   <div className={`flex items-center justify-center font-bold ${isLight ? 'text-blue-600' : 'text-indigo-400'}`}>
@@ -205,7 +205,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="title"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-3 truncate font-medium`}
+                className={`${pyClass} px-3 truncate font-medium text-[12px]`}
               >
                 <div className="flex items-center gap-2">
                   <span className="truncate">{track.title}</span>
@@ -217,7 +217,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="duration"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-right pr-3 font-mono text-[11px]`}
+                className={`${pyClass} px-2 text-right pr-3 font-mono text-[12px]`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {formatTime(track.duration)}
@@ -229,7 +229,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="artist"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-3 truncate`}
+                className={`${pyClass} px-3 truncate text-[12px]`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-700' : 'text-gray-300'}>
                   {track.artist}
@@ -241,7 +241,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="album"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-3 truncate`}
+                className={`${pyClass} px-3 truncate text-[12px]`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {track.album}
@@ -253,7 +253,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="genre"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 truncate`}
+                className={`${pyClass} px-2 truncate text-[12px]`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {track.genre || 'Music'}
@@ -294,7 +294,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="playCount"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-center font-mono text-[11px]`}
+                className={`${pyClass} px-2 text-center font-mono text-[12px]`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-500'}>
                   {track.playCount || 0}
@@ -306,7 +306,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="year"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-center font-mono text-[11px] truncate`}
+                className={`${pyClass} px-2 text-center font-mono text-[12px] truncate`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {track.year || '-'}
@@ -318,7 +318,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="bitrate"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-right font-mono text-[11px] truncate pr-3`}
+                className={`${pyClass} px-2 text-right font-mono text-[12px] truncate pr-3`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {track.bitrate ? `${track.bitrate} kbps` : '-'}
@@ -330,7 +330,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="sampleRate"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-right font-mono text-[11px] truncate pr-3`}
+                className={`${pyClass} px-2 text-right font-mono text-[12px] truncate pr-3`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {track.sampleRate ? `${(track.sampleRate / 1000).toFixed(1)} kHz` : '-'}
@@ -342,7 +342,7 @@ const TrackRow = React.memo<TrackRowProps>(({
               <td
                 key="dateAdded"
                 style={{ width: `${colWidth}px` }}
-                className={`${pyClass} px-2 text-left text-[11px] truncate`}
+                className={`${pyClass} px-2 text-left text-[12px] truncate`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
                   {track.dateAdded ? new Date(track.dateAdded).toLocaleDateString() : '-'}
@@ -1048,7 +1048,7 @@ export const ListView: React.FC<ListViewProps> = ({
   }
 
   return (
-    <div className={`flex-1 flex flex-col h-full select-none overflow-hidden text-xs transition-colors duration-200 relative ${
+    <div className={`flex-1 flex flex-col h-full select-none overflow-hidden text-[12px] transition-colors duration-200 relative ${
       isLight ? 'bg-white text-gray-800' : 'bg-[#121212] text-gray-300'
     }`}>
       {/* Table Container */}
@@ -1073,7 +1073,7 @@ export const ListView: React.FC<ListViewProps> = ({
               e.preventDefault();
               setShowColumnPicker(!showColumnPicker);
             }}
-            className={`sticky top-0 z-20 text-[11px] font-bold shadow-sm border-b transition-colors ${
+            className={`sticky top-0 z-20 text-[12px] font-bold shadow-sm border-b transition-colors ${
               isLight
                 ? 'bg-gradient-to-b from-[#f8fafc] to-[#e2e8f0] border-[#cbd5e1] text-[#475569]'
                 : 'bg-[#1a1a1a] border-[#2e2e2e] text-gray-400'

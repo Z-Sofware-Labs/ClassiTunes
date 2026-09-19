@@ -3,9 +3,10 @@ import React, { useState, useEffect, useRef } from 'react';
 interface MarqueeTextProps {
   text: string;
   className?: string;
+  style?: React.CSSProperties;
 }
 
-export const MarqueeText: React.FC<MarqueeTextProps> = ({ text, className }) => {
+export const MarqueeText: React.FC<MarqueeTextProps> = ({ text, className, style }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
   const [shouldAnimate, setShouldAnimate] = useState(false);
@@ -18,10 +19,10 @@ export const MarqueeText: React.FC<MarqueeTextProps> = ({ text, className }) => 
   }, [text]);
 
   return (
-    <div className={`overflow-hidden whitespace-nowrap ${className}`} ref={containerRef}>
+    <div className={`overflow-hidden whitespace-nowrap leading-none py-[1px] ${className}`} style={style} ref={containerRef}>
       <span 
         ref={textRef}
-        className={`inline-block ${shouldAnimate ? 'animate-marquee' : ''}`}
+        className={`inline-block leading-none ${shouldAnimate ? 'animate-marquee' : ''}`}
       >
         {text}
         {shouldAnimate && <span className="ml-8">{text}</span>}
