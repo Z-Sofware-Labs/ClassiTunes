@@ -19,7 +19,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch } from './utils/tauriWindow';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
@@ -221,18 +221,32 @@ export default function App() {
         }
         const merged = Array.from(map.values());
 
-        Promise.all(
-          merged.map(async (t) => {
-            if (!t.id.startsWith('demo_') && !t.id.startsWith('sample_')) {
-              return await hydrateTrackMedia(t);
-            }
-            return t;
-          })
-        ).then(rehydrated => {
-          if (isMounted) {
-            setTracks(rehydrated);
+        // Rehydrate media in progressive background chunks of 20 so initial render is instant
+        (async () => {
+          const CHUNK_SIZE = 20;
+          const rehydratedTracks = [...merged];
+          let hasUpdates = false;
+
+          for (let i = 0; i < rehydratedTracks.length; i += CHUNK_SIZE) {
+            if (!isMounted) return;
+            const slice = rehydratedTracks.slice(i, i + CHUNK_SIZE);
+            await Promise.all(
+              slice.map(async (t, sliceIdx) => {
+                if (!t.id.startsWith('demo_') && !t.id.startsWith('sample_')) {
+                  const updated = await hydrateTrackMedia(t);
+                  rehydratedTracks[i + sliceIdx] = updated;
+                  hasUpdates = true;
+                }
+              })
+            );
+            // Yield briefly to event loop between chunks
+            await new Promise(r => setTimeout(r, 10));
           }
-        });
+
+          if (isMounted && hasUpdates) {
+            setTracks(rehydratedTracks);
+          }
+        })();
 
         return merged;
       });
@@ -1170,8 +1184,6 @@ export default function App() {
       phase: 'importing'
     });
 
-    const CONCURRENCY = 8;
-    let completed = 0;
     const allNewlyParsed: Track[] = [];
 
     // Pre-import dynamic convertFileSrc for performance on Tauri
@@ -1179,70 +1191,130 @@ export default function App() {
       ? await import('@tauri-apps/api/core') 
       : { convertFileSrc: null };
 
-    for (let i = 0; i < totalToProcess; i += CONCURRENCY) {
-      const chunk = pathsArray.length > 0 
-        ? pathsArray.slice(i, i + CONCURRENCY)
-        : fileArray.slice(i, i + CONCURRENCY);
+    // High-speed branch: If importing paths on Tauri, use parallel Rust batch metadata extraction
+    if (pathsArray.length > 0 && isTauri()) {
+      const BATCH_SIZE = 50;
+      let completed = 0;
 
-      const results = await Promise.all(
-        chunk.map(async (item) => {
+      for (let i = 0; i < pathsArray.length; i += BATCH_SIZE) {
+        const chunkPaths = pathsArray.slice(i, i + BATCH_SIZE);
+        const metadataMap = await readTauriMusicMetadataBatch(chunkPaths);
+
+        for (const originalPath of chunkPaths) {
           try {
-            if (typeof item === 'string') {
-              const originalPath = item;
-              const filename = originalPath.split(/[/\\]/).pop() || 'imported_song.mp3';
+            const filename = originalPath.split(/[/\\]/).pop() || 'imported_song.mp3';
+            let path = originalPath;
 
-              // When enabled, organize Tauri imports as Artist/Album/Song.
-              let path = originalPath;
-              const shouldOrganize = isTauri() && appSettings.organizeMusicFolders && !!appSettings.defaultMusicPath;
-              if (shouldOrganize) {
-                // Read metadata using lightweight File with path property (never fetch full blob into RAM)
-                const dummyFile = new File([], filename);
-                Object.defineProperty(dummyFile, 'path', { value: originalPath, writable: true, configurable: true, enumerable: true });
-                const metadataTrack = await parseAudioFile(dummyFile);
-                path = await organizeTauriMusicFile(
-                  originalPath,
-                  appSettings.defaultMusicPath,
-                  metadataTrack.artist || 'Unknown Artist',
-                  metadataTrack.album || 'Unknown Album',
-                  metadataTrack.title || filename.replace(/\.[^.]+$/, ''),
-                  filename
-                );
-              }
+            const shouldOrganize = appSettings.organizeMusicFolders && !!appSettings.defaultMusicPath;
+            const nativeMeta = metadataMap[originalPath];
 
-              // Create lightweight File descriptor referencing the filesystem path
-              const file = new File([], filename);
-              Object.defineProperty(file, 'path', {
-                value: path,
-                writable: true,
-                configurable: true,
-                enumerable: true
-              });
-
-              return await parseAudioFile(file);
-            } else {
-              return await parseAudioFile(item);
+            if (shouldOrganize && nativeMeta) {
+              path = await organizeTauriMusicFile(
+                originalPath,
+                appSettings.defaultMusicPath,
+                nativeMeta.artist || 'Unknown Artist',
+                nativeMeta.album || 'Unknown Album',
+                nativeMeta.title || filename.replace(/\.[^.]+$/, ''),
+                filename
+              );
             }
+
+            const cleanFileName = filename.replace(/\.[^/.]+$/, '').trim();
+            const finalTitle = nativeMeta?.title?.trim() || cleanFileName;
+            const finalArtist = nativeMeta?.artist?.trim() || 'Unknown Artist';
+            const finalAlbum = nativeMeta?.album?.trim() || 'Unknown Album';
+            const finalCoverUrl = nativeMeta?.coverUrl || '';
+            const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            let objectUrl = '';
+            try {
+              objectUrl = convertFileSrc ? convertFileSrc(path) : path;
+            } catch (e) {
+              objectUrl = path;
+            }
+
+            allNewlyParsed.push({
+              id: trackId,
+              title: finalTitle,
+              artist: finalArtist,
+              albumArtist: nativeMeta?.albumArtist?.trim() || undefined,
+              album: finalAlbum,
+              composer: nativeMeta?.composer?.trim() || undefined,
+              publisher: nativeMeta?.publisher?.trim() || undefined,
+              lyrics: nativeMeta?.lyrics?.trim() || undefined,
+              genre: nativeMeta?.genre?.trim() || 'Uncategorized',
+              duration: nativeMeta?.duration ? Math.round(nativeMeta.duration * 100) / 100 : 0,
+              year: nativeMeta?.year,
+              trackNumber: nativeMeta?.trackNumber,
+              trackTotal: nativeMeta?.trackTotal,
+              discNumber: nativeMeta?.discNumber,
+              discTotal: nativeMeta?.discTotal,
+              bpm: nativeMeta?.bpm,
+              mediaKind: nativeMeta?.mediaKind || 'Music',
+              comments: nativeMeta?.comments?.trim() || undefined,
+              rating: 0,
+              playCount: 0,
+              coverUrl: finalCoverUrl,
+              audioUrl: objectUrl,
+              file: undefined,
+              format: nativeMeta?.format || 'Audio file',
+              bitrate: nativeMeta?.bitrate || 320,
+              sampleRate: nativeMeta?.sampleRate || 44100,
+              sizeBytes: nativeMeta?.sizeBytes || 0,
+              dateAdded: new Date().toISOString(),
+              filePath: path,
+            });
           } catch (err) {
-            console.error('Failed to parse item:', item, err);
-            return null;
+            console.error('Failed to parse item:', originalPath, err);
           }
-        })
-      );
+        }
 
-      const parsedTracks = results.filter((t): t is Track => t !== null);
-      if (parsedTracks.length > 0) {
-        allNewlyParsed.push(...parsedTracks);
+        completed += chunkPaths.length;
+        const currentCount = Math.min(completed, totalToProcess);
+        const percent = Math.round((currentCount / totalToProcess) * 100);
+        setImportProgress({
+          current: currentCount,
+          total: totalToProcess,
+          statusText: `Importing ${currentCount} of ${totalToProcess} tracks (${percent}%)`,
+          phase: 'importing'
+        });
+
+        // Yield briefly so UI stays responsive
+        await new Promise(r => setTimeout(r, 5));
       }
+    } else {
+      // Standard File fallback with higher concurrency
+      const CONCURRENCY = 16;
+      let completed = 0;
 
-      completed += chunk.length;
-      const currentCount = Math.min(completed, totalToProcess);
-      const percent = Math.round((currentCount / totalToProcess) * 100);
-      setImportProgress({
-        current: currentCount,
-        total: totalToProcess,
-        statusText: `Processing ${currentCount} of ${totalToProcess} tracks (${percent}%)`,
-        phase: 'importing'
-      });
+      for (let i = 0; i < totalToProcess; i += CONCURRENCY) {
+        const chunk = fileArray.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(
+          chunk.map(async (item) => {
+            try {
+              return await parseAudioFile(item);
+            } catch (err) {
+              console.error('Failed to parse item:', item, err);
+              return null;
+            }
+          })
+        );
+
+        const parsedTracks = results.filter((t): t is Track => t !== null);
+        if (parsedTracks.length > 0) {
+          allNewlyParsed.push(...parsedTracks);
+        }
+
+        completed += chunk.length;
+        const currentCount = Math.min(completed, totalToProcess);
+        const percent = Math.round((currentCount / totalToProcess) * 100);
+        setImportProgress({
+          current: currentCount,
+          total: totalToProcess,
+          statusText: `Processing ${currentCount} of ${totalToProcess} tracks (${percent}%)`,
+          phase: 'importing'
+        });
+      }
     }
 
     if (allNewlyParsed.length > 0) {

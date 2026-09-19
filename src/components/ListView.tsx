@@ -552,6 +552,36 @@ export const ListView: React.FC<ListViewProps> = ({
   };
 
   const pyClass = rowHeight === 'compact' ? 'py-1' : rowHeight === 'relaxed' ? 'py-3' : 'py-2';
+  const estimatedRowHeight = rowHeight === 'compact' ? 28 : rowHeight === 'relaxed' ? 44 : 36;
+
+  const tableContainerRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(600);
+
+  // Measure container height & track scroll position for virtualization
+  useEffect(() => {
+    const el = tableContainerRef.current;
+    if (!el) return;
+
+    const handleScroll = () => {
+      setScrollTop(el.scrollTop);
+    };
+
+    setContainerHeight(el.clientHeight || 600);
+    el.addEventListener('scroll', handleScroll, { passive: true });
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      observer.disconnect();
+    };
+  }, []);
 
   // Keyboard shortcut for CTRL+A (Select All) and Delete / Backspace (Clear/Delete selected tracks)
   useEffect(() => {
@@ -860,6 +890,39 @@ export const ListView: React.FC<ListViewProps> = ({
     });
   }, [tracks, sortField, sortAsc]);
 
+  // Windowed Virtualization Calculation
+  const OVERSCAN = 20;
+  const totalTrackCount = sortedTracks.length;
+  const isVirtualizationActive = totalTrackCount > 60;
+
+  const { visibleWindowTracks, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
+    if (!isVirtualizationActive) {
+      return {
+        visibleWindowTracks: sortedTracks.map((t, idx) => ({ track: t, originalIndex: idx })),
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+      };
+    }
+
+    const startIndex = Math.max(0, Math.floor(scrollTop / estimatedRowHeight) - OVERSCAN);
+    const visibleCount = Math.ceil(containerHeight / estimatedRowHeight) + OVERSCAN * 2;
+    const endIndex = Math.min(totalTrackCount, startIndex + visibleCount);
+
+    const slice = sortedTracks.slice(startIndex, endIndex).map((t, idx) => ({
+      track: t,
+      originalIndex: startIndex + idx,
+    }));
+
+    const topHeight = startIndex * estimatedRowHeight;
+    const bottomHeight = Math.max(0, (totalTrackCount - endIndex) * estimatedRowHeight);
+
+    return {
+      visibleWindowTracks: slice,
+      topSpacerHeight: topHeight,
+      bottomSpacerHeight: bottomHeight,
+    };
+  }, [sortedTracks, isVirtualizationActive, scrollTop, containerHeight, estimatedRowHeight, totalTrackCount]);
+
   const resetDragAndBoxSelection = () => {
     isMouseDownRef.current = false;
     isBoxSelectingRef.current = false;
@@ -950,13 +1013,12 @@ export const ListView: React.FC<ListViewProps> = ({
     mouseDownPosRef.current = { x: e.clientX, y: e.clientY };
     initialSelectionRef.current = e.shiftKey || e.ctrlKey || e.metaKey ? [...selectedTrackIdsRef.current] : [];
 
-    // Cache row client rects for fast box selection without layout thrashing
+    // Cache currently rendered row client rects for fast box selection without layout thrashing
     const rects: { id: string; rect: DOMRect }[] = [];
-    sortedTracks.forEach((track) => {
-      const rowElem = document.getElementById(`track-row-${track.id}`);
-      if (rowElem) {
-        rects.push({ id: track.id, rect: rowElem.getBoundingClientRect() });
-      }
+    const renderedRows = document.querySelectorAll<HTMLElement>('tr[id^="track-row-"]');
+    renderedRows.forEach((rowElem) => {
+      const id = rowElem.id.replace('track-row-', '');
+      rects.push({ id, rect: rowElem.getBoundingClientRect() });
     });
     rowRectsRef.current = rects;
   };
@@ -1052,7 +1114,7 @@ export const ListView: React.FC<ListViewProps> = ({
       isLight ? 'bg-white text-gray-800' : 'bg-[#121212] text-gray-300'
     }`}>
       {/* Table Container */}
-      <div className="flex-1 overflow-auto custom-scrollbar relative" onMouseDown={handleContainerMouseDown}>
+      <div ref={tableContainerRef} className="flex-1 overflow-auto custom-scrollbar relative" onMouseDown={handleContainerMouseDown}>
         {/* Rubberband / Box Selection Overlay */}
         {selectionBox && (
           <div
@@ -1098,21 +1160,13 @@ export const ListView: React.FC<ListViewProps> = ({
                     } ${
                       col.align === 'center' ? 'text-center' : col.align === 'right' ? 'text-right pr-3' : 'text-left'
                     } ${
-                      isLight ? 'border-[#cbd5e1] hover:bg-black/5' : 'border-[#2a2a2a] hover:bg-white/5'
-                    }`}
+                      isLight 
+                        ? 'border-[#cbd5e1] hover:bg-slate-200/70 hover:text-gray-900' 
+                        : 'border-[#2e2e2e] hover:bg-white/5 hover:text-white'
+                    } ${isDropTarget ? (dropTargetCol.position === 'before' ? 'border-l-2 border-l-blue-500' : 'border-r-2 border-r-blue-500') : ''}`}
                   >
-                    {/* Drag Insertion Indicator Line */}
-                    {isDropTarget && dropTargetCol.position === 'before' && (
-                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500 z-30 shadow-[0_0_8px_rgba(59,130,246,0.8)] pointer-events-none" />
-                    )}
-                    {isDropTarget && dropTargetCol.position === 'after' && (
-                      <div className="absolute right-0 top-0 bottom-0 w-1 bg-blue-500 z-30 shadow-[0_0_8px_rgba(59,130,246,0.8)] pointer-events-none" />
-                    )}
-
-                    <div className={`flex items-center gap-1 ${
-                      col.align === 'center' ? 'justify-center' : col.align === 'right' ? 'justify-end' : 'justify-between'
-                    }`}>
-                      <span className="truncate">{col.label}</span>
+                    <div className={`flex items-center gap-1.5 ${col.align === 'center' ? 'justify-center' : col.align === 'right' ? 'justify-end' : 'justify-start'}`}>
+                      <span>{col.label}</span>
                       {isSorted && (
                         sortAsc ? (
                           <ArrowUp className={`w-3 h-3 flex-shrink-0 ${isLight ? 'text-blue-600' : 'text-indigo-400'}`} />
@@ -1154,9 +1208,15 @@ export const ListView: React.FC<ListViewProps> = ({
             </tr>
           </thead>
 
-          {/* Table Body with Alternating Zebra Stripes */}
+          {/* Table Body with Alternating Zebra Stripes & Virtualized Windowing */}
           <tbody className={isLight ? 'divide-y divide-gray-200' : 'divide-y divide-white/5'}>
-            {sortedTracks.map((track, idx) => {
+            {topSpacerHeight > 0 && (
+              <tr style={{ height: `${topSpacerHeight}px`, pointerEvents: 'none' }} aria-hidden="true">
+                <td colSpan={activeColumns.length + 1} style={{ padding: 0, border: 'none' }} />
+              </tr>
+            )}
+
+            {visibleWindowTracks.map(({ track, originalIndex: idx }) => {
               const isCurrentPlaying = currentTrack?.id === track.id;
               const isSelected = selectedTrackIds.includes(track.id);
               const isZebraOdd = idx % 2 === 1;
@@ -1192,6 +1252,12 @@ export const ListView: React.FC<ListViewProps> = ({
                 />
               );
             })}
+
+            {bottomSpacerHeight > 0 && (
+              <tr style={{ height: `${bottomSpacerHeight}px`, pointerEvents: 'none' }} aria-hidden="true">
+                <td colSpan={activeColumns.length + 1} style={{ padding: 0, border: 'none' }} />
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

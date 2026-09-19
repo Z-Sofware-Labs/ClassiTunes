@@ -714,5 +714,25 @@ export async function readTauriMusicMetadata(filePath: string): Promise<any | nu
   }
 }
 
+export async function readTauriMusicMetadataBatch(filePaths: string[]): Promise<Record<string, any>> {
+  if (!filePaths || filePaths.length === 0 || !isTauri()) return {};
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const results = await invoke<Array<{ path: string; metadata: any | null }>>('read_music_metadata_batch', { filePaths });
+    const map: Record<string, any> = {};
+    if (Array.isArray(results)) {
+      for (const item of results) {
+        if (item.metadata) {
+          map[item.path] = item.metadata;
+        }
+      }
+    }
+    return map;
+  } catch (error) {
+    console.warn('Native batch metadata reading failed:', error);
+    return {};
+  }
+}
+
 // Backwards-compatible alias for callers that only handle ID3 files.
 export const writeTauriId3Tags = writeTauriMusicMetadata;

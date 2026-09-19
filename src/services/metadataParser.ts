@@ -748,13 +748,11 @@ export async function parseAudioFile(file: File): Promise<Track> {
         const finalCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
         const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-        // Persist cover to IndexedDB cache so it rehydrates across restarts
+        // Persist cover to IndexedDB cache in background so it rehydrates across restarts without blocking parsing
         if (finalCoverUrl && finalCoverUrl.startsWith('data:')) {
           const blob = dataURLtoBlob(finalCoverUrl);
           if (blob) {
-            try {
-              await saveMediaFile(`cover_${trackId}`, blob);
-            } catch (e) {}
+            saveMediaFile(`cover_${trackId}`, blob).catch(() => {});
           }
         }
 

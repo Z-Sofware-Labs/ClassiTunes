@@ -494,6 +494,28 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
     Ok(res)
 }
 
+#[derive(serde::Serialize)]
+struct BatchMetadataItem {
+    path: String,
+    metadata: Option<ReadMetadataResult>,
+}
+
+#[tauri::command]
+fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadataItem> {
+    use rayon::prelude::*;
+
+    file_paths
+        .into_par_iter()
+        .map(|path| {
+            let meta = read_music_metadata(path.clone()).ok();
+            BatchMetadataItem {
+                path,
+                metadata: meta,
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn get_os() -> &'static str {
     #[cfg(target_os = "linux")]
@@ -861,6 +883,7 @@ pub fn run() {
             get_os,
             get_audio_stream_port,
             read_music_metadata,
+            read_music_metadata_batch,
             write_id3_tags,
             write_music_metadata,
             organize_music_file,
