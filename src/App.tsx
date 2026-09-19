@@ -19,7 +19,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, logToFile } from './utils/tauriWindow';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
@@ -521,6 +521,7 @@ export default function App() {
 
   // Filtered Tracks based on Sidebar Selection and Search
   const filteredTracks = useMemo(() => {
+    const t0 = performance.now();
     let list = [...tracks];
 
     // Filter by Playlist / System Library
@@ -555,6 +556,11 @@ export default function App() {
         t.album.toLowerCase().includes(q) ||
         t.genre.toLowerCase().includes(q)
       );
+    }
+
+    const dur = performance.now() - t0;
+    if (dur >= 50) {
+      logToFile(`[BOTTLENECK DETECTED: Song Filtering/Search] Filtering library (${tracks.length} tracks) for playlist '${selectedPlaylistId}' query '${searchQuery}' took ${dur.toFixed(1)}ms`);
     }
 
     return list;

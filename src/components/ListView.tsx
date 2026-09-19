@@ -7,6 +7,7 @@ import {
   ChevronUp, ChevronDown, GripVertical
 } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
+import { logToFile } from '../utils/tauriWindow';
 
 interface ListViewProps {
   tracks: Track[];
@@ -509,6 +510,16 @@ export const ListView: React.FC<ListViewProps> = ({
   searchQuery,
   onClearSearch,
 }) => {
+  const renderStartTime = useRef(performance.now());
+  renderStartTime.current = performance.now();
+
+  useEffect(() => {
+    const elapsed = performance.now() - renderStartTime.current;
+    if (elapsed >= 50) {
+      logToFile(`[BOTTLENECK DETECTED: ListView Render] Total commit took ${elapsed.toFixed(1)}ms for ${tracks.length} tracks`);
+    }
+  });
+
   const [internalSelectedTrackIds, setInternalSelectedTrackIds] = useState<string[]>([]);
   const selectedTrackIds = propSelectedTrackIds !== undefined ? propSelectedTrackIds : internalSelectedTrackIds;
   const selectedTrackIdsRef = useRef<string[]>(selectedTrackIds);
@@ -558,13 +569,23 @@ export const ListView: React.FC<ListViewProps> = ({
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(600);
 
-  // Measure container height & track scroll position for virtualization
+  // Measure container height & track scroll position for virtualization (throttled via requestAnimationFrame)
+  const rafScrollRef = useRef<number | null>(null);
   useEffect(() => {
     const el = tableContainerRef.current;
     if (!el) return;
 
     const handleScroll = () => {
-      setScrollTop(el.scrollTop);
+      if (rafScrollRef.current !== null) return;
+      rafScrollRef.current = requestAnimationFrame(() => {
+        rafScrollRef.current = null;
+        const start = performance.now();
+        setScrollTop(el.scrollTop);
+        const duration = performance.now() - start;
+        if (duration >= 50) {
+          logToFile(`[BOTTLENECK DETECTED: ListView Scroll Update] took ${duration.toFixed(1)}ms for scrollTop=${el.scrollTop}`);
+        }
+      });
     };
 
     setContainerHeight(el.clientHeight || 600);
@@ -580,6 +601,9 @@ export const ListView: React.FC<ListViewProps> = ({
     return () => {
       el.removeEventListener('scroll', handleScroll);
       observer.disconnect();
+      if (rafScrollRef.current !== null) {
+        cancelAnimationFrame(rafScrollRef.current);
+      }
     };
   }, []);
 
@@ -867,7 +891,8 @@ export const ListView: React.FC<ListViewProps> = ({
   };
 
   const sortedTracks = useMemo(() => {
-    return [...tracks].sort((a, b) => {
+    const t0 = performance.now();
+    const sorted = [...tracks].sort((a, b) => {
       let valA = a[sortField];
       let valB = b[sortField];
 
@@ -888,6 +913,11 @@ export const ListView: React.FC<ListViewProps> = ({
 
       return 0;
     });
+    const dur = performance.now() - t0;
+    if (dur >= 50) {
+      logToFile(`[BOTTLENECK DETECTED: Song Sorting] Sorting ${tracks.length} tracks by '${String(sortField)}' took ${dur.toFixed(1)}ms`);
+    }
+    return sorted;
   }, [tracks, sortField, sortAsc]);
 
   // Windowed Virtualization Calculation
@@ -896,6 +926,7 @@ export const ListView: React.FC<ListViewProps> = ({
   const isVirtualizationActive = totalTrackCount > 60;
 
   const { visibleWindowTracks, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
+    const t0 = performance.now();
     if (!isVirtualizationActive) {
       return {
         visibleWindowTracks: sortedTracks.map((t, idx) => ({ track: t, originalIndex: idx })),
@@ -915,6 +946,11 @@ export const ListView: React.FC<ListViewProps> = ({
 
     const topHeight = startIndex * estimatedRowHeight;
     const bottomHeight = Math.max(0, (totalTrackCount - endIndex) * estimatedRowHeight);
+
+    const dur = performance.now() - t0;
+    if (dur >= 50) {
+      logToFile(`[BOTTLENECK DETECTED: Virtual Slice Calculation] took ${dur.toFixed(1)}ms for ${totalTrackCount} tracks (slice size: ${slice.length})`);
+    }
 
     return {
       visibleWindowTracks: slice,
@@ -957,6 +993,7 @@ export const ListView: React.FC<ListViewProps> = ({
         const boxRight = Math.max(mouseDownPosRef.current.x, e.clientX);
         const boxBottom = Math.max(mouseDownPosRef.current.y, e.clientY);
 
+        const t0 = performance.now();
         const newlySelectedIds: string[] = [];
         const cachedRects = rowRectsRef.current;
         for (let i = 0; i < cachedRects.length; i++) {
@@ -974,6 +1011,10 @@ export const ListView: React.FC<ListViewProps> = ({
 
         const combined = Array.from(new Set([...initialSelectionRef.current, ...newlySelectedIds]));
         updateSelectedTrackIds(combined);
+        const dur = performance.now() - t0;
+        if (dur >= 50) {
+          logToFile(`[BOTTLENECK DETECTED: Box Selection] Computing selection over ${cachedRects.length} rows took ${dur.toFixed(1)}ms`);
+        }
       }
     };
 
