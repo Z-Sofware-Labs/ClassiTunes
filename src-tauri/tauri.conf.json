@@ -43,7 +43,14 @@
     "longDescription": "ClassiTunes is a high performance audio player and library manager built with modern web technologies and Rust.",
     "copyright": "Copyright © 2026 Z Software Labs. All rights reserved.",
     "category": "Music",
-    "targets": ["nsis", "msi", "app", "dmg", "deb", "rpm"],
+    "targets": [
+      "nsis",
+      "msi",
+      "app",
+      "dmg",
+      "deb",
+      "rpm"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -80,7 +87,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU1NzNDQjNGNkYwNzgxQkMKUldTOGdRZHZQOHR6NVlLMU9pMGdEbk9PTGJrRm1Ob08vUlI5UGpoQk5vcGNJQ000YUFSVk5nbncK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ3NDkyOTEwRkY0RTNEMTYKUldRV1BVNy9FQ2xKUndUaGlocDEvTWdZNnVmMFZkMGdVZ2VnMEpYOHpsaDlwcG5ZaWJoYVZPa00K",
       "endpoints": [
         "https://github.com/Z-Sofware-Labs/ClassiTunes/releases/latest/download/latest.json"
       ]
