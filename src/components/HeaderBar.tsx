@@ -383,20 +383,17 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
             {currentTrack ? (
               <div className="flex flex-col items-center relative w-full">
-                {/* Row 1: Title (matches song list Title column: 11px font-medium) */}
-                <div className="w-full text-center px-4 leading-none pt-[1px] pb-[1px]">
+                {/* Row 1: Song - Artist with Marquee support for long text */}
+                <div className="w-full text-center px-4 leading-none pt-[1px] pb-[2px]">
                   <MarqueeText
-                    text={currentTrack.title}
-                    className={`text-[11.5px] font-medium tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
-                  />
-                </div>
-
-                {/* Row 2: Artist — Album with Marquee support for long text (11px font-normal) */}
-                <div className="w-full text-center px-4 leading-none pb-[1px]">
-                  <MarqueeText
-                    text={`${currentTrack.artist}${currentTrack.album ? ` — ${currentTrack.album}` : ''}`}
-                    className={`text-[11px] font-normal tracking-normal block leading-none ${isLight ? 'text-gray-700' : 'text-gray-300'}`}
-                  />
+                    text={currentTrack.artist ? `${currentTrack.title} — ${currentTrack.artist}` : currentTrack.title}
+                    className={`text-[11px] tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
+                  >
+                    <span className="font-semibold">{currentTrack.title}</span>
+                    {currentTrack.artist && (
+                      <span className="font-normal opacity-85"> — {currentTrack.artist}</span>
+                    )}
+                  </MarqueeText>
                 </div>
 
                 {/* Row 3: LCD Scrubber & Times (typeface matches 2nd row: system sans, 12px font-normal, tabular-nums, normal spacing) */}
