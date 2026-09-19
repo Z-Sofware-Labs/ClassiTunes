@@ -113,18 +113,58 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     }
   };
 
-  const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSeekVal(parseFloat(e.target.value));
+  const scrubberRef = React.useRef<HTMLDivElement>(null);
+  const isDraggingRef = React.useRef(false);
+  const seekValRef = React.useRef(0);
+
+  const calculateSeekFromPointer = (clientX: number): number => {
+    if (!scrubberRef.current) return 0;
+    const rect = scrubberRef.current.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    const clickX = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const ratio = clickX / rect.width;
+    const totalDuration = duration || currentTrack?.duration || 0;
+    return ratio * totalDuration;
   };
 
-  const handleSeekMouseDown = () => {
+  const handleSeekPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return; // Only primary mouse button
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+
+    isDraggingRef.current = true;
     setIsDraggingSeek(true);
+
+    const targetTime = calculateSeekFromPointer(e.clientX);
+    seekValRef.current = targetTime;
+    setSeekVal(targetTime);
   };
 
-  const handleSeekMouseUp = () => {
+  const handleSeekPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    const targetTime = calculateSeekFromPointer(e.clientX);
+    seekValRef.current = targetTime;
+    setSeekVal(targetTime);
+  };
+
+  const handleSeekPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignored if pointer capture was already released
+    }
+
+    const finalSeek = calculateSeekFromPointer(e.clientX);
+    isDraggingRef.current = false;
     setIsDraggingSeek(false);
-    audioEngine.seek(seekVal);
-    setCurrentTime(seekVal);
+    seekValRef.current = finalSeek;
+    setSeekVal(finalSeek);
+
+    audioEngine.seek(finalSeek);
+    setCurrentTime(finalSeek);
   };
 
   const formatTime = (secs: number) => {
@@ -366,7 +406,37 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                   >
                     {formatTime(isDraggingSeek ? seekVal : currentTime)}
                   </span>
-                  <div className="relative flex-1 flex items-center h-3">
+                  <div
+                    ref={scrubberRef}
+                    onPointerDown={handleSeekPointerDown}
+                    onPointerMove={handleSeekPointerMove}
+                    onPointerUp={handleSeekPointerUp}
+                    onPointerCancel={handleSeekPointerUp}
+                    className="relative flex-1 flex items-center h-3 cursor-pointer select-none touch-none"
+                    role="slider"
+                    aria-label="Seek track position"
+                    aria-valuemin={0}
+                    aria-valuemax={activeDuration || 100}
+                    aria-valuenow={Math.round(isDraggingSeek ? seekVal : currentTime)}
+                    aria-valuetext={formatTime(isDraggingSeek ? seekVal : currentTime)}
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      const step = 5; // 5 seconds jump with arrow keys
+                      if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        const next = Math.max(0, (isDraggingSeek ? seekVal : currentTime) - step);
+                        audioEngine.seek(next);
+                        setCurrentTime(next);
+                        setSeekVal(next);
+                      } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        const next = Math.min(activeDuration, (isDraggingSeek ? seekVal : currentTime) + step);
+                        audioEngine.seek(next);
+                        setCurrentTime(next);
+                        setSeekVal(next);
+                      }
+                    }}
+                  >
                     {/* Flat Recessed Track Background */}
                     <div
                       className={`absolute left-0 right-0 h-[3px] pointer-events-none rounded-[1px] ${isLight
@@ -384,18 +454,16 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                       />
                     </div>
 
-                    <input
-                      type="range"
-                      min="0"
-                      max={activeDuration || 100}
-                      step="0.1"
-                      value={isDraggingSeek ? seekVal : currentTime}
-                      onChange={handleSeekChange}
-                      onMouseDown={handleSeekMouseDown}
-                      onMouseUp={handleSeekMouseUp}
-                      className="w-full h-full cursor-pointer z-10 relative"
-                      id="track-scrubber"
-                    />
+                    {/* Scrubber Thumb Knob Indicator */}
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 pointer-events-none transition-transform duration-75"
+                      style={{ left: `${Math.min(100, Math.max(0, progressPercent))}%` }}
+                    >
+                      <div
+                        className={`w-[9px] h-[9px] rounded-full border-[1.5px] border-white shadow-[0_1px_3px_rgba(0,0,0,0.45)] ${isLight ? 'bg-[#2563eb]' : 'bg-[#3b82f6]'
+                          } ${isDraggingSeek ? 'scale-125' : ''}`}
+                      />
+                    </div>
                   </div>
                   <span
                     className={`text-[10px] tabular-nums font-normal tracking-normal min-w-[34px] text-right leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}

@@ -268,16 +268,71 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return;
-    const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
-    
-    const updateFromMedia = () => {
-      setSystemTheme(darkMedia.matches ? 'dark' : 'light');
-    };
+    if (typeof window === 'undefined') return;
+    let isCancelled = false;
 
-    updateFromMedia();
-    darkMedia.addEventListener?.('change', updateFromMedia);
-    return () => darkMedia.removeEventListener?.('change', updateFromMedia);
+    // 1. Check native Tauri window theme and listen for live system theme changes (KDE, GNOME, macOS, Windows)
+    let tauriUnlisten: (() => void) | null = null;
+    if ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__) {
+      import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
+        try {
+          const win = getCurrentWindow();
+          const winTheme = await win.theme();
+          if (!isCancelled && (winTheme === 'dark' || winTheme === 'light')) {
+            setSystemTheme(winTheme);
+          }
+          if (typeof win.onThemeChanged === 'function') {
+            const unlisten = await win.onThemeChanged(({ payload }: { payload: 'dark' | 'light' }) => {
+              if (!isCancelled && (payload === 'dark' || payload === 'light')) {
+                setSystemTheme(payload);
+              }
+            });
+            if (isCancelled) {
+              unlisten();
+            } else {
+              tauriUnlisten = unlisten;
+            }
+          }
+        } catch {}
+      }).catch(() => {});
+    }
+
+    // 2. Standard and legacy media query listeners
+    if (window.matchMedia) {
+      const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+      const updateFromMedia = (e?: MediaQueryListEvent | MediaQueryList) => {
+        const matches = e ? e.matches : darkMedia.matches;
+        setSystemTheme(matches ? 'dark' : 'light');
+      };
+
+      updateFromMedia();
+
+      if (typeof darkMedia.addEventListener === 'function') {
+        darkMedia.addEventListener('change', updateFromMedia);
+      } else if (typeof (darkMedia as any).addListener === 'function') {
+        // Fallback for older WebKitGTK / Safari engines
+        (darkMedia as any).addListener(updateFromMedia);
+      }
+
+      return () => {
+        isCancelled = true;
+        if (tauriUnlisten) {
+          tauriUnlisten();
+        }
+        if (typeof darkMedia.removeEventListener === 'function') {
+          darkMedia.removeEventListener('change', updateFromMedia);
+        } else if (typeof (darkMedia as any).removeListener === 'function') {
+          (darkMedia as any).removeListener(updateFromMedia);
+        }
+      };
+    }
+
+    return () => {
+      isCancelled = true;
+      if (tauriUnlisten) {
+        tauriUnlisten();
+      }
+    };
   }, []);
 
   const theme: 'dark' | 'light' = appSettings.defaultTheme === 'system'
