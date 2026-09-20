@@ -225,26 +225,31 @@ export default function App() {
         (async () => {
           const CHUNK_SIZE = 20;
           const rehydratedTracks = [...merged];
-          let hasUpdates = false;
 
           for (let i = 0; i < rehydratedTracks.length; i += CHUNK_SIZE) {
             if (!isMounted) return;
             const slice = rehydratedTracks.slice(i, i + CHUNK_SIZE);
+            let chunkHadUpdates = false;
+
             await Promise.all(
               slice.map(async (t, sliceIdx) => {
                 if (!t.id.startsWith('demo_') && !t.id.startsWith('sample_')) {
                   const updated = await hydrateTrackMedia(t);
-                  rehydratedTracks[i + sliceIdx] = updated;
-                  hasUpdates = true;
+                  if (updated && (updated.coverUrl !== t.coverUrl || updated.audioUrl !== t.audioUrl)) {
+                    rehydratedTracks[i + sliceIdx] = updated;
+                    chunkHadUpdates = true;
+                  }
                 }
               })
             );
+
+            // Progressively apply rehydration chunk so artwork displays immediately
+            if (isMounted && chunkHadUpdates) {
+              setTracks([...rehydratedTracks]);
+            }
+
             // Yield briefly to event loop between chunks
             await new Promise(r => setTimeout(r, 10));
-          }
-
-          if (isMounted && hasUpdates) {
-            setTracks(rehydratedTracks);
           }
         })();
 
@@ -538,11 +543,43 @@ export default function App() {
     audioEngine.setNormalizationEnabled(appSettings.audioNormalization);
   }, [appSettings.audioNormalization]);
 
+  // Currently highlighted track for sidebar artwork panel in "Selected Item" mode
+  const selectedTrack = useMemo(() => {
+    if (selectedTrackIds.length === 0) return null;
+    const lastSelectedId = selectedTrackIds[selectedTrackIds.length - 1];
+    return tracks.find(t => t.id === lastSelectedId) || null;
+  }, [selectedTrackIds, tracks]);
+
+  const handleSelectionChange = useCallback((ids: string[]) => {
+    setSelectedTrackIds(ids);
+    if (ids.length > 0) {
+      const lastId = ids[ids.length - 1];
+      const target = tracks.find(t => t.id === lastId);
+      if (target && !target.coverUrl && !target.id.startsWith('demo_') && !target.id.startsWith('sample_')) {
+        hydrateTrackMedia(target).then((hydrated) => {
+          if (hydrated && hydrated.coverUrl) {
+            setTracks(prev => prev.map(t => (t.id === target.id ? { ...t, coverUrl: hydrated.coverUrl } : t)));
+          }
+        });
+      }
+    }
+  }, [tracks]);
+
   // Audio Playback Handlers
   const playTrack = useCallback((track: Track) => {
     setCurrentTrack(track);
     setIsPlaying(true);
     void audioEngine.playTrack(track.audioUrl, track.replayGainDb);
+
+    // If artwork or audio URL is not yet rehydrated from storage/tauri, hydrate on-demand immediately
+    if (!track.coverUrl && !track.id.startsWith('demo_') && !track.id.startsWith('sample_')) {
+      hydrateTrackMedia(track).then((hydrated) => {
+        if (hydrated && hydrated.coverUrl) {
+          setCurrentTrack(prev => (prev?.id === track.id ? { ...prev, coverUrl: hydrated.coverUrl, audioUrl: hydrated.audioUrl || prev.audioUrl } : prev));
+          setTracks(prev => prev.map(t => (t.id === track.id ? { ...t, coverUrl: hydrated.coverUrl, audioUrl: hydrated.audioUrl || t.audioUrl } : t)));
+        }
+      });
+    }
 
     // Update Play Count
     setTracks(prev => prev.map(t => {
@@ -1782,7 +1819,7 @@ export default function App() {
             onStartImporting={handleStartImporting}
             trackCounts={trackCounts}
             currentTrack={currentTrack}
-            selectedTrack={editingTrack}
+            selectedTrack={selectedTrack}
             isPlaying={isPlaying}
             onTogglePlay={togglePlay}
             onOpenGetInfo={setEditingTrack}
@@ -1817,7 +1854,7 @@ export default function App() {
               onStartImporting={handleStartImporting}
               theme={theme}
               selectedTrackIds={selectedTrackIds}
-              onSelectionChange={setSelectedTrackIds}
+              onSelectionChange={handleSelectionChange}
               searchQuery={searchQuery}
               onClearSearch={() => setSearchQuery('')}
             />
