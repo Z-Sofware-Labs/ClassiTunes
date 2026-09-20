@@ -203,10 +203,10 @@ export default function App() {
     };
   }, [appSettings.organizeMusicFolders, appSettings.defaultMusicPath]);
 
-  // Rehydrate tracks from IndexedDB & LocalStorage (Fix playback & missing covers after closing/reopening)
+  // Restore tracks from IndexedDB & LocalStorage
+  // Artwork is loaded strictly on-demand when a song is played or selected
   useEffect(() => {
-    let isMounted = true;
-    async function rehydrateAll() {
+    async function restoreTracks() {
       const dbTracks = await getTracksMetadata();
 
       setTracks(prev => {
@@ -219,49 +219,11 @@ export default function App() {
             }
           });
         }
-        const merged = Array.from(map.values());
-
-        // Rehydrate media in progressive background chunks of 20 so initial render is instant
-        (async () => {
-          const CHUNK_SIZE = 20;
-          const rehydratedTracks = [...merged];
-
-          for (let i = 0; i < rehydratedTracks.length; i += CHUNK_SIZE) {
-            if (!isMounted) return;
-            const slice = rehydratedTracks.slice(i, i + CHUNK_SIZE);
-            let chunkHadUpdates = false;
-
-            await Promise.all(
-              slice.map(async (t, sliceIdx) => {
-                if (!t.id.startsWith('demo_') && !t.id.startsWith('sample_')) {
-                  const updated = await hydrateTrackMedia(t);
-                  if (updated && (updated.coverUrl !== t.coverUrl || updated.audioUrl !== t.audioUrl)) {
-                    rehydratedTracks[i + sliceIdx] = updated;
-                    chunkHadUpdates = true;
-                  }
-                }
-              })
-            );
-
-            // Progressively apply rehydration chunk so artwork displays immediately
-            if (isMounted && chunkHadUpdates) {
-              setTracks([...rehydratedTracks]);
-            }
-
-            // Yield briefly to event loop between chunks
-            await new Promise(r => setTimeout(r, 10));
-          }
-        })();
-
-        return merged;
+        return Array.from(map.values());
       });
     }
 
-    rehydrateAll();
-
-    return () => {
-      isMounted = false;
-    };
+    restoreTracks();
   }, []);
 
   const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => {
