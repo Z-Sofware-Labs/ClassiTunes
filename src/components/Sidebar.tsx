@@ -21,7 +21,6 @@ interface SidebarProps {
   onStartImporting?: (statusText?: string) => void;
   trackCounts: Record<string, number>;
   currentTrack?: Track | null;
-  selectedTrack?: Track | null;
   isPlaying?: boolean;
   onTogglePlay?: () => void;
   onOpenGetInfo?: (track: Track) => void;
@@ -43,7 +42,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onStartImporting,
   trackCounts,
   currentTrack,
-  selectedTrack,
   isPlaying,
   onTogglePlay,
   onOpenGetInfo,
@@ -57,13 +55,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     } catch (e) {
       return true;
     }
-  });
-  const [artworkMode, setArtworkMode] = useState<'playing' | 'selected'>(() => {
-    try {
-      const saved = localStorage.getItem('classitunes_artwork_mode');
-      if (saved === 'playing' || saved === 'selected') return saved;
-    } catch (e) {}
-    return 'playing';
   });
   const [showFullArtModal, setShowFullArtModal] = useState(false);
   const [showAddMusicMenu, setShowAddMusicMenu] = useState(false);
@@ -88,12 +79,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       localStorage.setItem('classitunes_is_artwork_open', String(isArtworkOpen));
     } catch (e) {}
   }, [isArtworkOpen]);
-
-  React.useEffect(() => {
-    try {
-      localStorage.setItem('classitunes_artwork_mode', artworkMode);
-    } catch (e) {}
-  }, [artworkMode]);
 
   const [artworkHeight, setArtworkHeight] = useState(() => {
     const saved = localStorage.getItem('classitunes_artwork_height');
@@ -149,12 +134,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const libraryItems = playlists.filter(p => p.systemType && p.systemType !== 'user');
   const userPlaylists = playlists.filter(p => !p.systemType || p.systemType === 'user');
 
-  // Determine active track for artwork panel
-  const displayTrack = artworkMode === 'playing' 
-    ? (currentTrack || selectedTrack) 
-    : (selectedTrack || currentTrack);
-
-  const isDisplayTrackPlaying = displayTrack && currentTrack?.id === displayTrack.id && isPlaying;
+  // Display artwork strictly for the currently playing track
+  const displayTrack = currentTrack || null;
+  const isDisplayTrackPlaying = !!displayTrack && !!isPlaying;
 
   const getSystemIcon = (type?: string) => {
     switch (type) {
@@ -545,32 +527,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Panel Content Body */}
         {isArtworkOpen && (
           <div className={`flex flex-col animate-in slide-in-from-bottom-2 duration-200 overflow-y-auto flex-1 custom-scrollbar min-h-0 select-none ${isCompact ? 'p-1.5 gap-1.5' : 'p-2.5 gap-2'}`}>
-            {/* Mode Selector Pill Switcher */}
-            <div className={`flex items-center p-0.5 rounded-md text-[10px] border shrink-0 ${
-              isLight ? 'bg-[#bdc8d9] border-[#9faebd]' : 'bg-[#111111] border-white/5'
-            }`}>
-              <button
-                onClick={() => setArtworkMode('playing')}
-                className={`flex-1 py-0.5 rounded text-center font-medium transition-colors ${
-                  artworkMode === 'playing'
-                    ? isLight ? 'bg-white text-blue-600 font-bold shadow-sm' : 'bg-[#2f2f2f] text-white shadow-sm'
-                    : isLight ? 'text-gray-700 hover:text-black' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                Now Playing
-              </button>
-              <button
-                onClick={() => setArtworkMode('selected')}
-                className={`flex-1 py-0.5 rounded text-center font-medium transition-colors ${
-                  artworkMode === 'selected'
-                    ? isLight ? 'bg-white text-blue-600 font-bold shadow-sm' : 'bg-[#2f2f2f] text-white shadow-sm'
-                    : isLight ? 'text-gray-700 hover:text-black' : 'text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                Selected Item
-              </button>
-            </div>
-
             {/* Artwork Display Container */}
             {displayTrack ? (
               <div className="flex flex-col gap-1.5 flex-1 min-h-0 items-center justify-center">
@@ -1138,19 +1094,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <div className={`border-t my-1 ${isLight ? 'border-gray-200' : 'border-white/10'}`} />
                 </>
               )}
-
-              <button
-                onClick={() => {
-                  setArtworkMode(artworkMode === 'playing' ? 'selected' : 'playing');
-                  setSidebarContextMenu(null);
-                }}
-                className={`w-full px-3 py-1.5 flex items-center gap-2.5 transition-colors ${
-                  isLight ? 'hover:bg-blue-600 hover:text-white' : 'hover:bg-indigo-600 hover:text-white'
-                }`}
-              >
-                <ImageIcon className="w-3.5 h-3.5 opacity-70" />
-                <span>Show: {artworkMode === 'playing' ? 'Selected Item' : 'Now Playing'}</span>
-              </button>
 
               <button
                 onClick={() => {

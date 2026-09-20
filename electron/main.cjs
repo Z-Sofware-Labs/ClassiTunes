@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, nativeImage, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -104,6 +104,17 @@ function createWindow() {
 
   ipcMain.handle('check-for-updates', async () => {
     return { updateAvailable: false };
+  });
+
+  ipcMain.handle('get-system-theme', () => {
+    return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  });
+
+  nativeTheme.on('updated', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+      mainWindow.webContents.send('system-theme-changed', theme);
+    }
   });
 
   ipcMain.handle('download-and-install-update', async (event, url) => {

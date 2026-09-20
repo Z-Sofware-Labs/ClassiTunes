@@ -11,4 +11,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showItemInFolder: (filePath) => ipcRenderer.send('show-item-in-folder', filePath),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadAndInstallUpdate: (url) => ipcRenderer.invoke('download-and-install-update', url),
+  getSystemTheme: () => ipcRenderer.invoke('get-system-theme'),
+  onSystemThemeChanged: (callback) => {
+    const handler = (event, theme) => callback(theme);
+    ipcRenderer.on('system-theme-changed', handler);
+    return () => ipcRenderer.removeListener('system-theme-changed', handler);
+  },
 });

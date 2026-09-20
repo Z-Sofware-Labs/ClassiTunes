@@ -238,21 +238,77 @@ export default function App() {
     if (typeof window === 'undefined') return;
     let isCancelled = false;
 
-    // 1. Check native Tauri window theme and listen for live system theme changes (KDE, GNOME, macOS, Windows)
+    // Helper to update state if not unmounted
+    const applySystemTheme = (newTheme: 'dark' | 'light') => {
+      if (!isCancelled && (newTheme === 'dark' || newTheme === 'light')) {
+        setSystemTheme(newTheme);
+      }
+    };
+
+    // 1. Check Electron nativeTheme if running under Electron
+    if ((window as any).electronAPI?.getSystemTheme) {
+      (window as any).electronAPI.getSystemTheme().then((t: 'dark' | 'light') => {
+        applySystemTheme(t);
+      }).catch(() => {});
+    }
+    let electronUnsub: (() => void) | null = null;
+    if (typeof (window as any).electronAPI?.onSystemThemeChanged === 'function') {
+      electronUnsub = (window as any).electronAPI.onSystemThemeChanged((t: 'dark' | 'light') => {
+        applySystemTheme(t);
+      });
+    }
+
+    // 2. Standard and legacy media query listeners (works across modern Chromium, WebKitGTK, Safari)
+    let removeMediaListener: (() => void) | null = null;
+    if (window.matchMedia) {
+      const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+      const lightMedia = window.matchMedia('(prefers-color-scheme: light)');
+
+      const evaluateMedia = () => {
+        if (darkMedia.matches) {
+          applySystemTheme('dark');
+        } else if (lightMedia.matches) {
+          applySystemTheme('light');
+        }
+      };
+
+      evaluateMedia();
+
+      const onMediaChange = () => evaluateMedia();
+
+      if (typeof darkMedia.addEventListener === 'function') {
+        darkMedia.addEventListener('change', onMediaChange);
+        if (typeof lightMedia.addEventListener === 'function') {
+          lightMedia.addEventListener('change', onMediaChange);
+        }
+        removeMediaListener = () => {
+          darkMedia.removeEventListener('change', onMediaChange);
+          if (typeof lightMedia.removeEventListener === 'function') {
+            lightMedia.removeEventListener('change', onMediaChange);
+          }
+        };
+      } else if (typeof (darkMedia as any).addListener === 'function') {
+        // Fallback for older WebKitGTK / Safari engines
+        (darkMedia as any).addListener(onMediaChange);
+        removeMediaListener = () => {
+          (darkMedia as any).removeListener(onMediaChange);
+        };
+      }
+    }
+
+    // 3. Tauri window theme listener (for environments where window theme is reported by OS)
     let tauriUnlisten: (() => void) | null = null;
     if ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__) {
       import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
         try {
           const win = getCurrentWindow();
           const winTheme = await win.theme();
-          if (!isCancelled && (winTheme === 'dark' || winTheme === 'light')) {
-            setSystemTheme(winTheme);
+          if (winTheme === 'dark' || winTheme === 'light') {
+            applySystemTheme(winTheme);
           }
           if (typeof win.onThemeChanged === 'function') {
             const unlisten = await win.onThemeChanged(({ payload }: { payload: 'dark' | 'light' }) => {
-              if (!isCancelled && (payload === 'dark' || payload === 'light')) {
-                setSystemTheme(payload);
-              }
+              applySystemTheme(payload);
             });
             if (isCancelled) {
               unlisten();
@@ -264,40 +320,16 @@ export default function App() {
       }).catch(() => {});
     }
 
-    // 2. Standard and legacy media query listeners
-    if (window.matchMedia) {
-      const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
-      const updateFromMedia = (e?: MediaQueryListEvent | MediaQueryList) => {
-        const matches = e ? e.matches : darkMedia.matches;
-        setSystemTheme(matches ? 'dark' : 'light');
-      };
-
-      updateFromMedia();
-
-      if (typeof darkMedia.addEventListener === 'function') {
-        darkMedia.addEventListener('change', updateFromMedia);
-      } else if (typeof (darkMedia as any).addListener === 'function') {
-        // Fallback for older WebKitGTK / Safari engines
-        (darkMedia as any).addListener(updateFromMedia);
-      }
-
-      return () => {
-        isCancelled = true;
-        if (tauriUnlisten) {
-          tauriUnlisten();
-        }
-        if (typeof darkMedia.removeEventListener === 'function') {
-          darkMedia.removeEventListener('change', updateFromMedia);
-        } else if (typeof (darkMedia as any).removeListener === 'function') {
-          (darkMedia as any).removeListener(updateFromMedia);
-        }
-      };
-    }
-
     return () => {
       isCancelled = true;
       if (tauriUnlisten) {
         tauriUnlisten();
+      }
+      if (electronUnsub) {
+        electronUnsub();
+      }
+      if (removeMediaListener) {
+        removeMediaListener();
       }
     };
   }, []);
@@ -505,45 +537,54 @@ export default function App() {
     audioEngine.setNormalizationEnabled(appSettings.audioNormalization);
   }, [appSettings.audioNormalization]);
 
-  // Currently highlighted track for sidebar artwork panel in "Selected Item" mode
-  const selectedTrack = useMemo(() => {
-    if (selectedTrackIds.length === 0) return null;
-    const lastSelectedId = selectedTrackIds[selectedTrackIds.length - 1];
-    return tracks.find(t => t.id === lastSelectedId) || null;
-  }, [selectedTrackIds, tracks]);
-
   const handleSelectionChange = useCallback((ids: string[]) => {
     setSelectedTrackIds(ids);
-    if (ids.length > 0) {
-      const lastId = ids[ids.length - 1];
-      const target = tracks.find(t => t.id === lastId);
-      if (target && !target.coverUrl && !target.id.startsWith('demo_') && !target.id.startsWith('sample_')) {
-        hydrateTrackMedia(target).then((hydrated) => {
-          if (hydrated && hydrated.coverUrl) {
-            setTracks(prev => prev.map(t => (t.id === target.id ? { ...t, coverUrl: hydrated.coverUrl } : t)));
-          }
-        });
-      }
-    }
-  }, [tracks]);
+  }, []);
 
   // Audio Playback Handlers
   const playTrack = useCallback((track: Track) => {
+    // 1. Immediately set active playing track and initiate audio
     setCurrentTrack(track);
     setIsPlaying(true);
-    void audioEngine.playTrack(track.audioUrl, track.replayGainDb);
+    if (track.audioUrl) {
+      void audioEngine.playTrack(track.audioUrl, track.replayGainDb);
+    }
 
-    // If artwork or audio URL is not yet rehydrated from storage/tauri, hydrate on-demand immediately
-    if (!track.coverUrl && !track.id.startsWith('demo_') && !track.id.startsWith('sample_')) {
+    // 2. Hydrate artwork & audio URL on-demand immediately (critical for 1st song on launch)
+    if (!track.id.startsWith('demo_') && !track.id.startsWith('sample_')) {
       hydrateTrackMedia(track).then((hydrated) => {
-        if (hydrated && hydrated.coverUrl) {
-          setCurrentTrack(prev => (prev?.id === track.id ? { ...prev, coverUrl: hydrated.coverUrl, audioUrl: hydrated.audioUrl || prev.audioUrl } : prev));
-          setTracks(prev => prev.map(t => (t.id === track.id ? { ...t, coverUrl: hydrated.coverUrl, audioUrl: hydrated.audioUrl || t.audioUrl } : t)));
+        if (hydrated) {
+          // Guarantee currentTrack gets artwork even if it just started
+          setCurrentTrack(prev => {
+            if (!prev || prev.id === track.id) {
+              return {
+                ...track,
+                ...prev,
+                coverUrl: hydrated.coverUrl || prev?.coverUrl || track.coverUrl,
+                audioUrl: hydrated.audioUrl || prev?.audioUrl || track.audioUrl,
+              };
+            }
+            return prev;
+          });
+
+          // If audio URL was resolved via hydration and wasn't playing yet, start playback
+          if (hydrated.audioUrl && (!track.audioUrl || track.audioUrl !== hydrated.audioUrl)) {
+            void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb);
+          }
+
+          // Update library track with rehydrated artwork and audioUrl
+          setTracks(prev => prev.map(t => (t.id === track.id ? { 
+            ...t, 
+            coverUrl: hydrated.coverUrl || t.coverUrl, 
+            audioUrl: hydrated.audioUrl || t.audioUrl 
+          } : t)));
         }
+      }).catch((err) => {
+        console.warn('Failed to hydrate track media on play:', err);
       });
     }
 
-    // Update Play Count
+    // 3. Update Play Count
     setTracks(prev => prev.map(t => {
       if (t.id === track.id) {
         return {
@@ -1781,7 +1822,6 @@ export default function App() {
             onStartImporting={handleStartImporting}
             trackCounts={trackCounts}
             currentTrack={currentTrack}
-            selectedTrack={selectedTrack}
             isPlaying={isPlaying}
             onTogglePlay={togglePlay}
             onOpenGetInfo={setEditingTrack}
