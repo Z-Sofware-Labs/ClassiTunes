@@ -373,7 +373,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* Center Section: LCD Display (True Dead Center) */}
         <div className="flex items-center justify-center w-full min-w-0 sm:min-w-[340px] md:min-w-[440px] lg:min-w-[512px] max-w-[640px] mx-auto">
-          <div className={`relative border rounded-md px-2.5 pt-1.5 pb-1 text-center overflow-hidden transition-colors w-full ${isLight
+          <div className={`relative border rounded-md px-2.5 pt-1.5 pb-1 text-center overflow-hidden transition-colors w-full h-[44px] flex flex-col justify-center ${isLight
             ? 'bg-gradient-to-b from-white via-[#f0f4fa] to-[#dbe5f2] border-[#8a97a8] shadow-[inset_0_1px_3px_rgba(0,0,0,0.15)] text-gray-900'
             : 'bg-gradient-to-b from-[#2a2a2a] to-[#1a1a1a] border-[#333] shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)] text-gray-100'
             }`}>
@@ -384,7 +384,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             {currentTrack ? (
               <div className="flex flex-col items-center relative w-full">
                 {/* Row 1: Song - Artist with Marquee support for long text */}
-                <div className="w-full text-center px-4 leading-none pt-[1px] pb-[2px]">
+                <div className="w-full text-center px-4 leading-none pt-[1px] pb-[2px] overflow-hidden">
                   <MarqueeText
                     text={currentTrack.artist ? `${currentTrack.title} — ${currentTrack.artist}` : currentTrack.title}
                     className={`text-[11px] tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
@@ -471,10 +471,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               </div>
             ) : (
               <div
-                className={`py-0.5 text-[11px] font-normal tracking-normal flex items-center justify-center gap-1.5 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
+                className={`w-full text-[11px] font-normal tracking-normal flex items-center justify-center gap-1.5 my-auto ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
               >
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                <span>ClassiTunes — Select or drop tracks to play</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0" />
+                <span className="truncate">ClassiTunes — Select or drop tracks to play</span>
               </div>
             )}
           </div>

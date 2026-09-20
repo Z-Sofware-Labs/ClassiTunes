@@ -259,10 +259,15 @@ async function parseMp4Atoms(file: File): Promise<Mp4TagsResult | null> {
                 else if (stikVal === 6) result.mediaKind = 'Voice Memo';
                 else result.mediaKind = 'Music';
               }
-            } else if (tagStr === '©day' || tagStr === '\xa9day' || tagCode === 0xa9646179) {
+            } else if (tagStr === '©day' || tagStr === '\xa9day' || tagCode === 0xa9646179 || tagStr === 'rday' || tagCode === 0x72646179) {
               const yrStr = decoder.decode(payload).replace(/\0/g, '').trim();
-              const yr = parseInt(yrStr, 10);
-              if (!isNaN(yr)) result.year = yr;
+              const match = yrStr.match(/\b(19\d\d|20\d\d)\b/);
+              if (match) {
+                result.year = parseInt(match[1], 10);
+              } else {
+                const yr = parseInt(yrStr, 10);
+                if (!isNaN(yr) && yr >= 1000 && yr <= 9999) result.year = yr;
+              }
             } else if (tagStr === '©gen' || tagStr === '\xa9gen' || tagCode === 0xa967656e || tagStr === 'gnre') {
               if (dataType === 1) {
                 result.genre = decoder.decode(payload).replace(/\0/g, '').trim();

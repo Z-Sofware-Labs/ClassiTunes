@@ -324,6 +324,44 @@ fn encode_base64(bytes: &[u8]) -> String {
     out
 }
 
+fn parse_year_string(s: &str) -> Option<i32> {
+    let trimmed = s.trim();
+    if let Ok(y) = trimmed.parse::<i32>() {
+        if (1000..=9999).contains(&y) {
+            return Some(y);
+        }
+    }
+    // Extract first contiguous 4 digits (e.g. from 2024-05-17T07:00:00Z)
+    let bytes = trimmed.as_bytes();
+    for window in bytes.windows(4) {
+        if window.iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(sub) = std::str::from_utf8(window) {
+                if let Ok(y) = sub.parse::<i32>() {
+                    if (1000..=9999).contains(&y) {
+                        return Some(y);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_mp4_file(path: &std::path::Path, ext: &str) -> bool {
+    if matches!(ext, "m4a" | "mp4" | "m4b" | "m4p" | "m4r" | "alac") {
+        return true;
+    }
+    // Inspect first 12 bytes for 'ftyp' box
+    if let Ok(mut file) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut buf = [0u8; 12];
+        if file.read_exact(&mut buf).is_ok() && &buf[4..8] == b"ftyp" {
+            return true;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> {
     use id3::TagLike;
@@ -371,7 +409,7 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
     };
 
     // 1. Try reading MP4/M4A metadata if applicable
-    let is_mp4 = ext == "m4a" || ext == "mp4" || ext == "m4b" || ext == "m4p" || ext == "m4r";
+    let is_mp4 = is_mp4_file(path, &ext);
     if is_mp4 {
         if let Ok(tag) = mp4ameta::Tag::read_from_path(&file_path) {
             res.title = tag.title().map(|s| s.to_string());
@@ -381,7 +419,17 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
             res.composer = tag.composer().map(|s| s.to_string());
             res.genre = tag.genre().map(|s| s.to_string());
             if let Some(yr) = tag.year() {
-                res.year = yr.parse::<i32>().ok();
+                res.year = parse_year_string(yr);
+            }
+            res.publisher = tag.strings().find(|(ident, _)| {
+                if let mp4ameta::DataIdent::Fourcc(f) = ident {
+                    f.0 == *b"\xa9pub"
+                } else {
+                    false
+                }
+            }).map(|(_, s)| s.to_string());
+            if let Some(lyr) = tag.lyrics() {
+                res.lyrics = Some(lyr.to_string());
             }
             let (trkn_no, trkn_of) = tag.track();
             res.track_number = trkn_no.map(|t| t as i32);
@@ -421,7 +469,22 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
             if res.album_artist.is_none() { res.album_artist = tag.album_artist().map(|s| s.to_string()); }
             if res.album.is_none() { res.album = tag.album().map(|s| s.to_string()); }
             if res.genre.is_none() { res.genre = tag.genre().map(|s| s.to_string()); }
-            if res.year.is_none() { res.year = tag.year(); }
+            if res.year.is_none() {
+                res.year = tag.year().or_else(|| {
+                    tag.get("TDRC")
+                        .and_then(|f| f.content().text())
+                        .and_then(parse_year_string)
+                });
+            }
+            if res.composer.is_none() {
+                res.composer = tag.get("TCOM").and_then(|f| f.content().text()).map(|s| s.to_string());
+            }
+            if res.publisher.is_none() {
+                res.publisher = tag.get("TPUB").and_then(|f| f.content().text()).map(|s| s.to_string());
+            }
+            if res.lyrics.is_none() {
+                res.lyrics = tag.lyrics().next().map(|l| l.text.clone());
+            }
             if res.track_number.is_none() { res.track_number = tag.track().map(|t| t as i32); }
             if res.track_total.is_none() { res.track_total = tag.total_tracks().map(|t| t as i32); }
             if res.disc_number.is_none() { res.disc_number = tag.disc().map(|d| d as i32); }
@@ -430,7 +493,11 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                 res.comments = tag.comments().next().map(|c| c.text.clone());
             }
             if res.cover_url.is_none() {
-                if let Some(pic) = tag.pictures().next() {
+                let pic_opt = tag
+                    .pictures()
+                    .find(|p| p.picture_type == id3::frame::PictureType::CoverFront)
+                    .or_else(|| tag.pictures().next());
+                if let Some(pic) = pic_opt {
                     let mime = if pic.mime_type.is_empty() { "image/jpeg" } else { &pic.mime_type };
                     let b64 = encode_base64(&pic.data);
                     res.cover_url = Some(format!("data:{mime};base64,{b64}"));
@@ -449,11 +516,11 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
         }
     }
 
-    // 3. Audio file probe via Lofty (supports MP3, M4A, FLAC, WAV, OGG, etc. for accurate duration and properties)
-    if res.duration.is_none() || res.sample_rate.is_none() {
+    // 3. Audio file probe via Lofty (supports MP3, M4A, FLAC, WAV, OGG, etc. for accurate duration, properties, and metadata)
+    if res.duration.is_none() || res.sample_rate.is_none() || res.title.is_none() || res.year.is_none() || res.cover_url.is_none() {
         use lofty::file::{AudioFile, TaggedFileExt};
         use lofty::probe::Probe;
-        use lofty::tag::Accessor;
+        use lofty::tag::{Accessor, ItemKey};
 
         if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
             let props = tagged_file.properties();
@@ -474,14 +541,40 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
             if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
                 if res.title.is_none() { res.title = tag.title().as_deref().map(|s| s.to_string()); }
                 if res.artist.is_none() { res.artist = tag.artist().as_deref().map(|s| s.to_string()); }
+                if res.album_artist.is_none() {
+                    res.album_artist = tag.get_string(ItemKey::AlbumArtist).map(|s| s.to_string());
+                }
                 if res.album.is_none() { res.album = tag.album().as_deref().map(|s| s.to_string()); }
+                if res.composer.is_none() {
+                    res.composer = tag.get_string(ItemKey::Composer).map(|s| s.to_string());
+                }
+                if res.publisher.is_none() {
+                    res.publisher = tag.get_string(ItemKey::Label).or_else(|| tag.get_string(ItemKey::Publisher)).map(|s| s.to_string());
+                }
+                if res.lyrics.is_none() {
+                    res.lyrics = tag.get_string(ItemKey::Lyrics).map(|s| s.to_string());
+                }
                 if res.genre.is_none() { res.genre = tag.genre().as_deref().map(|s| s.to_string()); }
+                if res.year.is_none() {
+                    res.year = tag.get_string(ItemKey::RecordingDate)
+                        .or_else(|| tag.get_string(ItemKey::Year))
+                        .or_else(|| tag.get_string(ItemKey::OriginalReleaseDate))
+                        .and_then(parse_year_string);
+                }
                 if res.track_number.is_none() { res.track_number = tag.track().map(|t| t as i32); }
                 if res.track_total.is_none() { res.track_total = tag.track_total().map(|t| t as i32); }
                 if res.disc_number.is_none() { res.disc_number = tag.disk().map(|d| d as i32); }
                 if res.disc_total.is_none() { res.disc_total = tag.disk_total().map(|d| d as i32); }
+                if res.comments.is_none() {
+                    res.comments = tag.comment().as_deref().map(|s| s.to_string());
+                }
                 if res.cover_url.is_none() {
-                    if let Some(pic) = tag.pictures().first() {
+                    let pic_opt = tag
+                        .pictures()
+                        .iter()
+                        .find(|p| p.pic_type() == lofty::picture::PictureType::CoverFront)
+                        .or_else(|| tag.pictures().first());
+                    if let Some(pic) = pic_opt {
                         let mime_str = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
                         let b64 = encode_base64(pic.data());
                         res.cover_url = Some(format!("data:{mime_str};base64,{b64}"));
@@ -723,13 +816,10 @@ fn get_audio_stream_port() -> u16 {
 
 #[tauri::command]
 fn write_music_metadata(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
-    let lower = file_path.to_ascii_lowercase();
-    if lower.ends_with(".m4a")
-        || lower.ends_with(".m4b")
-        || lower.ends_with(".m4p")
-        || lower.ends_with(".m4r")
-        || lower.ends_with(".mp4")
-    {
+    use std::path::Path;
+    let path = Path::new(&file_path);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if is_mp4_file(path, &ext) {
         write_mp4_tags(&file_path, tags)
     } else {
         // Raw AAC/ADTS has no MP4 ilst container. ID3v2 is the interoperable
