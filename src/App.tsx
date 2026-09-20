@@ -20,7 +20,7 @@ import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, logToFile } from './utils/tauriWindow';
-import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage } from './services/mediaStorage';
+import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
 export default function App() {
@@ -382,6 +382,9 @@ export default function App() {
     return 'lib_music';
   });
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const handleClearSearch = useCallback(() => {
+    setSearchQuery('');
+  }, []);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
 
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
@@ -419,7 +422,13 @@ export default function App() {
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isUpdateOpen, setIsUpdateOpen] = useState<boolean>(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState<boolean>(false);
-  const [editingTrack, setEditingTrack] = useState<Track | null>(null);
+  const [editingTracks, setEditingTracks] = useState<Track[] | null>(null);
+  const handleOpenGetInfo = useCallback((trackOrTracks: Track | Track[]) => {
+    const list = Array.isArray(trackOrTracks) ? trackOrTracks : [trackOrTracks];
+    if (list.length > 0) {
+      setEditingTracks(list);
+    }
+  }, []);
   const [isNewPlaylistOpen, setIsNewPlaylistOpen] = useState<boolean>(false);
   const [isSmartPlaylistOpen, setIsSmartPlaylistOpen] = useState<boolean>(false);
   const [editingSmartPlaylist, setEditingSmartPlaylist] = useState<Playlist | null>(null);
@@ -543,8 +552,23 @@ export default function App() {
 
   // Audio Playback Handlers
   const playTrack = useCallback((track: Track) => {
+    // 0. Instantly resolve cover artwork from memory cache or sibling tracks from same album
+    const albumKey = (track.album || '').trim().toLowerCase();
+    let cachedArt = track.coverUrl || getCachedArtwork(track.id) || (albumKey ? getCachedArtwork(albumKey) : undefined);
+    
+    // Check if another loaded track with the same album has a valid coverUrl
+    if (!cachedArt && albumKey) {
+      const sibling = tracks.find(t => (t.album || '').trim().toLowerCase() === albumKey && t.coverUrl);
+      if (sibling?.coverUrl) {
+        cachedArt = sibling.coverUrl;
+        setCachedArtwork(albumKey, cachedArt);
+      }
+    }
+
+    const immediateTrack = cachedArt && !track.coverUrl ? { ...track, coverUrl: cachedArt } : track;
+
     // 1. Immediately set active playing track and initiate audio
-    setCurrentTrack(track);
+    setCurrentTrack(immediateTrack);
     setIsPlaying(true);
     if (track.audioUrl) {
       void audioEngine.playTrack(track.audioUrl, track.replayGainDb);
@@ -552,7 +576,7 @@ export default function App() {
 
     // 2. Hydrate artwork & audio URL on-demand immediately (critical for 1st song on launch)
     if (!track.id.startsWith('demo_') && !track.id.startsWith('sample_')) {
-      hydrateTrackMedia(track).then((hydrated) => {
+      hydrateTrackMedia(immediateTrack).then((hydrated) => {
         if (hydrated) {
           // Guarantee currentTrack gets artwork even if it just started
           setCurrentTrack(prev => {
@@ -560,7 +584,7 @@ export default function App() {
               return {
                 ...track,
                 ...prev,
-                coverUrl: hydrated.coverUrl || prev?.coverUrl || track.coverUrl,
+                coverUrl: hydrated.coverUrl || prev?.coverUrl || immediateTrack.coverUrl,
                 audioUrl: hydrated.audioUrl || prev?.audioUrl || track.audioUrl,
               };
             }
@@ -570,6 +594,12 @@ export default function App() {
           // If audio URL was resolved via hydration and wasn't playing yet, start playback
           if (hydrated.audioUrl && (!track.audioUrl || track.audioUrl !== hydrated.audioUrl)) {
             void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb);
+          }
+
+          // Cache resolved artwork globally
+          if (hydrated.coverUrl) {
+            setCachedArtwork(track.id, hydrated.coverUrl);
+            if (albumKey) setCachedArtwork(albumKey, hydrated.coverUrl);
           }
 
           // Update library track with rehydrated artwork and audioUrl
@@ -910,27 +940,66 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Derived Albums for Grid & Cover Flow Views
+  // Derived Albums for Album Grid View (Grouped strictly by Album Name)
   const albums = useMemo(() => {
     const albumMap = new Map<string, Album>();
 
     filteredTracks.forEach(t => {
-      const key = `${t.album}___${t.artist}`.toLowerCase();
+      const albumName = (t.album || 'Unknown Album').trim();
+      const key = albumName.toLowerCase();
+
       if (!albumMap.has(key)) {
         albumMap.set(key, {
           id: `album_${key}`,
-          name: t.album || 'Unknown Album',
-          artist: t.artist || 'Unknown Artist',
+          name: albumName,
+          artist: t.albumArtist || t.artist || 'Unknown Artist',
           year: t.year,
           coverUrl: t.coverUrl,
           tracks: [t],
         });
       } else {
-        albumMap.get(key)!.tracks.push(t);
+        const existing = albumMap.get(key)!;
+        existing.tracks.push(t);
+
+        // Keep a valid coverUrl if first track didn't have one
+        if (!existing.coverUrl && t.coverUrl) {
+          existing.coverUrl = t.coverUrl;
+        }
+        // Keep year if first track didn't have one
+        if (!existing.year && t.year) {
+          existing.year = t.year;
+        }
       }
     });
 
-    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+    // Resolve final album artist & sort tracks properly by disc/track number
+    albumMap.forEach((album) => {
+      const artists = new Set(album.tracks.map(t => (t.artist || '').trim()).filter(Boolean));
+      const albumArtists = new Set(album.tracks.map(t => (t.albumArtist || '').trim()).filter(Boolean));
+
+      if (albumArtists.size === 1 && albumArtists.values().next().value) {
+        album.artist = albumArtists.values().next().value!;
+      } else if (artists.size > 1) {
+        album.artist = 'Various Artists';
+      } else if (artists.size === 1) {
+        album.artist = artists.values().next().value!;
+      }
+
+      // Sort tracks within the album by Disc Number then Track Number
+      album.tracks.sort((a, b) => {
+        const discA = a.discNumber || 1;
+        const discB = b.discNumber || 1;
+        if (discA !== discB) return discA - discB;
+
+        const trackA = a.trackNumber ?? 9999;
+        const trackB = b.trackNumber ?? 9999;
+        if (trackA !== trackB) return trackA - trackB;
+
+        return (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+      });
+    });
+
+    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   }, [filteredTracks]);
 
   // Track Counts for Sidebar
@@ -957,108 +1026,81 @@ export default function App() {
     setTracks(prev => prev.map(t => t.id === trackId ? { ...t, rating } : t));
   };
 
-  // Track Metadata Edit
-  const handleSaveTrack = async (updatedTrack: Track & { artworkDataUrl?: string; artworkRemoved?: boolean }) => {
-    const { artworkDataUrl, artworkRemoved, ...cleanTrack } = updatedTrack;
+  // Track Metadata Edit (Single or Batch Multi-Track / Album)
+  const handleSaveTracks = async (updatedTracks: Array<Track & { artworkDataUrl?: string; artworkRemoved?: boolean }>) => {
+    if (updatedTracks.length === 0) return;
 
-    // In the native app (Tauri) the file is the source of truth for binary data
-    // (artwork, bitrate, duration). For text fields (title, lyrics, etc.) we always
-    // prefer the values the user explicitly submitted — browser-side ID3 parsers
-    // are not guaranteed to round-trip every frame type reliably, so we never let
-    // a failed re-read silently discard what the user just typed.
-    if (isTauri() && cleanTrack.filePath && /\.(mp3|aac|m4a|m4b|m4p|m4r|mp4)$/i.test(cleanTrack.filePath)) {
-      try {
-        await writeTauriMusicMetadata(cleanTrack.filePath, {
-          title: updatedTrack.title ?? '',
-          artist: updatedTrack.artist ?? '',
-          albumArtist: updatedTrack.albumArtist ?? '',
-          album: updatedTrack.album ?? '',
-          composer: updatedTrack.composer ?? '',
-          publisher: updatedTrack.publisher ?? '',
-          lyrics: updatedTrack.lyrics ?? '',
-          genre: updatedTrack.genre ?? '',
-          year: updatedTrack.year,
-          trackNumber: updatedTrack.trackNumber,
-          trackTotal: updatedTrack.trackTotal,
-          discNumber: updatedTrack.discNumber,
-          discTotal: updatedTrack.discTotal,
-          bpm: updatedTrack.bpm,
-          comments: updatedTrack.comments ?? '',
-          mediaKind: updatedTrack.mediaKind ?? 'Music',
-          // artworkDataUrl is intentionally omitted when the artwork was not
-          // changed. An empty string means remove every embedded cover.
-          ...(artworkDataUrl !== undefined || artworkRemoved
-            ? { artworkDataUrl: artworkRemoved ? '' : (artworkDataUrl || '') }
-            : {}),
-        });
+    const persistedTracks: Track[] = [];
 
-        // Re-read only the technical/binary fields from the physical file.
-        // Do NOT use the re-read values for user-editable text fields (title,
-        // artist, lyrics, etc.) — browser parsers may not reliably round-trip
-        // every ID3/MP4 frame type, which would silently discard the user's input.
-        let freshCoverUrl: string | undefined = cleanTrack.coverUrl;
-        let freshBitrate: number | undefined = cleanTrack.bitrate;
-        let freshSampleRate: number | undefined = cleanTrack.sampleRate;
-        let freshDuration: number | undefined = cleanTrack.duration;
-        let freshSizeBytes: number | undefined = cleanTrack.sizeBytes;
+    for (const updatedTrack of updatedTracks) {
+      const { artworkDataUrl, artworkRemoved, ...cleanTrack } = updatedTrack;
 
+      if (isTauri() && cleanTrack.filePath && /\.(mp3|aac|m4a|m4b|m4p|m4r|mp4)$/i.test(cleanTrack.filePath)) {
         try {
-          const persistedTags = await extractID3TagsFromTrack(cleanTrack, { fallbackToTrack: false });
-          // Only trust technical fields from the re-read; text fields come from the user's submission.
-          freshBitrate = persistedTags.bitrate ?? cleanTrack.bitrate;
-          freshSampleRate = persistedTags.sampleRate ?? cleanTrack.sampleRate;
-          freshDuration = persistedTags.duration ?? cleanTrack.duration;
-          freshSizeBytes = persistedTags.sizeBytes ?? cleanTrack.sizeBytes;
+          await writeTauriMusicMetadata(cleanTrack.filePath, {
+            title: updatedTrack.title ?? '',
+            artist: updatedTrack.artist ?? '',
+            albumArtist: updatedTrack.albumArtist ?? '',
+            album: updatedTrack.album ?? '',
+            composer: updatedTrack.composer ?? '',
+            publisher: updatedTrack.publisher ?? '',
+            lyrics: updatedTrack.lyrics ?? '',
+            genre: updatedTrack.genre ?? '',
+            year: updatedTrack.year,
+            trackNumber: updatedTrack.trackNumber,
+            trackTotal: updatedTrack.trackTotal,
+            discNumber: updatedTrack.discNumber,
+            discTotal: updatedTrack.discTotal,
+            bpm: updatedTrack.bpm,
+            comments: updatedTrack.comments ?? '',
+            mediaKind: updatedTrack.mediaKind ?? 'Music',
+            ...(artworkDataUrl !== undefined || artworkRemoved
+              ? { artworkDataUrl: artworkRemoved ? '' : (artworkDataUrl || '') }
+              : {}),
+          });
 
-          // Update coverUrl from the re-read if it succeeded. If artwork was
-          // changed but the re-read returned nothing, fall back to the submitted
-          // artworkDataUrl so the new art is still visible in the library.
+          let freshCoverUrl: string | undefined = cleanTrack.coverUrl;
           if (artworkRemoved) {
             freshCoverUrl = undefined;
-          } else if (persistedTags.coverUrl) {
-            freshCoverUrl = persistedTags.coverUrl;
           } else if (artworkDataUrl) {
-            // Re-read failed to extract the just-written cover — use the data URL
-            // directly so the UI shows the correct artwork without a page reload.
             freshCoverUrl = artworkDataUrl;
           }
-        } catch (reReadErr) {
-          console.warn('Post-save re-read failed; using submitted values for display:', reReadErr);
-          // If artwork was removed, clear it even if re-read failed.
-          if (artworkRemoved) freshCoverUrl = undefined;
-          else if (artworkDataUrl) freshCoverUrl = artworkDataUrl;
-        }
 
-        const persisted: Track = {
-          // Start from the user's submitted text values — these are authoritative.
+          persistedTracks.push({
+            ...cleanTrack,
+            coverUrl: freshCoverUrl,
+          });
+        } catch (error) {
+          console.error('Failed to write edited music metadata for track:', cleanTrack.filePath, error);
+          persistedTracks.push(cleanTrack);
+        }
+      } else {
+        // Browser mode
+        persistedTracks.push({
           ...cleanTrack,
-          // Override with fresh technical/binary fields from the file re-read.
-          coverUrl: freshCoverUrl,
-          bitrate: freshBitrate,
-          sampleRate: freshSampleRate,
-          duration: freshDuration,
-          sizeBytes: freshSizeBytes,
-        };
-        setTracks(prev => prev.map(t => t.id === persisted.id ? persisted : t));
-        if (currentTrack?.id === persisted.id) setCurrentTrack(persisted);
-        return;
-      } catch (error) {
-        console.error('Failed to write edited music metadata:', error);
-        window.alert('The changes could not be saved to the music file. Please make sure the file is writable and try again.');
-        throw error; // Re-throw so GetInfoModal keeps the modal open for a retry
+          coverUrl: artworkRemoved ? undefined : (artworkDataUrl || cleanTrack.coverUrl),
+        });
       }
     }
 
-    // Browser/demo mode: apply submitted values directly to in-memory state.
-    // Resolve artwork: prefer the artworkDataUrl if the user changed it.
-    const browserTrack: Track = {
-      ...cleanTrack,
-      coverUrl: artworkRemoved
-        ? undefined
-        : (artworkDataUrl || cleanTrack.coverUrl),
-    };
-    setTracks(prev => prev.map(t => t.id === browserTrack.id ? browserTrack : t));
-    if (currentTrack?.id === browserTrack.id) setCurrentTrack(browserTrack);
+    // Persist all updated tracks into library state & IndexedDB
+    setTracks(prev => {
+      const map = new Map(persistedTracks.map(t => [t.id, t]));
+      const next = prev.map(t => map.has(t.id) ? { ...t, ...map.get(t.id)! } : t);
+      saveTracksMetadata(next).catch(() => {});
+      return next;
+    });
+
+    if (currentTrack) {
+      const match = persistedTracks.find(t => t.id === currentTrack.id);
+      if (match) {
+        setCurrentTrack(prev => prev ? { ...prev, ...match } : prev);
+      }
+    }
+  };
+
+  const handleSaveTrack = async (updatedTrack: Track & { artworkDataUrl?: string; artworkRemoved?: boolean }) => {
+    await handleSaveTracks([updatedTrack]);
   };
 
 
@@ -1824,7 +1866,7 @@ export default function App() {
             currentTrack={currentTrack}
             isPlaying={isPlaying}
             onTogglePlay={togglePlay}
-            onOpenGetInfo={setEditingTrack}
+            onOpenGetInfo={handleOpenGetInfo}
             theme={theme}
             sidebarWidth={sidebarWidth}
           />
@@ -1835,7 +1877,7 @@ export default function App() {
           />
         </div>
 
-        {/* View Switching */}
+        {/* Main Content Area: Sidebar + Active View */}
         <main className={`flex-1 flex flex-col overflow-hidden relative transition-colors duration-200 ${
           theme === 'light' ? 'bg-white' : 'bg-[#121212]'
         }`}>
@@ -1847,7 +1889,7 @@ export default function App() {
               playlists={playlists}
               onPlayTrack={playTrack}
               onUpdateRating={handleUpdateRating}
-              onOpenGetInfo={setEditingTrack}
+              onOpenGetInfo={handleOpenGetInfo}
               onDeleteTrack={handleDeleteTrack}
               onDeleteTracks={handleDeleteTracks}
               onAddTrackToPlaylist={handleAddTrackToPlaylist}
@@ -1858,7 +1900,7 @@ export default function App() {
               selectedTrackIds={selectedTrackIds}
               onSelectionChange={handleSelectionChange}
               searchQuery={searchQuery}
-              onClearSearch={() => setSearchQuery('')}
+              onClearSearch={handleClearSearch}
             />
           )}
 
@@ -1869,13 +1911,13 @@ export default function App() {
               isPlaying={isPlaying}
               onPlayTrack={playTrack}
               onUpdateRating={handleUpdateRating}
-              onOpenGetInfo={setEditingTrack}
+              onOpenGetInfo={handleOpenGetInfo}
               onTrackContextMenu={handleTrackContextMenu}
               onImportFiles={handleImportFiles}
               onStartImporting={handleStartImporting}
               theme={theme}
               searchQuery={searchQuery}
-              onClearSearch={() => setSearchQuery('')}
+              onClearSearch={handleClearSearch}
             />
           )}
         </main>
@@ -1890,13 +1932,14 @@ export default function App() {
         playlists={playlists}
         onPlayTrack={playTrack}
         onTogglePlay={togglePlay}
-        onOpenGetInfo={setEditingTrack}
+        onOpenGetInfo={handleOpenGetInfo}
         onUpdateRating={handleUpdateRating}
         onAddTrackToPlaylist={handleAddTrackToPlaylist}
         onCreatePlaylistWithTrack={handleCreatePlaylistWithTrack}
         onDeleteTrack={handleDeleteTrack}
         onDeleteTracks={handleDeleteTracks}
         selectedTrackIds={selectedTrackIds}
+        tracks={filteredTracks}
         theme={theme}
       />
 
@@ -2005,10 +2048,12 @@ export default function App() {
       )}
 
       <GetInfoModal
-        track={editingTrack}
-        isOpen={!!editingTrack}
-        onClose={() => setEditingTrack(null)}
+        track={editingTracks?.[0] || null}
+        tracks={editingTracks}
+        isOpen={!!editingTracks && editingTracks.length > 0}
+        onClose={() => setEditingTracks(null)}
         onSaveTrack={handleSaveTrack}
+        onSaveTracks={handleSaveTracks}
         theme={theme}
       />
 

@@ -17,13 +17,14 @@ interface ContextMenuProps {
   playlists: Playlist[];
   onPlayTrack: (track: Track) => void;
   onTogglePlay: () => void;
-  onOpenGetInfo: (track: Track) => void;
+  onOpenGetInfo: (trackOrTracks: Track | Track[]) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onAddTrackToPlaylist: (trackId: string, playlistId: string) => void;
   onCreatePlaylistWithTrack?: (track: Track) => void;
   onDeleteTrack: (trackId: string) => void;
   onDeleteTracks?: (trackIds: string[]) => void;
   selectedTrackIds?: string[];
+  tracks?: Track[];
   theme?: 'dark' | 'light';
 }
 
@@ -42,6 +43,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onDeleteTrack,
   onDeleteTracks,
   selectedTrackIds = [],
+  tracks = [],
   theme = 'dark',
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -138,7 +140,12 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       {/* Get Info */}
       <button
         onClick={() => {
-          onOpenGetInfo(track);
+          if (selectedTrackIds && selectedTrackIds.length > 1 && selectedTrackIds.includes(track.id) && tracks.length > 0) {
+            const selectedList = tracks.filter(t => selectedTrackIds.includes(t.id));
+            onOpenGetInfo(selectedList);
+          } else {
+            onOpenGetInfo(track);
+          }
           onClose();
         }}
         className={`w-full px-3 py-1.5 flex items-center justify-between transition-colors ${
@@ -147,7 +154,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       >
         <div className="flex items-center gap-2.5">
           <Info className="w-3.5 h-3.5 text-blue-500" />
-          <span>Get Info</span>
+          <span>
+            {selectedTrackIds && selectedTrackIds.length > 1 && selectedTrackIds.includes(track.id)
+              ? `Get Info (${selectedTrackIds.length} items)`
+              : 'Get Info'}
+          </span>
         </div>
         <span className="text-[10px] opacity-60 font-mono">⌘I</span>
       </button>

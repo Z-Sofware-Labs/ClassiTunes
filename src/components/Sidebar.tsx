@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { Playlist, Track } from '../types';
 import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory, convertPathsToFiles } from '../utils/tauriWindow';
+import { getCachedArtwork } from '../services/mediaStorage';
 
 interface SidebarProps {
   playlists: Playlist[];
@@ -137,6 +138,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Display artwork strictly for the currently playing track
   const displayTrack = currentTrack || null;
   const isDisplayTrackPlaying = !!displayTrack && !!isPlaying;
+  const albumKey = (displayTrack?.album || '').trim().toLowerCase();
+  
+  // Resolve artwork instantly from track, ID cache, or album cache
+  const resolvedCoverUrl = displayTrack?.coverUrl || (displayTrack ? getCachedArtwork(displayTrack.id) || (albumKey ? getCachedArtwork(albumKey) : undefined) : undefined);
+
+  // Maintain active cover to eliminate blank flash while next track's artwork is resolving
+  const [activeCoverUrl, setActiveCoverUrl] = useState<string | undefined>(resolvedCoverUrl);
+  const [isImgLoaded, setIsImgLoaded] = useState<boolean>(true);
+
+  React.useEffect(() => {
+    if (resolvedCoverUrl) {
+      // If it's the exact same URL, keep it
+      if (resolvedCoverUrl === activeCoverUrl) return;
+      
+      // Preload image before switching to guarantee 0ms blank flash
+      const img = new Image();
+      img.onload = () => {
+        setActiveCoverUrl(resolvedCoverUrl);
+        setIsImgLoaded(true);
+      };
+      img.onerror = () => {
+        setActiveCoverUrl(resolvedCoverUrl);
+        setIsImgLoaded(true);
+      };
+      img.src = resolvedCoverUrl;
+    } else if (!displayTrack) {
+      setActiveCoverUrl(undefined);
+    }
+  }, [resolvedCoverUrl, displayTrack]);
+
+  const displayCoverUrl = resolvedCoverUrl || activeCoverUrl;
 
   const getSystemIcon = (type?: string) => {
     switch (type) {
@@ -541,11 +573,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   }}
                   onClick={() => setShowFullArtModal(true)}
                 >
-                  <img
-                    src={displayTrack.coverUrl}
-                    alt={displayTrack.title}
-                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  />
+                  {displayCoverUrl ? (
+                    <img
+                      src={displayCoverUrl}
+                      alt={displayTrack.title}
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      decoding="async"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#2a2e36] to-[#15171a] text-slate-400 p-2">
+                      <Disc className="w-10 h-10 stroke-[1.2] opacity-60 animate-spin" style={{ animationDuration: '8s' }} />
+                      <span className="text-[10px] mt-1 font-semibold opacity-60 uppercase tracking-wider text-center truncate w-full">
+                        {displayTrack.album || displayTrack.title}
+                      </span>
+                    </div>
+                  )}
                   
                   {/* Glossy Overlay Reflection */}
                   <div className="absolute inset-0 bg-gradient-to-tr from-white/10 via-transparent to-black/30 pointer-events-none" />
@@ -778,7 +820,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* High-Res Image Box */}
             <div className="relative w-full aspect-square rounded-xl overflow-hidden shadow-2xl border border-black/20 bg-black">
               <img
-                src={displayTrack.coverUrl}
+                src={displayCoverUrl}
                 alt={displayTrack.title}
                 className="w-full h-full object-cover"
               />

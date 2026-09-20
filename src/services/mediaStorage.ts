@@ -140,6 +140,19 @@ export async function getTracksMetadata(): Promise<any[]> {
   }
 }
 
+// Global fast in-memory artwork cache (albumKey/trackId -> objectUrl/dataUrl)
+const globalArtworkCache = new Map<string, string>();
+
+export function getCachedArtwork(albumOrTrackKey: string): string | undefined {
+  return globalArtworkCache.get(albumOrTrackKey);
+}
+
+export function setCachedArtwork(albumOrTrackKey: string, url: string): void {
+  if (albumOrTrackKey && url) {
+    globalArtworkCache.set(albumOrTrackKey, url);
+  }
+}
+
 export async function hydrateTrackMedia(track: any): Promise<any> {
   // Demo or sample tracks don't need IndexedDB rehydration
   if (track.id.startsWith('demo_') || track.id.startsWith('sample_')) {
@@ -168,31 +181,45 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
     }
   }
 
-  // 2. Rehydrate artwork
-  const coverBlob = await getMediaFile(`cover_${track.id}`);
-  if (coverBlob) {
-    updatedTrack.coverUrl = URL.createObjectURL(coverBlob);
-  } else if (updatedTrack.coverUrl && updatedTrack.coverUrl.startsWith('data:')) {
-    const b = dataURLtoBlob(updatedTrack.coverUrl);
-    if (b) {
-      saveMediaFile(`cover_${track.id}`, b);
-      updatedTrack.coverUrl = URL.createObjectURL(b);
-    }
-  } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauri && track.filePath) {
-    try {
-      const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
-      const meta = await readTauriMusicMetadata(track.filePath);
-      if (meta?.coverUrl) {
-        updatedTrack.coverUrl = meta.coverUrl;
-        if (meta.coverUrl.startsWith('data:')) {
-          const b = dataURLtoBlob(meta.coverUrl);
-          if (b) {
-            saveMediaFile(`cover_${track.id}`, b);
-            updatedTrack.coverUrl = URL.createObjectURL(b);
+  // 2. Rehydrate artwork (check in-memory cache first for instantaneous return)
+  const albumKey = (track.album || '').trim().toLowerCase();
+  if (globalArtworkCache.has(track.id)) {
+    updatedTrack.coverUrl = globalArtworkCache.get(track.id);
+  } else if (albumKey && globalArtworkCache.has(albumKey)) {
+    updatedTrack.coverUrl = globalArtworkCache.get(albumKey);
+  } else {
+    const coverBlob = await getMediaFile(`cover_${track.id}`);
+    if (coverBlob) {
+      updatedTrack.coverUrl = URL.createObjectURL(coverBlob);
+    } else if (updatedTrack.coverUrl && updatedTrack.coverUrl.startsWith('data:')) {
+      const b = dataURLtoBlob(updatedTrack.coverUrl);
+      if (b) {
+        saveMediaFile(`cover_${track.id}`, b);
+        updatedTrack.coverUrl = URL.createObjectURL(b);
+      }
+    } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauri && track.filePath) {
+      try {
+        const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
+        const meta = await readTauriMusicMetadata(track.filePath);
+        if (meta?.coverUrl) {
+          updatedTrack.coverUrl = meta.coverUrl;
+          if (meta.coverUrl.startsWith('data:')) {
+            const b = dataURLtoBlob(meta.coverUrl);
+            if (b) {
+              saveMediaFile(`cover_${track.id}`, b);
+              updatedTrack.coverUrl = URL.createObjectURL(b);
+            }
           }
         }
+      } catch (e) {}
+    }
+
+    if (updatedTrack.coverUrl) {
+      globalArtworkCache.set(track.id, updatedTrack.coverUrl);
+      if (albumKey) {
+        globalArtworkCache.set(albumKey, updatedTrack.coverUrl);
       }
-    } catch (e) {}
+    }
   }
 
   return updatedTrack;

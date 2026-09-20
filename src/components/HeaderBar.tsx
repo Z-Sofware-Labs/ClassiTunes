@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
-  Search, List, LayoutGrid, Sliders, Shuffle, Repeat, Repeat1, Star,
-  Sun, Moon, Minus, Square, X, Disc
+  Search, Sliders, Shuffle, Repeat, Repeat1, Star,
+  Sun, Moon, Minus, Square, X, Disc, List, LayoutGrid
 } from 'lucide-react';
 import { Track, ViewMode } from '../types';
 import { audioEngine } from '../services/audioEngine';
@@ -480,32 +480,45 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           </div>
         </div>
 
-        {/* Right Section: View Mode, Tools & Theme Switcher (Equal Width Column) */}
-        <div className="flex items-center justify-end gap-1 sm:gap-2 min-w-0">
-          {/* Mode Toggles */}
-          <div className={`flex items-center p-0.5 rounded-md border shrink-0 ${isLight ? 'bg-[#d8e0ed] border-[#9aa7b9]' : 'bg-[#1a1a1a] border-[#333]'
-            }`}>
+        {/* Right Section: View Mode, Search & Controls */}
+        <div className="flex items-center justify-end gap-1.5 sm:gap-2.5 min-w-0">
+          {/* iTunes 11 Style View Mode Segmented Control */}
+          <div className={`flex items-center p-0.5 rounded-md border shrink-0 text-xs ${
+            isLight ? 'bg-[#d8e0ed] border-[#9aa7b9]' : 'bg-[#1e1e1e] border-[#333]'
+          }`}>
             <button
               onClick={() => onViewModeChange('list')}
-              className={`p-1 sm:p-1.5 rounded transition-all ${viewMode === 'list'
-                ? isLight ? 'bg-white text-blue-600 shadow-sm font-bold' : 'bg-[#3a3a3a] text-white shadow'
-                : isLight ? 'text-gray-600 hover:text-black' : 'text-gray-400 hover:text-white'
-                }`}
-              title="List View"
+              className={`flex items-center gap-1 px-2 py-1 rounded transition-all font-medium text-[11px] ${
+                viewMode === 'list'
+                  ? isLight
+                    ? 'bg-white text-blue-700 shadow-sm font-semibold'
+                    : 'bg-[#383838] text-white shadow font-semibold'
+                  : isLight
+                    ? 'text-gray-600 hover:text-black'
+                    : 'text-gray-400 hover:text-white'
+              }`}
+              title="Songs View"
               id="view-list-btn"
             >
               <List className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Songs</span>
             </button>
             <button
               onClick={() => onViewModeChange('grid')}
-              className={`p-1 sm:p-1.5 rounded transition-all ${viewMode === 'grid'
-                ? isLight ? 'bg-white text-blue-600 shadow-sm font-bold' : 'bg-[#3a3a3a] text-white shadow'
-                : isLight ? 'text-gray-600 hover:text-black' : 'text-gray-400 hover:text-white'
-                }`}
-              title="Grid / Album View"
+              className={`flex items-center gap-1 px-2 py-1 rounded transition-all font-medium text-[11px] ${
+                viewMode === 'grid'
+                  ? isLight
+                    ? 'bg-white text-blue-700 shadow-sm font-semibold'
+                    : 'bg-[#383838] text-white shadow font-semibold'
+                  : isLight
+                    ? 'text-gray-600 hover:text-black'
+                    : 'text-gray-400 hover:text-white'
+              }`}
+              title="Albums View"
               id="view-grid-btn"
             >
               <LayoutGrid className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Albums</span>
             </button>
           </div>
 

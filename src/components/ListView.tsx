@@ -118,9 +118,7 @@ interface TrackRowProps {
   handleRowClick: (trackId: string, e: React.MouseEvent) => void;
   handleDragStart: (e: React.DragEvent, trackId: string) => void;
   handleDragEnd: () => void;
-  setContextMenuTrackId: (id: string | null) => void;
   updateSelectedTrackIds: (ids: string[]) => void;
-  selectedTrackIds: string[];
 }
 
 const TrackRow = React.memo<TrackRowProps>(({
@@ -146,9 +144,7 @@ const TrackRow = React.memo<TrackRowProps>(({
   handleRowClick,
   handleDragStart,
   handleDragEnd,
-  setContextMenuTrackId,
   updateSelectedTrackIds,
-  selectedTrackIds,
 }) => {
   return (
     <tr
@@ -159,7 +155,7 @@ const TrackRow = React.memo<TrackRowProps>(({
       onDoubleClick={() => onPlayTrack(track)}
       onContextMenu={(e) => {
         e.preventDefault();
-        if (!selectedTrackIds.includes(track.id)) {
+        if (!isSelected) {
           updateSelectedTrackIds([track.id]);
         }
         if (onTrackContextMenu) onTrackContextMenu(track, e);
@@ -485,12 +481,11 @@ const TrackRow = React.memo<TrackRowProps>(({
     prev.pyClass === next.pyClass &&
     prev.visibleColumns === next.visibleColumns &&
     prev.columnWidths === next.columnWidths &&
-    prev.userPlaylists === next.userPlaylists &&
-    prev.selectedTrackIds === next.selectedTrackIds
+    prev.userPlaylists === next.userPlaylists
   );
 });
 
-export const ListView: React.FC<ListViewProps> = ({
+const ListViewComponent: React.FC<ListViewProps> = ({
   tracks,
   currentTrack,
   isPlaying,
@@ -510,20 +505,13 @@ export const ListView: React.FC<ListViewProps> = ({
   searchQuery,
   onClearSearch,
 }) => {
-  const renderStartTime = useRef(performance.now());
-  renderStartTime.current = performance.now();
 
-  useEffect(() => {
-    const elapsed = performance.now() - renderStartTime.current;
-    if (elapsed >= 50) {
-      logToFile(`[BOTTLENECK DETECTED: ListView Render] Total commit took ${elapsed.toFixed(1)}ms for ${tracks.length} tracks`);
-    }
-  });
 
   const [internalSelectedTrackIds, setInternalSelectedTrackIds] = useState<string[]>([]);
   const selectedTrackIds = propSelectedTrackIds !== undefined ? propSelectedTrackIds : internalSelectedTrackIds;
   const selectedTrackIdsRef = useRef<string[]>(selectedTrackIds);
   selectedTrackIdsRef.current = selectedTrackIds;
+  const selectedTrackSet = useMemo(() => new Set(selectedTrackIds), [selectedTrackIds]);
 
   const updateSelectedTrackIds = (ids: string[]) => {
     selectedTrackIdsRef.current = ids;
@@ -1259,7 +1247,7 @@ export const ListView: React.FC<ListViewProps> = ({
 
             {visibleWindowTracks.map(({ track, originalIndex: idx }) => {
               const isCurrentPlaying = currentTrack?.id === track.id;
-              const isSelected = selectedTrackIds.includes(track.id);
+              const isSelected = selectedTrackSet.has(track.id);
               const isZebraOdd = idx % 2 === 1;
 
               return (
@@ -1289,7 +1277,6 @@ export const ListView: React.FC<ListViewProps> = ({
                   handleDragEnd={handleDragEnd}
                   setContextMenuTrackId={setContextMenuTrackId}
                   updateSelectedTrackIds={updateSelectedTrackIds}
-                  selectedTrackIds={selectedTrackIds}
                 />
               );
             })}
@@ -1458,4 +1445,7 @@ export const ListView: React.FC<ListViewProps> = ({
     </div>
   );
 };
+
+export const ListView = React.memo(ListViewComponent);
+
 

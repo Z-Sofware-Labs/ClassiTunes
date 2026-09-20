@@ -5,23 +5,35 @@ import { extractID3TagsFromTrack, ExtractedID3Tags } from '../services/metadataP
 
 type EditableTrack = Track & { artworkDataUrl?: string; artworkRemoved?: boolean };
 
-interface GetInfoModalProps {
-  track: Track | null;
+export interface GetInfoModalProps {
+  track?: Track | null;
+  tracks?: Track[] | null;
   isOpen: boolean;
   onClose: () => void;
   onSaveTrack: (updatedTrack: EditableTrack) => void | Promise<void>;
+  onSaveTracks?: (updatedTracks: EditableTrack[]) => void | Promise<void>;
   theme?: 'dark' | 'light';
 }
 
 export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   track,
+  tracks,
   isOpen,
   onClose,
   onSaveTrack,
+  onSaveTracks,
   theme = 'dark',
 }) => {
   const isLight = theme === 'light';
   const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+
+  const activeTracks = React.useMemo(() => {
+    if (tracks && tracks.length > 0) return tracks;
+    if (track) return [track];
+    return [];
+  }, [tracks, track]);
+
+  const isMulti = activeTracks.length > 1;
 
   const [activeTab, setActiveTab] = useState<'info' | 'lyrics' | 'summary' | 'artwork'>('info');
 
@@ -60,6 +72,21 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
   // Track fields that the user has manually typed in this modal session
   const manuallyEditedRef = React.useRef<Set<string>>(new Set());
+
+  // Helper to extract common string/number across multiple tracks
+  const getCommonString = useCallback((getter: (t: Track) => string | undefined): string => {
+    if (activeTracks.length === 0) return '';
+    const first = (getter(activeTracks[0]) || '').trim();
+    const allSame = activeTracks.every(t => (getter(t) || '').trim() === first);
+    return allSame ? first : '';
+  }, [activeTracks]);
+
+  const getCommonNumber = useCallback((getter: (t: Track) => number | undefined): string => {
+    if (activeTracks.length === 0) return '';
+    const first = getter(activeTracks[0]);
+    const allSame = activeTracks.every(t => getter(t) === first);
+    return allSame && first !== undefined ? String(first) : '';
+  }, [activeTracks]);
 
   // Helper to mark a field as manually edited by user
   const handleFieldChange = (fieldName: string, setter: (val: string) => void, val: string) => {
@@ -203,51 +230,126 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   }, []);
 
   useEffect(() => {
-    if (isOpen && track) {
+    if (isOpen && activeTracks.length > 0) {
       manuallyEditedRef.current.clear();
-      loadTrackAndExtractID3(track, false);
+      setActiveTab('info');
+      if (isMulti) {
+        setTitle(getCommonString(t => t.title));
+        setArtist(getCommonString(t => t.artist));
+        setAlbumArtist(getCommonString(t => t.albumArtist));
+        setAlbum(getCommonString(t => t.album));
+        setComposer(getCommonString(t => t.composer));
+        setPublisher(getCommonString(t => t.publisher));
+        setLyrics('');
+        setGenre(getCommonString(t => t.genre));
+        setMediaKind(getCommonString(t => t.mediaKind) || 'Music');
+        setBpm(getCommonNumber(t => t.bpm));
+        setFormat(getCommonString(t => t.format));
+        setYear(getCommonNumber(t => t.year));
+        setTrackNumber(getCommonNumber(t => t.trackNumber));
+        setTrackTotal(getCommonNumber(t => t.trackTotal));
+        setDiscNumber(getCommonNumber(t => t.discNumber));
+        setDiscTotal(getCommonNumber(t => t.discTotal));
+        setComments(getCommonString(t => t.comments));
+        setCustomCoverUrl(getCommonString(t => t.coverUrl));
+        setArtworkChanged(false);
+        setArtworkRemoved(false);
+        setId3Status('idle');
+        setId3TagInfo('');
+      } else {
+        loadTrackAndExtractID3(activeTracks[0], false);
+      }
     } else {
       setId3Status('idle');
       setId3TagInfo('');
       manuallyEditedRef.current.clear();
     }
-  }, [isOpen, track, loadTrackAndExtractID3]);
+  }, [isOpen, activeTracks, isMulti, getCommonString, getCommonNumber, loadTrackAndExtractID3]);
 
-  if (!isOpen || !track) return null;
+  if (!isOpen || activeTracks.length === 0) return null;
 
   const handleSave = async () => {
     try {
-      await onSaveTrack({
-        ...track,
-        title: title.trim(),
-        artist: artist.trim(),
-        albumArtist: albumArtist.trim(),
-        album: album.trim(),
-        composer: composer.trim(),
-        publisher: publisher.trim(),
-        lyrics: lyrics,
-        genre: genre.trim(),
-        mediaKind: mediaKind || 'Music',
-        bpm: bpm ? parseInt(bpm, 10) : undefined,
-        format: format.trim(),
-        year: year ? parseInt(year, 10) : undefined,
-        trackNumber: trackNumber ? parseInt(trackNumber, 10) : undefined,
-        trackTotal: trackTotal ? parseInt(trackTotal, 10) : undefined,
-        discNumber: discNumber ? parseInt(discNumber, 10) : undefined,
-        discTotal: discTotal ? parseInt(discTotal, 10) : undefined,
-        comments: comments.trim(),
-        coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
-        artworkDataUrl: artworkChanged ? (artworkRemoved ? '' : customCoverUrl) : undefined,
-        artworkRemoved: artworkChanged && artworkRemoved,
-        bitrate: bitrate || track.bitrate,
-        sampleRate: sampleRate || track.sampleRate,
-        sizeBytes: sizeBytes || track.sizeBytes,
-        duration: duration || track.duration,
-      });
+      if (isMulti) {
+        const hasTitle = manuallyEditedRef.current.has('title');
+        const hasArtist = manuallyEditedRef.current.has('artist');
+        const hasAlbumArtist = manuallyEditedRef.current.has('albumArtist');
+        const hasAlbum = manuallyEditedRef.current.has('album');
+        const hasComposer = manuallyEditedRef.current.has('composer');
+        const hasPublisher = manuallyEditedRef.current.has('publisher');
+        const hasGenre = manuallyEditedRef.current.has('genre');
+        const hasYear = manuallyEditedRef.current.has('year');
+        const hasBpm = manuallyEditedRef.current.has('bpm');
+        const hasDiscNumber = manuallyEditedRef.current.has('discNumber');
+        const hasDiscTotal = manuallyEditedRef.current.has('discTotal');
+        const hasTrackTotal = manuallyEditedRef.current.has('trackTotal');
+        const hasTrackNumber = manuallyEditedRef.current.has('trackNumber');
+        const hasComments = manuallyEditedRef.current.has('comments');
+        const hasMediaKind = manuallyEditedRef.current.has('mediaKind');
+
+        const updatedBatch: EditableTrack[] = activeTracks.map(t => ({
+          ...t,
+          title: hasTitle ? title.trim() : t.title,
+          artist: hasArtist ? artist.trim() : t.artist,
+          albumArtist: hasAlbumArtist ? albumArtist.trim() : t.albumArtist,
+          album: hasAlbum ? album.trim() : t.album,
+          composer: hasComposer ? composer.trim() : t.composer,
+          publisher: hasPublisher ? publisher.trim() : t.publisher,
+          genre: hasGenre ? genre.trim() : t.genre,
+          year: hasYear ? (year ? parseInt(year, 10) : undefined) : t.year,
+          bpm: hasBpm ? (bpm ? parseInt(bpm, 10) : undefined) : t.bpm,
+          discNumber: hasDiscNumber ? (discNumber ? parseInt(discNumber, 10) : undefined) : t.discNumber,
+          discTotal: hasDiscTotal ? (discTotal ? parseInt(discTotal, 10) : undefined) : t.discTotal,
+          trackTotal: hasTrackTotal ? (trackTotal ? parseInt(trackTotal, 10) : undefined) : t.trackTotal,
+          trackNumber: hasTrackNumber ? (trackNumber ? parseInt(trackNumber, 10) : undefined) : t.trackNumber,
+          comments: hasComments ? comments.trim() : t.comments,
+          mediaKind: hasMediaKind ? (mediaKind || 'Music') : t.mediaKind,
+          ...(artworkChanged ? {
+            coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
+            artworkDataUrl: artworkRemoved ? '' : (customCoverUrl || undefined),
+            artworkRemoved: artworkRemoved,
+          } : {}),
+        }));
+
+        if (onSaveTracks) {
+          await onSaveTracks(updatedBatch);
+        } else {
+          for (const item of updatedBatch) {
+            await onSaveTrack(item);
+          }
+        }
+      } else if (activeTracks[0]) {
+        const singleTrack = activeTracks[0];
+        await onSaveTrack({
+          ...singleTrack,
+          title: title.trim(),
+          artist: artist.trim(),
+          albumArtist: albumArtist.trim(),
+          album: album.trim(),
+          composer: composer.trim(),
+          publisher: publisher.trim(),
+          lyrics: lyrics,
+          genre: genre.trim(),
+          mediaKind: mediaKind || 'Music',
+          bpm: bpm ? parseInt(bpm, 10) : undefined,
+          format: format.trim(),
+          year: year ? parseInt(year, 10) : undefined,
+          trackNumber: trackNumber ? parseInt(trackNumber, 10) : undefined,
+          trackTotal: trackTotal ? parseInt(trackTotal, 10) : undefined,
+          discNumber: discNumber ? parseInt(discNumber, 10) : undefined,
+          discTotal: discTotal ? parseInt(discTotal, 10) : undefined,
+          comments: comments.trim(),
+          coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
+          artworkDataUrl: artworkChanged ? (artworkRemoved ? '' : customCoverUrl) : undefined,
+          artworkRemoved: artworkChanged && artworkRemoved,
+          bitrate: bitrate || singleTrack.bitrate,
+          sampleRate: sampleRate || singleTrack.sampleRate,
+          sizeBytes: sizeBytes || singleTrack.sizeBytes,
+          duration: duration || singleTrack.duration,
+        });
+      }
       onClose();
     } catch (err) {
-      // onSaveTrack already shows an alert on Tauri write failures; keep the
-      // modal open so the user can retry or cancel without losing their edits.
       console.error('GetInfoModal save error:', err);
     }
   };
@@ -335,11 +437,15 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
             )}
             <Tag className="w-4 h-4 text-indigo-500 shrink-0" />
             <span
-              className={`text-xs font-bold font-sans truncate max-w-[280px] ${
+              className={`text-xs font-bold font-sans truncate max-w-[320px] ${
                 isLight ? 'text-gray-900' : 'text-gray-100'
               }`}
             >
-              {title || track.title} — Get Info
+              {isMulti
+                ? album
+                  ? `Album: ${album} (${activeTracks.length} items)`
+                  : `Multiple Item Information (${activeTracks.length} items)`
+                : `${title || activeTracks[0]?.title} — Get Info`}
             </span>
           </div>
 
@@ -418,37 +524,41 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
             <span>Info</span>
           </button>
 
-          <button
-            onClick={() => setActiveTab('lyrics')}
-            className={`px-4 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              activeTab === 'lyrics'
-                ? isLight
-                  ? 'bg-white text-indigo-700 border border-gray-300 shadow-sm font-bold'
-                  : 'bg-[#2a2a2a] text-white border border-[#444] shadow-sm font-bold'
-                : isLight
-                ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-[#222]'
-            }`}
-          >
-            <Music className="w-3.5 h-3.5 text-indigo-500" />
-            <span>Lyrics</span>
-          </button>
+          {!isMulti && (
+            <button
+              onClick={() => setActiveTab('lyrics')}
+              className={`px-4 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                activeTab === 'lyrics'
+                  ? isLight
+                    ? 'bg-white text-indigo-700 border border-gray-300 shadow-sm font-bold'
+                    : 'bg-[#2a2a2a] text-white border border-[#444] shadow-sm font-bold'
+                  : isLight
+                  ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-[#222]'
+              }`}
+            >
+              <Music className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Lyrics</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => setActiveTab('summary')}
-            className={`px-4 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              activeTab === 'summary'
-                ? isLight
-                  ? 'bg-white text-indigo-700 border border-gray-300 shadow-sm font-bold'
-                  : 'bg-[#2a2a2a] text-white border border-[#444] shadow-sm font-bold'
-                : isLight
-                ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-[#222]'
-            }`}
-          >
-            <FileText className="w-3.5 h-3.5 text-indigo-500" />
-            <span>Summary</span>
-          </button>
+          {!isMulti && (
+            <button
+              onClick={() => setActiveTab('summary')}
+              className={`px-4 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                activeTab === 'summary'
+                  ? isLight
+                    ? 'bg-white text-indigo-700 border border-gray-300 shadow-sm font-bold'
+                    : 'bg-[#2a2a2a] text-white border border-[#444] shadow-sm font-bold'
+                  : isLight
+                  ? 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-[#222]'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Summary</span>
+            </button>
+          )}
 
           <button
             onClick={() => setActiveTab('artwork')}
@@ -482,7 +592,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                 <input
                   type="text"
                   value={title}
-                  placeholder="Song Title"
+                  placeholder={isMulti ? (title ? "Song Title" : "(Mixed)") : "Song Title"}
                   onChange={(e) => handleFieldChange('title', setTitle, e.target.value)}
                   className={`col-span-3 px-3 py-1.5 rounded-md border text-xs transition-all focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
                     isLight
@@ -498,7 +608,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                 <input
                   type="text"
                   value={artist}
-                  placeholder="Artist / Performer"
+                  placeholder={isMulti ? (artist ? "Artist / Performer" : "(Mixed)") : "Artist / Performer"}
                   onChange={(e) => handleFieldChange('artist', setArtist, e.target.value)}
                   className={`col-span-3 px-3 py-1.5 rounded-md border text-xs transition-all focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
                     isLight
@@ -514,7 +624,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                 <input
                   type="text"
                   value={albumArtist}
-                  placeholder="Album Artist (Optional)"
+                  placeholder={isMulti ? (albumArtist ? "Album Artist" : "(Mixed)") : "Album Artist (Optional)"}
                   onChange={(e) => handleFieldChange('albumArtist', setAlbumArtist, e.target.value)}
                   className={`col-span-3 px-3 py-1.5 rounded-md border text-xs transition-all focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
                     isLight
@@ -530,7 +640,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                 <input
                   type="text"
                   value={album}
-                  placeholder="Album Name"
+                  placeholder={isMulti ? (album ? "Album Name" : "(Mixed)") : "Album Name"}
                   onChange={(e) => handleFieldChange('album', setAlbum, e.target.value)}
                   className={`col-span-3 px-3 py-1.5 rounded-md border text-xs transition-all focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
                     isLight
