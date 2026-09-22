@@ -575,7 +575,7 @@ export default function App() {
     setCurrentTrack(immediateTrack);
     setIsPlaying(true);
     if (track.audioUrl) {
-      void audioEngine.playTrack(track.audioUrl, track.replayGainDb);
+      void audioEngine.playTrack(track.audioUrl, track.replayGainDb, track.filePath);
     }
 
     // 2. Hydrate artwork & audio URL on-demand immediately (critical for 1st song on launch)
@@ -597,7 +597,7 @@ export default function App() {
 
           // If audio URL was resolved via hydration and wasn't playing yet, start playback
           if (hydrated.audioUrl && (!track.audioUrl || track.audioUrl !== hydrated.audioUrl)) {
-            void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb);
+            void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb, track.filePath);
           }
 
           // Cache resolved artwork globally
@@ -832,7 +832,7 @@ export default function App() {
       ? { ...t, playCount: (t.playCount || 0) + 1, lastPlayed: new Date() }
       : t
     ));
-    await audioEngine.crossfadeTo(target.audioUrl, appSettings.crossfadeSeconds, target.replayGainDb);
+    await audioEngine.crossfadeTo(target.audioUrl, appSettings.crossfadeSeconds, target.replayGainDb, target.filePath);
     window.setTimeout(() => { crossfadeTriggeredRef.current = false; }, Math.max(500, appSettings.crossfadeSeconds * 1000 + 250));
   }, [appSettings.crossfadeSeconds]);
 

@@ -1,4 +1,5 @@
 import { EqualizerBands, EQPreset } from '../types';
+import { isOggNativelySupported, urlOrPathIsOgg, decodeOggToWav, decodeOggUrlToWav } from './oggDecoder';
 
 export const EQ_PRESETS: Record<EQPreset, EqualizerBands> = {
   'Flat': { b32: 0, b64: 0, b125: 0, b250: 0, b500: 0, b1k: 0, b2k: 0, b4k: 0, b8k: 0, b16k: 0 },
@@ -141,7 +142,12 @@ export class AudioEngine {
       const { readFile } = await import('@tauri-apps/plugin-fs');
       const bytes = await readFile(fsPath);
       const ext = fsPath.split('.').pop()?.toLowerCase() || '';
-      const mime = (ext === 'm4a' || ext === 'aac' || ext === 'mp4') ? 'audio/mp4' : 'audio/mpeg';
+      const mime =
+        (ext === 'm4a' || ext === 'aac' || ext === 'mp4') ? 'audio/mp4' :
+        (ext === 'ogg' || ext === 'oga')                  ? 'audio/ogg' :
+        (ext === 'wav')                                    ? 'audio/wav' :
+        (ext === 'flac')                                   ? 'audio/flac' :
+        'audio/mpeg';
       const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
       this.activeBlobUrls.add(blobUrl);
       return blobUrl;
@@ -170,13 +176,57 @@ export class AudioEngine {
   }
 
   /**
+   * Returns true if the URL or hint indicates an OGG Vorbis file.
+   * Checks the asset:// URL path and the optional filePathHint.
+   * Cannot detect OGG from opaque blob: URLs without a hint.
+   */
+  private isOggUrl(url: string, filePathHint?: string): boolean {
+    return urlOrPathIsOgg(url) || urlOrPathIsOgg(filePathHint || '');
+  }
+
+  /**
    * On Linux/Tauri: streams audio through the local HTTP stream server (127.0.0.1:PORT)
    * with full HTTP 206 Partial Content and Range headers support, exactly like Museeks.
    * This completely bypasses WebKitGTK's GStreamer sandbox and broken asset:// seeking.
-   * On Windows and macOS: returns the original asset:// URL unchanged, which is
+   *
+   * On macOS/Tauri with OGG files: decodes OGG to a WAV blob on the fly because
+   * WKWebView does not ship an OGG Vorbis codec.
+   *
+   * On Windows and macOS (non-OGG): returns the original asset:// URL unchanged, which is
    * natively supported by Chromium WebView2 and WebKit macOS.
    */
-  private async resolveAudioUrl(url: string): Promise<string> {
+  private async resolveAudioUrl(url: string, filePathHint?: string): Promise<string> {
+    // ── OGG on platforms without native support (macOS WKWebView, Safari) ────
+    if (this.isOggUrl(url, filePathHint) && !isOggNativelySupported()) {
+      if (this.isTauriEnv()) {
+        // Tauri mode: read bytes directly via fs plugin (most reliable, no HTTP round-trip)
+        const fsPath = this.extractFsPathFromUrl(url) || filePathHint || null;
+        if (fsPath) {
+          try {
+            const { readFile } = await import('@tauri-apps/plugin-fs');
+            const raw = await readFile(fsPath);
+            const wavBlob = await decodeOggToWav(new Uint8Array(raw));
+            if (wavBlob) {
+              const blobUrl = URL.createObjectURL(wavBlob);
+              this.activeBlobUrls.add(blobUrl);
+              return blobUrl;
+            }
+          } catch (e) {
+            console.warn('[AudioEngine] OGG->WAV decode failed (Tauri path):', e);
+          }
+        }
+      } else {
+        // Browser mode: fetch the blob: URL and decode
+        const wavBlob = await decodeOggUrlToWav(url);
+        if (wavBlob) {
+          const blobUrl = URL.createObjectURL(wavBlob);
+          this.activeBlobUrls.add(blobUrl);
+          return blobUrl;
+        }
+      }
+      // If decoding failed fall through and let the browser report its own error
+    }
+
     if (!this.isTauriEnv()) return url;
     const platform = this.getPlatformSync();
     if (platform === 'linux') {
@@ -397,7 +447,7 @@ export class AudioEngine {
     }
   }
 
-  public async playTrack(url: string, replayGainDb?: number): Promise<void> {
+  public async playTrack(url: string, replayGainDb?: number, filePathHint?: string): Promise<void> {
     this.initWebAudio();
     if (!this.activeDeck || !this.audioCtx) return;
     if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
@@ -413,7 +463,7 @@ export class AudioEngine {
 
     // On Linux/Tauri, convert the asset:// URL to a blob: URL to bypass the
     // WebKit2GTK GStreamer sandbox that blocks system codec plugins (error 4).
-    const resolvedUrl = await this.resolveAudioUrl(url);
+    const resolvedUrl = await this.resolveAudioUrl(url, filePathHint);
     // Pause current deck and reset before changing source
     deck.audio.pause();
     // For HTTP stream URLs (e.g. 127.0.0.1 stream server), crossOrigin MUST be 'anonymous'
@@ -523,7 +573,7 @@ export class AudioEngine {
     }
   }
 
-  public async crossfadeTo(url: string, seconds: number, replayGainDb?: number): Promise<void> {
+  public async crossfadeTo(url: string, seconds: number, replayGainDb?: number, filePathHint?: string): Promise<void> {
     this.initWebAudio();
     if (!this.audioCtx || !this.activeDeck || !url) return;
     if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
@@ -536,7 +586,7 @@ export class AudioEngine {
     const now = this.audioCtx.currentTime;
 
     // Resolve blob: URL on Linux/Tauri before assigning to the audio element.
-    const resolvedUrl = await this.resolveAudioUrl(url);
+    const resolvedUrl = await this.resolveAudioUrl(url, filePathHint);
     this.revokeStaleBlobUrls(resolvedUrl);
 
     newDeck.audio.pause();

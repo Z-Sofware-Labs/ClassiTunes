@@ -138,7 +138,7 @@ async function parseMp4Atoms(file: File): Promise<Mp4TagsResult | null> {
 
     // First: check top-level atom structure to jump over huge 'mdat' atoms (0ms performance)
     let pos = 0;
-    while (pos + 8 <= file.size && pos < 100 * 1024 * 1024) {
+    while (pos + 8 <= file.size) {
       const atomHeaderBuf = await file.slice(pos, pos + 16).arrayBuffer();
       if (atomHeaderBuf.byteLength < 8) break;
       const atomView = new DataView(atomHeaderBuf);
@@ -408,7 +408,37 @@ async function parseAudioFileHeader(file: File): Promise<{ duration?: number; bi
       }
     }
 
-    // 3. MP3 (MPEG audio frames / Xing / VBRI / ID3 TLEN)
+    // 3. AIFF / AIFC
+    if (
+      bytes.length >= 12 &&
+      bytes[0] === 0x46 && bytes[1] === 0x4f && bytes[2] === 0x52 && bytes[3] === 0x4d && // 'FORM'
+      (String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]) === 'AIFF' ||
+       String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]) === 'AIFC')
+    ) {
+      const view2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      let aiffPos = 12;
+      let numSampleFrames = 0;
+      let sampleRate = 44100;
+      while (aiffPos + 8 <= bytes.length) {
+        const chunkId = String.fromCharCode(bytes[aiffPos], bytes[aiffPos + 1], bytes[aiffPos + 2], bytes[aiffPos + 3]);
+        const chunkSize = view2.getInt32(aiffPos + 4, false);
+        if (chunkId === 'COMM' && aiffPos + 18 <= bytes.length) {
+          // 80-bit IEEE 754 extended sample rate at offset +8 within COMM chunk
+          const exp = ((bytes[aiffPos + 8] & 0x7f) << 8) | bytes[aiffPos + 9];
+          let mantissa = 0;
+          for (let k = 0; k < 8; k++) mantissa = mantissa * 256 + bytes[aiffPos + 10 + k];
+          sampleRate = Math.round(mantissa * Math.pow(2, exp - 16383 - 63));
+          numSampleFrames = view2.getUint32(aiffPos + 18, false);
+          if (sampleRate > 0 && numSampleFrames > 0) {
+            const dur = numSampleFrames / sampleRate;
+            return { duration: dur, sampleRate };
+          }
+        }
+        aiffPos += 8 + chunkSize + (chunkSize & 1); // chunks are word-aligned
+      }
+    }
+
+    // 4. MP3 (MPEG-1, MPEG-2, MPEG-2.5 / Xing / VBRI / CBR estimation)
     let audioOffset = 0;
     // Skip ID3v2 if present
     if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
@@ -426,6 +456,19 @@ async function parseAudioFileHeader(file: File): Promise<{ duration?: number; bi
       mpegOffset = 0;
     }
 
+    // MPEG bitrate tables: [version][layer][bitrateIdx]
+    // Versions: 0=MPEG-2.5, 2=MPEG-2, 3=MPEG-1  |  Layers: 1=III, 2=II, 3=I
+    const MPEG_BITRATES: Record<number, Record<number, number[]>> = {
+      3: { 1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320] }, // MPEG-1 L3
+      2: { 1: [0,  8, 16, 24, 32, 40, 48,  56,  64,  80,  96, 112, 128, 144, 160] }, // MPEG-2 L3
+      0: { 1: [0,  8, 16, 24, 32, 40, 48,  56,  64,  80,  96, 112, 128, 144, 160] }, // MPEG-2.5 L3
+    };
+    const MPEG_SAMPLERATES: Record<number, number[]> = {
+      3: [44100, 48000, 32000],   // MPEG-1
+      2: [22050, 24000, 16000],   // MPEG-2
+      0: [11025, 12000,  8000],   // MPEG-2.5
+    };
+
     // Search for MPEG frame sync (11 bits all 1s: 0xFF followed by 0xE0+)
     for (let i = mpegOffset; i <= mpegBytes.length - 4; i++) {
       if (mpegBytes[i] === 0xff && (mpegBytes[i + 1] & 0xe0) === 0xe0) {
@@ -433,20 +476,30 @@ async function parseAudioFileHeader(file: File): Promise<{ duration?: number; bi
         const b2 = mpegBytes[i + 2];
         const b3 = mpegBytes[i + 3];
 
-        const mpegVersionId = (b1 >> 3) & 0x03; // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
-        const layerId = (b1 >> 1) & 0x03; // 1 = Layer III, 2 = Layer II, 3 = Layer I
+        const mpegVersionId = (b1 >> 3) & 0x03; // 3=MPEG-1, 2=MPEG-2, 0=MPEG-2.5, 1=reserved
+        const layerId = (b1 >> 1) & 0x03;        // 1=LayerIII, 2=LayerII, 3=LayerI
         const bitrateIdx = (b2 >> 4) & 0x0f;
         const sampleRateIdx = (b2 >> 2) & 0x03;
         const channelMode = (b3 >> 6) & 0x03;
 
-        if (layerId === 1 && mpegVersionId === 3 && bitrateIdx > 0 && bitrateIdx < 15 && sampleRateIdx < 3) {
-          const BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
-          const SAMPLERATES = [44100, 48000, 32000];
-          const bitrate = BITRATES[bitrateIdx];
-          const sampleRate = SAMPLERATES[sampleRateIdx];
+        // Only Layer III (MP3), valid versions, non-free/non-bad bitrate, valid sample rate
+        if (
+          layerId === 1 &&
+          mpegVersionId !== 1 && // 1 is reserved
+          bitrateIdx > 0 && bitrateIdx < 15 &&
+          sampleRateIdx < 3 &&
+          MPEG_BITRATES[mpegVersionId] &&
+          MPEG_SAMPLERATES[mpegVersionId]
+        ) {
+          const bitrate = MPEG_BITRATES[mpegVersionId][1][bitrateIdx];
+          const sampleRate = MPEG_SAMPLERATES[mpegVersionId][sampleRateIdx];
+          // Samples per frame for Layer III: 1152 (MPEG-1), 576 (MPEG-2/2.5)
+          const samplesPerFrame = mpegVersionId === 3 ? 1152 : 576;
 
-          // Check for Xing / Info header
-          const xingOffset = i + (channelMode === 3 ? 21 : 36);
+          // Check for Xing / Info VBR header
+          const xingOffset = i + (mpegVersionId === 3
+            ? (channelMode === 3 ? 21 : 36)  // MPEG-1 mono/stereo
+            : (channelMode === 3 ? 13 : 21)); // MPEG-2/2.5 mono/stereo
           if (xingOffset + 12 <= mpegBytes.length) {
             const tag = String.fromCharCode(
               mpegBytes[xingOffset], mpegBytes[xingOffset + 1],
@@ -457,30 +510,32 @@ async function parseAudioFileHeader(file: File): Promise<{ duration?: number; bi
               if (flags & 1) {
                 const frames = (mpegBytes[xingOffset + 8] << 24) | (mpegBytes[xingOffset + 9] << 16) | (mpegBytes[xingOffset + 10] << 8) | mpegBytes[xingOffset + 11];
                 if (frames > 0 && sampleRate > 0) {
-                  const dur = (frames * 1152) / sampleRate;
+                  const dur = (frames * samplesPerFrame) / sampleRate;
                   return { duration: dur, sampleRate, bitrate };
                 }
               }
             }
           }
 
-          // Check for VBRI header
-          const vbriOffset = i + 36;
-          if (vbriOffset + 18 <= mpegBytes.length) {
-            const tag = String.fromCharCode(
-              mpegBytes[vbriOffset], mpegBytes[vbriOffset + 1],
-              mpegBytes[vbriOffset + 2], mpegBytes[vbriOffset + 3]
-            );
-            if (tag === 'VBRI') {
-              const frames = (mpegBytes[vbriOffset + 14] << 24) | (mpegBytes[vbriOffset + 15] << 16) | (mpegBytes[vbriOffset + 16] << 8) | mpegBytes[vbriOffset + 17];
-              if (frames > 0 && sampleRate > 0) {
-                const dur = (frames * 1152) / sampleRate;
-                return { duration: dur, sampleRate, bitrate };
+          // Check for VBRI header (always at offset +36 from frame start, MPEG-1 only)
+          if (mpegVersionId === 3) {
+            const vbriOffset = i + 36;
+            if (vbriOffset + 18 <= mpegBytes.length) {
+              const tag = String.fromCharCode(
+                mpegBytes[vbriOffset], mpegBytes[vbriOffset + 1],
+                mpegBytes[vbriOffset + 2], mpegBytes[vbriOffset + 3]
+              );
+              if (tag === 'VBRI') {
+                const frames = (mpegBytes[vbriOffset + 14] << 24) | (mpegBytes[vbriOffset + 15] << 16) | (mpegBytes[vbriOffset + 16] << 8) | mpegBytes[vbriOffset + 17];
+                if (frames > 0 && sampleRate > 0) {
+                  const dur = (frames * samplesPerFrame) / sampleRate;
+                  return { duration: dur, sampleRate, bitrate };
+                }
               }
             }
           }
 
-          // Fallback for CBR MP3: file size minus ID3 size / bitrate
+          // CBR / VBR-without-header fallback: estimate from file size and first-frame bitrate
           const audioBytes = Math.max(0, file.size - audioOffset);
           if (bitrate > 0 && audioBytes > 0) {
             const dur = (audioBytes * 8) / (bitrate * 1000);
@@ -746,52 +801,59 @@ export async function parseAudioFile(file: File): Promise<Track> {
     try {
       const nativeMeta = await readTauriMusicMetadata(filePath);
       if (nativeMeta) {
-        const cleanFileName = (file.name || filePath.split(/[/\\]/).pop() || 'Unknown Track').replace(/\.[^/.]+$/, '').trim();
-        const finalTitle = nativeMeta.title?.trim() || cleanFileName;
-        const finalArtist = nativeMeta.artist?.trim() || 'Unknown Artist';
-        const finalAlbum = nativeMeta.album?.trim() || 'Unknown Album';
-        const finalCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
-        const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // If the native probe got a valid duration, use the fast-path and return immediately.
+        // If duration is missing/zero, fall through to the full JS parsing chain below which
+        // uses music-metadata-browser + HTML Audio element as additional fallbacks.
+        if (nativeMeta.duration && nativeMeta.duration > 0) {
+          const cleanFileName = (file.name || filePath.split(/[/\\]/).pop() || 'Unknown Track').replace(/\.[^/.]+$/, '').trim();
+          const finalTitle = nativeMeta.title?.trim() || cleanFileName;
+          const finalArtist = nativeMeta.artist?.trim() || 'Unknown Artist';
+          const finalAlbum = nativeMeta.album?.trim() || 'Unknown Album';
+          const finalCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
+          const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-        // Persist cover to IndexedDB cache in background so it rehydrates across restarts without blocking parsing
-        if (finalCoverUrl && finalCoverUrl.startsWith('data:')) {
-          const blob = dataURLtoBlob(finalCoverUrl);
-          if (blob) {
-            saveMediaFile(`cover_${trackId}`, blob).catch(() => {});
+          // Persist cover to IndexedDB cache in background so it rehydrates across restarts without blocking parsing
+          if (finalCoverUrl && finalCoverUrl.startsWith('data:')) {
+            const blob = dataURLtoBlob(finalCoverUrl);
+            if (blob) {
+              saveMediaFile(`cover_${trackId}`, blob).catch(() => {});
+            }
           }
-        }
 
-        return {
-          id: trackId,
-          title: finalTitle,
-          artist: finalArtist,
-          albumArtist: nativeMeta.albumArtist?.trim() || undefined,
-          album: finalAlbum,
-          composer: nativeMeta.composer?.trim() || undefined,
-          publisher: nativeMeta.publisher?.trim() || undefined,
-          lyrics: nativeMeta.lyrics?.trim() || undefined,
-          genre: nativeMeta.genre?.trim() || 'Uncategorized',
-          duration: nativeMeta.duration ? Math.round(nativeMeta.duration * 100) / 100 : 0,
-          year: nativeMeta.year,
-          trackNumber: nativeMeta.trackNumber,
-          trackTotal: nativeMeta.trackTotal,
-          discNumber: nativeMeta.discNumber,
-          discTotal: nativeMeta.discTotal,
-          bpm: nativeMeta.bpm,
-          mediaKind: nativeMeta.mediaKind || 'Music',
-          comments: nativeMeta.comments?.trim() || undefined,
-          rating: 0,
-          playCount: 0,
-          coverUrl: finalCoverUrl,
-          audioUrl: objectUrl,
-          file: undefined, // Do not store memory Blob for local Tauri files
-          format: nativeMeta.format || getReadableAudioFormat(file),
-          bitrate: nativeMeta.bitrate || 320,
-          sampleRate: nativeMeta.sampleRate || 44100,
-          sizeBytes: nativeMeta.sizeBytes || file.size,
-          dateAdded: new Date().toISOString(),
-          filePath,
-        };
+          return {
+            id: trackId,
+            title: finalTitle,
+            artist: finalArtist,
+            albumArtist: nativeMeta.albumArtist?.trim() || undefined,
+            album: finalAlbum,
+            composer: nativeMeta.composer?.trim() || undefined,
+            publisher: nativeMeta.publisher?.trim() || undefined,
+            lyrics: nativeMeta.lyrics?.trim() || undefined,
+            genre: nativeMeta.genre?.trim() || 'Uncategorized',
+            duration: Math.round(nativeMeta.duration * 100) / 100,
+            year: nativeMeta.year,
+            trackNumber: nativeMeta.trackNumber,
+            trackTotal: nativeMeta.trackTotal,
+            discNumber: nativeMeta.discNumber,
+            discTotal: nativeMeta.discTotal,
+            bpm: nativeMeta.bpm,
+            mediaKind: nativeMeta.mediaKind || 'Music',
+            comments: nativeMeta.comments?.trim() || undefined,
+            rating: 0,
+            playCount: 0,
+            coverUrl: finalCoverUrl,
+            audioUrl: objectUrl,
+            file: undefined, // Do not store memory Blob for local Tauri files
+            format: nativeMeta.format || getReadableAudioFormat(file),
+            bitrate: nativeMeta.bitrate || 320,
+            sampleRate: nativeMeta.sampleRate || 44100,
+            sizeBytes: nativeMeta.sizeBytes || file.size,
+            dateAdded: new Date().toISOString(),
+            filePath,
+          };
+        }
+        // Native probe returned metadata but duration was 0/missing — fall through to JS parsing below.
+        console.warn(`Native metadata probe returned no duration for ${filePath}, falling back to JS parser.`);
       }
     } catch (nativeErr) {
       console.warn(`Native metadata probe failed for ${filePath}, falling back to browser parser:`, nativeErr);
@@ -1004,9 +1066,46 @@ export async function parseAudioFile(file: File): Promise<Track> {
   if (!genre) genre = 'Uncategorized';
 
   // Fast duration determination chain:
-  // 1. MP4 mvhd duration (accurate for m4a/aac/mp4)
+  // 1. MP4 mvhd duration (accurate for m4a/aac/mp4) — from parseMp4Atoms
   if (mp4Tags?.duration && mp4Tags.duration > 0) {
     duration = mp4Tags.duration;
+  }
+
+  // 1b. If parseMp4Atoms returned null (no ilst atom), try findMvhdDuration directly
+  //     on the moov atom so tag-less MP4/M4A files still get accurate duration.
+  if ((!duration || duration === 0) && file.name) {
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    if (['m4a', 'mp4', 'aac', 'm4b', 'alac'].includes(ext)) {
+      try {
+        let mvhdBytes: Uint8Array | null = null;
+        // Scan top-level atoms to locate moov, read it fully
+        let pos = 0;
+        while (pos + 8 <= file.size) {
+          const hdrBuf = await file.slice(pos, pos + 16).arrayBuffer();
+          if (hdrBuf.byteLength < 8) break;
+          const hdrView = new DataView(hdrBuf);
+          let atomSize = hdrView.getUint32(0, false);
+          const atomType = String.fromCharCode(
+            new Uint8Array(hdrBuf)[4], new Uint8Array(hdrBuf)[5],
+            new Uint8Array(hdrBuf)[6], new Uint8Array(hdrBuf)[7]
+          );
+          if (atomSize === 1 && hdrBuf.byteLength >= 16) {
+            atomSize = hdrView.getUint32(8, false) * 4294967296 + hdrView.getUint32(12, false);
+          }
+          if (atomSize < 8) break;
+          if (atomType === 'moov') {
+            const moovBuf = await file.slice(pos, Math.min(file.size, pos + atomSize)).arrayBuffer();
+            mvhdBytes = new Uint8Array(moovBuf);
+            break;
+          }
+          pos += atomSize;
+        }
+        if (mvhdBytes) {
+          const mvhdDur = findMvhdDuration(mvhdBytes);
+          if (mvhdDur && mvhdDur > 0) duration = mvhdDur;
+        }
+      } catch (_e) {}
+    }
   }
 
   // 2. Exact header scanner (WAV, FLAC, MP3 Xing/VBRI frame headers)
@@ -1412,16 +1511,36 @@ function getAudioDuration(url: string): Promise<number> {
       resolve(d > 0 && isFinite(d) ? d : 0);
     };
 
+    // For streaming/VBR files the browser may report Infinity until it buffers the whole file.
+    // When that happens, try reading the last seekable range end — browsers populate
+    // audio.seekable after enough data is buffered even for Infinity-duration streams.
+    const trySeekableEnd = (): number => {
+      try {
+        if (audio.seekable && audio.seekable.length > 0) {
+          const end = audio.seekable.end(audio.seekable.length - 1);
+          if (end > 0 && isFinite(end)) return end;
+        }
+      } catch (_) {}
+      return 0;
+    };
+
     // 8-second timeout for async decoding
     const timer = setTimeout(() => {
       const d = audio.duration;
-      finish(d && isFinite(d) ? d : 0);
+      if (d && isFinite(d) && d > 0) { finish(d); return; }
+      // Last resort: seekable range end
+      const s = trySeekableEnd();
+      finish(s);
     }, 8000);
 
     audio.onloadedmetadata = () => {
       const d = audio.duration;
       if (d && isFinite(d) && d > 0) {
         finish(d);
+      }
+      // Infinity: trigger a seek to populate seekable ranges
+      if (d === Infinity) {
+        try { audio.currentTime = 1e9; } catch (_) {}
       }
     };
 
@@ -1436,6 +1555,18 @@ function getAudioDuration(url: string): Promise<number> {
       const d = audio.duration;
       if (d && isFinite(d) && d > 0) {
         finish(d);
+      }
+      if (d === Infinity) {
+        const s = trySeekableEnd();
+        if (s > 0) finish(s);
+      }
+    };
+
+    audio.onseeked = () => {
+      // After the forced seek, currentTime is the true end position
+      const end = audio.currentTime;
+      if (end > 0 && isFinite(end)) {
+        finish(end);
       }
     };
 

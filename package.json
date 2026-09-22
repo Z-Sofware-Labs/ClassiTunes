@@ -1,7 +1,7 @@
 {
   "name": "classitunes",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.5.1",
   "author": "Z Software Labs",
   "type": "module",
   "main": "electron/main.cjs",
@@ -74,6 +74,7 @@
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.11.0",
+    "@wasm-audio-decoders/ogg-vorbis": "^0.1.20",
     "buffer": "^6.0.3",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",

@@ -37,6 +37,10 @@ export default defineConfig(() => {
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
+              if (id.includes('@wasm-audio-decoders') || id.includes('codec-parser')) {
+                // OGG WASM decoder — lazily loaded only when playing OGG on unsupported platforms
+                return 'vendor-ogg-decoder';
+              }
               if (
                 id.includes('music-metadata-browser') ||
                 id.includes('file-type') ||
