@@ -44,6 +44,20 @@ export default function App() {
     return INITIAL_TRACKS;
   });
 
+  // Playback-volatile metadata (playCount, lastPlayed, coverUrl, audioUrl).
+  // Stored separately so mutations during playback do NOT invalidate filteredTracks / albums.
+  const [playbackMeta, setPlaybackMeta] = useState<Map<string, Partial<Track>>>(() => new Map());
+
+  // Merge playbackMeta into tracks for display and persistence.
+  // This is the authoritative merged list; only recomputed when base tracks or playbackMeta changes.
+  const mergedTracks = useMemo(() => {
+    if (playbackMeta.size === 0) return tracks;
+    return tracks.map(t => {
+      const meta = playbackMeta.get(t.id);
+      return meta ? { ...t, ...meta } : t;
+    });
+  }, [tracks, playbackMeta]);
+
   const [playlists, setPlaylists] = useState<Playlist[]>(() => {
     try {
       const saved = localStorage.getItem('classitunes_playlists') || localStorage.getItem('itunes_playlists');
@@ -493,10 +507,14 @@ export default function App() {
   }, []);
 
   // Save to LocalStorage & IndexedDB (Debounced for zero UI stutter)
+  // Saves the fully merged tracks (base + playbackMeta) to persist playCount, coverUrl, etc.
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
-        const userTracksOnly = tracks.filter(t => 
+        const sourceTracks = playbackMeta.size > 0
+          ? tracks.map(t => { const m = playbackMeta.get(t.id); return m ? { ...t, ...m } : t; })
+          : tracks;
+        const userTracksOnly = sourceTracks.filter(t => 
           !t.id.startsWith('demo_') && 
           !t.id.startsWith('sample_') &&
           !(t.audioUrl && t.audioUrl.startsWith('synth:'))
@@ -521,7 +539,7 @@ export default function App() {
       }
     }, 300);
     return () => clearTimeout(timer);
-  }, [tracks]);
+  }, [tracks, playbackMeta]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -562,7 +580,8 @@ export default function App() {
     
     // Check if another loaded track with the same album has a valid coverUrl
     if (!cachedArt && albumKey) {
-      const sibling = tracks.find(t => (t.album || '').trim().toLowerCase() === albumKey && t.coverUrl);
+      // Search mergedTracks (base + playbackMeta) for sibling artwork
+      const sibling = mergedTracks.find(t => (t.album || '').trim().toLowerCase() === albumKey && t.coverUrl);
       if (sibling?.coverUrl) {
         cachedArt = sibling.coverUrl;
         setCachedArtwork(albumKey, cachedArt);
@@ -600,36 +619,46 @@ export default function App() {
             void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb, track.filePath);
           }
 
-          // Cache resolved artwork globally
+          // Cache resolved artwork globally and write into playbackMeta (not base tracks)
           if (hydrated.coverUrl) {
             setCachedArtwork(track.id, hydrated.coverUrl);
             if (albumKey) setCachedArtwork(albumKey, hydrated.coverUrl);
+            setPlaybackMeta(prev => {
+              const next = new Map(prev);
+              const existing = next.get(track.id) || {};
+              next.set(track.id, {
+                ...existing,
+                coverUrl: hydrated.coverUrl || (existing as Track).coverUrl,
+                audioUrl: hydrated.audioUrl || (existing as Track).audioUrl || track.audioUrl,
+              });
+              return next;
+            });
+          } else if (hydrated.audioUrl && hydrated.audioUrl !== track.audioUrl) {
+            setPlaybackMeta(prev => {
+              const next = new Map(prev);
+              const existing = next.get(track.id) || {};
+              next.set(track.id, { ...existing, audioUrl: hydrated.audioUrl });
+              return next;
+            });
           }
-
-          // Update library track with rehydrated artwork and audioUrl
-          setTracks(prev => prev.map(t => (t.id === track.id ? { 
-            ...t, 
-            coverUrl: hydrated.coverUrl || t.coverUrl, 
-            audioUrl: hydrated.audioUrl || t.audioUrl 
-          } : t)));
         }
       }).catch((err) => {
         console.warn('Failed to hydrate track media on play:', err);
       });
     }
 
-    // 3. Update Play Count
-    setTracks(prev => prev.map(t => {
-      if (t.id === track.id) {
-        return {
-          ...t,
-          playCount: (t.playCount || 0) + 1,
-          lastPlayed: new Date(),
-        };
-      }
-      return t;
-    }));
-  }, [tracks]);
+    // 3. Update Play Count — write to playbackMeta only (does not invalidate filteredTracks/albums)
+    setPlaybackMeta(prev => {
+      const next = new Map(prev);
+      const existing = next.get(track.id) || {};
+      next.set(track.id, {
+        ...existing,
+        playCount: ((existing as Track).playCount ?? (track.playCount || 0)) + 1,
+        lastPlayed: new Date(),
+      });
+      return next;
+    });
+  }, [mergedTracks]);
 
   const togglePlay = () => {
     if (!currentTrack) {
@@ -648,7 +677,9 @@ export default function App() {
     }
   };
 
-  // Filtered Tracks based on Sidebar Selection and Search
+  // Filtered Tracks based on Sidebar Selection and Search.
+  // Depends on the BASE `tracks` array (not mergedTracks) so playback mutations (playCount,
+  // coverUrl via playbackMeta) do NOT cause a recompute. The display layer merges playbackMeta.
   const filteredTracks = useMemo(() => {
     const t0 = performance.now();
     let list = [...tracks];
@@ -667,7 +698,9 @@ export default function App() {
           return tB - tA;
         });
       } else if (activePlaylist.systemType === 'top_rated') {
-        list = list.filter(t => t.rating >= 4);
+        // Use mergedTracks so rating updates are reflected without base track mutation
+        const mergedMap = playbackMeta.size > 0 ? new Map(mergedTracks.map(t => [t.id, t])) : null;
+        list = list.filter(t => (mergedMap ? (mergedMap.get(t.id)?.rating ?? t.rating) : t.rating) >= 4);
       } else if (activePlaylist.systemType === 'party_shuffle') {
         // Keep as is
       } else {
@@ -694,6 +727,16 @@ export default function App() {
 
     return list;
   }, [tracks, playlists, selectedPlaylistId, searchQuery]);
+
+  // Merge playbackMeta into filteredTracks for the actual rendered views.
+  // This is cheap: only touches the filtered subset, not the whole library.
+  const displayTracks = useMemo(() => {
+    if (playbackMeta.size === 0) return filteredTracks;
+    return filteredTracks.map(t => {
+      const meta = playbackMeta.get(t.id);
+      return meta ? { ...t, ...meta } : t;
+    });
+  }, [filteredTracks, playbackMeta]);
 
   // Derived Albums for Album Grid View (Grouped strictly by Album Name)
   // NOTE: defined here (before refs) so albumsRef can reference it without use-before-declaration
@@ -759,12 +802,14 @@ export default function App() {
   }, [filteredTracks]);
 
   // Determine active playback pool based on view mode
+  // Use displayTracks (filteredTracks + playbackMeta) so next/prev operates on the same
+  // track objects the user sees (with up-to-date playCount, coverUrl, etc.)
   const activePlaybackPool = useMemo(() => {
     if (viewMode === 'grid' && albumPlayQueue && albumPlayQueue.length > 0) {
       return albumPlayQueue;
     }
-    return filteredTracks.length > 0 ? filteredTracks : tracks;
-  }, [viewMode, albumPlayQueue, filteredTracks, tracks]);
+    return displayTracks.length > 0 ? displayTracks : mergedTracks;
+  }, [viewMode, albumPlayQueue, displayTracks, mergedTracks]);
 
   // Next/Prev logic
   const handleNextTrack = useCallback(() => {
@@ -1962,7 +2007,7 @@ export default function App() {
         }`}>
           {viewMode === 'list' && (
             <ListView
-              tracks={filteredTracks}
+              tracks={displayTracks}
               currentTrack={currentTrack}
               isPlaying={isPlaying}
               playlists={playlists}
@@ -2018,13 +2063,13 @@ export default function App() {
         onDeleteTrack={handleDeleteTrack}
         onDeleteTracks={handleDeleteTracks}
         selectedTrackIds={selectedTrackIds}
-        tracks={filteredTracks}
+        tracks={displayTracks}
         theme={theme}
       />
 
       {/* Bottom Status Bar */}
       <StatusBar
-        tracks={filteredTracks}
+        tracks={displayTracks}
         currentTrack={currentTrack}
         onOpenEQ={() => setIsEQOpen(true)}
         onOpenVisualizer={() => setIsVisualizerOpen(true)}

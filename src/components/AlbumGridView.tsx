@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react';
 import { Album, Track } from '../types';
 import { Play, Star, Disc, Music, X, Shuffle, Volume2, Info } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
@@ -35,7 +35,29 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-/** Individual Album Card with Lazy Artwork Resolution and IntersectionObserver */
+// ─── Shared IntersectionObserver context (#10) ───────────────────────────────
+// A single observer for the entire grid — each AlbumCard registers a callback
+// instead of creating its own observer instance.
+type VisibilityCallback = (isVisible: boolean) => void;
+const SharedIOContext = createContext<{
+  observe: (el: Element, cb: VisibilityCallback) => void;
+  unobserve: (el: Element) => void;
+} | null>(null);
+
+function useSharedVisibility(ref: React.RefObject<HTMLDivElement | null>, onVisible: () => void) {
+  const ctx = useContext(SharedIOContext);
+  const onVisibleRef = useRef(onVisible);
+  onVisibleRef.current = onVisible;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !ctx) return;
+    ctx.observe(el, (visible) => { if (visible) onVisibleRef.current(); });
+    return () => ctx.unobserve(el);
+  }, [ref, ctx]);
+}
+
+/** Individual Album Card with Lazy Artwork Resolution via Shared IntersectionObserver */
 const AlbumCard = React.memo<{
   album: Album;
   isSelected: boolean;
@@ -45,7 +67,8 @@ const AlbumCard = React.memo<{
   onSelect: () => void;
   onPlayAlbum: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
-}>(({
+}>((
+{
   album,
   isSelected,
   isAlbumPlaying,
@@ -64,27 +87,8 @@ const AlbumCard = React.memo<{
   });
   const [imgError, setImgError] = useState(false);
 
-  // IntersectionObserver: Only fetch/decode heavy artwork when the card is near the viewport
-  useEffect(() => {
-    const el = cardRef.current;
-    if (!el || isVisible) return;
-
-    if (typeof IntersectionObserver !== 'undefined') {
-      const observer = new IntersectionObserver(
-        (entries) => {
-          if (entries[0]?.isIntersecting) {
-            setIsVisible(true);
-            observer.disconnect();
-          }
-        },
-        { rootMargin: '300px' }
-      );
-      observer.observe(el);
-      return () => observer.disconnect();
-    } else {
-      setIsVisible(true);
-    }
-  }, [isVisible]);
+  // Use shared IntersectionObserver (#10) — no per-card observer instance
+  useSharedVisibility(cardRef, () => setIsVisible(true));
 
   // Hydrate artwork only once visible and not yet cached
   useEffect(() => {
@@ -502,6 +506,49 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   const [columnsCount, setColumnsCount] = useState<number>(5);
   const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
 
+  // ── Row Virtualization state (#7) ────────────────────────────────────────
+  const [scrollTop, setScrollTop] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(600);
+  // Estimated card height (art + text + gap). Recalibrated on first render.
+  const CARD_HEIGHT_ESTIMATE = 220; // px
+  const ROW_GAP = 24; // gap-6 = 24px
+  const ROW_HEIGHT = CARD_HEIGHT_ESTIMATE + ROW_GAP;
+  const OVERSCAN_ROWS = 3;
+
+  // ── Shared IntersectionObserver (#10) ───────────────────────────────────
+  const cbMapRef = useRef<Map<Element, VisibilityCallback>>(new Map());
+  const sharedObserverRef = useRef<IntersectionObserver | null>(null);
+  const sharedIOCtx = useMemo(() => ({
+    observe: (el: Element, cb: VisibilityCallback) => {
+      cbMapRef.current.set(el, cb);
+      sharedObserverRef.current?.observe(el);
+    },
+    unobserve: (el: Element) => {
+      cbMapRef.current.delete(el);
+      sharedObserverRef.current?.unobserve(el);
+    },
+  }), []);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const cb = cbMapRef.current.get(entry.target);
+          if (cb) cb(entry.isIntersecting);
+        }
+      },
+      { rootMargin: '300px', root: containerRef.current }
+    );
+    sharedObserverRef.current = observer;
+    // Observe any elements already registered
+    cbMapRef.current.forEach((_, el) => observer.observe(el));
+    return () => {
+      observer.disconnect();
+      sharedObserverRef.current = null;
+    };
+  }, []);
+
   const isLight = theme === 'light';
 
   // Measure container width to determine exact columns count for perfect row chunking
@@ -524,6 +571,31 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
     return () => ro.disconnect();
   }, []);
 
+  // Track scroll position for virtualization (RAF-throttled)
+  const rafRef = useRef<number | null>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setContainerHeight(el.clientHeight || 600);
+    const onScroll = () => {
+      if (rafRef.current !== null) return;
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        setScrollTop(el.scrollTop);
+      });
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    const ro = new ResizeObserver((entries) => {
+      setContainerHeight(entries[0]?.contentRect.height ?? 600);
+    });
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro.disconnect();
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
   // Split albums into strict rows of length `columnsCount`
   const rows = useMemo(() => {
     const r: Album[][] = [];
@@ -538,6 +610,32 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
     if (!expandedAlbumId) return null;
     return albums.find(a => a.id === expandedAlbumId) || null;
   }, [albums, expandedAlbumId]);
+
+  // Pre-compute which album the current track belongs to (#6)
+  const currentAlbumId = useMemo(() => {
+    if (!currentTrack) return null;
+    const found = albums.find(a => a.tracks.some(t => t.id === currentTrack.id));
+    return found?.id ?? null;
+  }, [albums, currentTrack]);
+
+  // Row virtualization: which rows are visible (#7)
+  // We need to account for the drawer inserted after the expanded row
+  // Approximate each row's height as ROW_HEIGHT, plus drawer height when open.
+  // We use a simple flat-index approach: if the expanded row is above, add ~300px offset.
+  const { visibleRowStart, visibleRowEnd } = useMemo(() => {
+    const totalRows = rows.length;
+    if (totalRows <= 20) {
+      // For small libraries, render everything
+      return { visibleRowStart: 0, visibleRowEnd: totalRows };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
+    const visible = Math.ceil(containerHeight / ROW_HEIGHT) + OVERSCAN_ROWS * 2;
+    const end = Math.min(totalRows, start + visible);
+    return { visibleRowStart: start, visibleRowEnd: end };
+  }, [rows.length, scrollTop, containerHeight, ROW_HEIGHT, OVERSCAN_ROWS]);
+
+  const topSpacerHeight = visibleRowStart * ROW_HEIGHT;
+  const bottomSpacerHeight = Math.max(0, (rows.length - visibleRowEnd) * ROW_HEIGHT);
 
   const handleSelectAlbum = useCallback((albumId: string) => {
     setExpandedAlbumId(prev => (prev === albumId ? null : albumId));
@@ -618,89 +716,103 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   const drawerBgColor = isLight ? '#e9edf3' : '#202328';
 
   return (
-    <div
-      ref={containerRef}
-      className={`flex-1 overflow-y-auto p-6 select-none custom-scrollbar transition-colors duration-200 ${
-        isLight ? 'bg-[#f4f6f9]' : 'bg-[#121212]'
-      }`}
-    >
-      <div className="max-w-7xl mx-auto flex flex-col gap-6">
-        {rows.map((rowAlbums, rowIndex) => {
-          // Check if the currently expanded album is in this row
-          const selectedColIndex = rowAlbums.findIndex(a => a.id === expandedAlbumId);
-          const isRowExpanded = selectedColIndex !== -1;
+    <SharedIOContext.Provider value={sharedIOCtx}>
+      <div
+        ref={containerRef}
+        className={`flex-1 overflow-y-auto p-6 select-none custom-scrollbar transition-colors duration-200 ${
+          isLight ? 'bg-[#f4f6f9]' : 'bg-[#121212]'
+        }`}
+      >
+        <div className="max-w-7xl mx-auto flex flex-col gap-6">
+          {/* Top spacer for virtualized rows above viewport */}
+          {topSpacerHeight > 0 && (
+            <div style={{ height: topSpacerHeight, flexShrink: 0 }} aria-hidden="true" />
+          )}
 
-          return (
-            <div key={`row-${rowIndex}`} className="flex flex-col">
-              {/* Row Grid: Full columnsCount across */}
-              <div
-                className="grid gap-5"
-                style={{
-                  gridTemplateColumns: `repeat(${columnsCount}, minmax(0, 1fr))`,
-                }}
-              >
-                {rowAlbums.map((album) => {
-                  const isSelected = expandedAlbumId === album.id;
-                  const isAlbumPlaying = album.tracks.some(t => t.id === currentTrack?.id);
+          {rows.slice(visibleRowStart, visibleRowEnd).map((rowAlbums, relIdx) => {
+            const rowIndex = visibleRowStart + relIdx;
+            // Check if the currently expanded album is in this row
+            const selectedColIndex = rowAlbums.findIndex(a => a.id === expandedAlbumId);
+            const isRowExpanded = selectedColIndex !== -1;
 
-                  return (
-                    <AlbumCard
-                      key={album.id}
-                      album={album}
-                      isSelected={isSelected}
-                      isAlbumPlaying={isAlbumPlaying}
-                      isPlaying={isPlaying}
-                      isLight={isLight}
-                      onSelect={() => handleSelectAlbum(album.id)}
-                      onPlayAlbum={() => {
-                        setExpandedAlbumId(album.id);
-                        handlePlayAlbum(album, false);
-                      }}
-                      onContextMenu={(e) => {
-                        if (album.tracks.length > 0 && onTrackContextMenu) {
-                          onTrackContextMenu(album.tracks[0], e);
-                        }
+            return (
+              <div key={`row-${rowIndex}`} className="flex flex-col">
+                {/* Row Grid: Full columnsCount across */}
+                <div
+                  className="grid gap-5"
+                  style={{
+                    gridTemplateColumns: `repeat(${columnsCount}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {rowAlbums.map((album) => {
+                    const isSelected = expandedAlbumId === album.id;
+                    // Use pre-computed currentAlbumId instead of Array.some() per card (#6)
+                    const isAlbumPlaying = album.id === currentAlbumId;
+
+                    return (
+                      <AlbumCard
+                        key={album.id}
+                        album={album}
+                        isSelected={isSelected}
+                        isAlbumPlaying={isAlbumPlaying}
+                        isPlaying={isPlaying}
+                        isLight={isLight}
+                        onSelect={() => handleSelectAlbum(album.id)}
+                        onPlayAlbum={() => {
+                          setExpandedAlbumId(album.id);
+                          handlePlayAlbum(album, false);
+                        }}
+                        onContextMenu={(e) => {
+                          if (album.tracks.length > 0 && onTrackContextMenu) {
+                            onTrackContextMenu(album.tracks[0], e);
+                          }
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+
+                {/* Row-Aware Expanding Shelf / Drawer */}
+                {isRowExpanded && expandedAlbum && (
+                  <div
+                    id="album-expanded-drawer"
+                    className="relative mt-3 mb-4 animate-in fade-in slide-in-from-top-2 duration-200"
+                  >
+                    {/* Pointer Arrow pointing to selected album */}
+                    <div
+                      className="absolute -top-2.5 z-20 w-0 h-0 transition-all duration-200"
+                      style={{
+                        left: `calc(${(selectedColIndex + 0.5) * (100 / columnsCount)}% - 10px)`,
+                        borderLeft: '10px solid transparent',
+                        borderRight: '10px solid transparent',
+                        borderBottom: `10px solid ${drawerBgColor}`,
                       }}
                     />
-                  );
-                })}
+
+                    <AlbumDrawer
+                      album={expandedAlbum}
+                      currentTrack={currentTrack}
+                      isPlaying={isPlaying}
+                      isLight={isLight}
+                      onClose={() => setExpandedAlbumId(null)}
+                      onPlayTrack={onPlayTrack}
+                      onPlayAlbum={(shuffle) => handlePlayAlbum(expandedAlbum, shuffle)}
+                      onUpdateRating={onUpdateRating}
+                      onOpenGetInfo={onOpenGetInfo}
+                      onTrackContextMenu={onTrackContextMenu}
+                    />
+                  </div>
+                )}
               </div>
+            );
+          })}
 
-              {/* Row-Aware Expanding Shelf / Drawer (Rendered strictly underneath this complete row) */}
-              {isRowExpanded && expandedAlbum && (
-                <div 
-                  id="album-expanded-drawer"
-                  className="relative mt-3 mb-4 animate-in fade-in slide-in-from-top-2 duration-200"
-                >
-                  {/* Pointer Arrow pointing to selected album */}
-                  <div
-                    className="absolute -top-2.5 z-20 w-0 h-0 transition-all duration-200"
-                    style={{
-                      left: `calc(${(selectedColIndex + 0.5) * (100 / columnsCount)}% - 10px)`,
-                      borderLeft: '10px solid transparent',
-                      borderRight: '10px solid transparent',
-                      borderBottom: `10px solid ${drawerBgColor}`,
-                    }}
-                  />
-
-                  <AlbumDrawer
-                    album={expandedAlbum}
-                    currentTrack={currentTrack}
-                    isPlaying={isPlaying}
-                    isLight={isLight}
-                    onClose={() => setExpandedAlbumId(null)}
-                    onPlayTrack={onPlayTrack}
-                    onPlayAlbum={(shuffle) => handlePlayAlbum(expandedAlbum, shuffle)}
-                    onUpdateRating={onUpdateRating}
-                    onOpenGetInfo={onOpenGetInfo}
-                    onTrackContextMenu={onTrackContextMenu}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
+          {/* Bottom spacer for virtualized rows below viewport */}
+          {bottomSpacerHeight > 0 && (
+            <div style={{ height: bottomSpacerHeight, flexShrink: 0 }} aria-hidden="true" />
+          )}
+        </div>
       </div>
-    </div>
+    </SharedIOContext.Provider>
   );
 };

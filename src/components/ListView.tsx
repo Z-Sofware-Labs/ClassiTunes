@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Track, Playlist } from '../types';
 import { 
   Play, Volume2, Star, ArrowUp, ArrowDown, MoreHorizontal, 
@@ -108,6 +108,7 @@ interface TrackRowProps {
   pyClass: string;
   isMenuOpen: boolean;
   userPlaylists: Playlist[];
+  dateAddedFormatted: Map<string, string>;
   onPlayTrack: (track: Track) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onOpenGetInfo: (track: Track) => void;
@@ -136,6 +137,7 @@ const TrackRow = React.memo<TrackRowProps>(({
   pyClass,
   isMenuOpen,
   userPlaylists,
+  dateAddedFormatted,
   onPlayTrack,
   onUpdateRating,
   onOpenGetInfo,
@@ -346,7 +348,7 @@ const TrackRow = React.memo<TrackRowProps>(({
                 className={`${pyClass} px-2 text-left text-[12px] truncate`}
               >
                 <span className={isSelected ? 'text-white' : isLight ? 'text-gray-600' : 'text-gray-400'}>
-                  {track.dateAdded ? new Date(track.dateAdded).toLocaleDateString() : '-'}
+                  {dateAddedFormatted.get(track.id) ?? '-'}
                 </span>
               </td>
             );
@@ -485,7 +487,8 @@ const TrackRow = React.memo<TrackRowProps>(({
     prev.pyClass === next.pyClass &&
     prev.visibleColumns === next.visibleColumns &&
     prev.columnWidths === next.columnWidths &&
-    prev.userPlaylists === next.userPlaylists
+    prev.userPlaylists === next.userPlaylists &&
+    prev.dateAddedFormatted === next.dateAddedFormatted
   );
 });
 
@@ -517,13 +520,14 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   selectedTrackIdsRef.current = selectedTrackIds;
   const selectedTrackSet = useMemo(() => new Set(selectedTrackIds), [selectedTrackIds]);
 
-  const updateSelectedTrackIds = (ids: string[]) => {
+  const updateSelectedTrackIds = useCallback((ids: string[]) => {
     selectedTrackIdsRef.current = ids;
     setInternalSelectedTrackIds(ids);
     if (onSelectionChange) {
       onSelectionChange(ids);
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onSelectionChange]);
 
   // Marquee / Box Selection State & Logic
   const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
@@ -825,19 +829,26 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   useEffect(() => {
     if (!resizingCol) return;
 
+    let pendingWidth: number | null = null;
+
     const handleMouseMove = (e: MouseEvent) => {
       const diff = e.clientX - resizingCol.startX;
       const newWidth = Math.max(35, resizingCol.startWidth + diff);
-      setColumnWidths(prev => {
-        const updated = { ...prev, [resizingCol.id]: newWidth };
-        try {
-          localStorage.setItem('classitunes_column_widths', JSON.stringify(updated));
-        } catch (err) {}
-        return updated;
-      });
+      pendingWidth = newWidth;
+      setColumnWidths(prev => ({ ...prev, [resizingCol.id]: newWidth }));
     };
 
     const handleMouseUp = () => {
+      // Persist to localStorage only once on release, not on every pixel (#9)
+      if (pendingWidth !== null) {
+        setColumnWidths(prev => {
+          const updated = { ...prev, [resizingCol.id]: pendingWidth! };
+          try {
+            localStorage.setItem('classitunes_column_widths', JSON.stringify(updated));
+          } catch (err) {}
+          return updated;
+        });
+      }
       setResizingCol(null);
     };
 
@@ -911,6 +922,17 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     }
     return sorted;
   }, [tracks, sortField, sortAsc]);
+
+  // Pre-compute formatted dateAdded strings to avoid allocating Date objects per row per render (#2)
+  const dateAddedFormatted = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of sortedTracks) {
+      if (t.dateAdded) {
+        map.set(t.id, new Date(t.dateAdded).toLocaleDateString());
+      }
+    }
+    return map;
+  }, [sortedTracks]);
 
   // Windowed Virtualization Calculation
   const OVERSCAN = 20;
@@ -1047,8 +1069,12 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     initialSelectionRef.current = e.shiftKey || e.ctrlKey || e.metaKey ? [...selectedTrackIdsRef.current] : [];
 
     // Cache currently rendered row client rects for fast box selection without layout thrashing
+    // Scope to the table container only (#8), not the full document
     const rects: { id: string; rect: DOMRect }[] = [];
-    const renderedRows = document.querySelectorAll<HTMLElement>('tr[id^="track-row-"]');
+    const container = tableContainerRef.current;
+    const renderedRows = container
+      ? container.querySelectorAll<HTMLElement>('tr[id^="track-row-"]')
+      : document.querySelectorAll<HTMLElement>('tr[id^="track-row-"]');
     renderedRows.forEach((rowElem) => {
       const id = rowElem.id.replace('track-row-', '');
       rects.push({ id, rect: rowElem.getBoundingClientRect() });
@@ -1056,7 +1082,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     rowRectsRef.current = rects;
   };
 
-  const handleRowClick = (trackId: string, e: React.MouseEvent) => {
+  const handleRowClick = useCallback((trackId: string, e: React.MouseEvent) => {
     if (isBoxSelectingRef.current) return;
 
     let newSelection: string[];
@@ -1070,18 +1096,18 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       newSelection = [trackId];
     }
     updateSelectedTrackIds(newSelection);
-  };
+  }, [selectedTrackIds, updateSelectedTrackIds]);
 
-  const handleDragStart = (e: React.DragEvent, trackId: string) => {
+  const handleDragStart = useCallback((e: React.DragEvent, trackId: string) => {
     resetDragAndBoxSelection();
     const idsToDrag = selectedTrackIds.includes(trackId) ? selectedTrackIds : [trackId];
     e.dataTransfer.setData('application/classiplayer-tracks', JSON.stringify(idsToDrag));
     e.dataTransfer.effectAllowed = 'copy';
-  };
+  }, [selectedTrackIds]);
 
-  const handleDragEnd = () => {
+  const handleDragEnd = useCallback(() => {
     resetDragAndBoxSelection();
-  };
+  }, []);
 
   if (tracks.length === 0) {
     if (searchQuery && searchQuery.trim().length > 0) {
@@ -1269,6 +1295,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
                   pyClass={pyClass}
                   isMenuOpen={contextMenuTrackId === track.id}
                   userPlaylists={userPlaylists}
+                  dateAddedFormatted={dateAddedFormatted}
                   onPlayTrack={onPlayTrack}
                   onUpdateRating={onUpdateRating}
                   onOpenGetInfo={onOpenGetInfo}

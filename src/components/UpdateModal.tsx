@@ -229,23 +229,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </div>
           )}
 
-          {/* Release Notes */}
-          {status === 'available' && updateInfo?.body && (
-            <div>
-              <span className={`block text-[11px] font-semibold mb-1.5 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                What's New in v{updateInfo.version}:
-              </span>
-              <div
-                className={`w-full max-h-36 overflow-y-auto p-3 rounded-lg border text-xs leading-relaxed font-mono whitespace-pre-wrap select-text ${
-                  isLight
-                    ? 'bg-white border-slate-200 text-slate-700'
-                    : 'bg-black/30 border-white/5 text-slate-300'
-                }`}
-              >
-                {updateInfo.body}
-              </div>
-            </div>
-          )}
+
 
           {/* Download & Install Progress Bar */}
           {status === 'downloading' && (
