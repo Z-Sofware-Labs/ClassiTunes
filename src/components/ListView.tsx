@@ -105,6 +105,7 @@ interface TrackRowProps {
   visibleColumns: ColumnId[];
   columnWidths: Record<ColumnId, number>;
   isLight: boolean;
+  isLinux: boolean;
   pyClass: string;
   isMenuOpen: boolean;
   userPlaylists: Playlist[];
@@ -134,6 +135,7 @@ const TrackRow = React.memo<TrackRowProps>(({
   visibleColumns,
   columnWidths,
   isLight,
+  isLinux,
   pyClass,
   isMenuOpen,
   userPlaylists,
@@ -166,7 +168,11 @@ const TrackRow = React.memo<TrackRowProps>(({
         }
         if (onTrackContextMenu) onTrackContextMenu(track, e);
       }}
-      className={`group transition-colors cursor-pointer ${
+      className={`group cursor-pointer ${
+        // Skip transition-colors on Linux/WebKitGTK: it forces a full style recalculation
+        // across every visible row on each scroll frame, causing measurable jank.
+        isLinux ? '' : 'transition-colors'
+      } ${
         isSelected
           ? isLight ? 'bg-gradient-to-b from-[#3b82f6] to-[#1d4ed8] text-white font-medium' : 'bg-[#3a3a3a] text-white font-medium'
           : isCurrentPlaying
@@ -191,7 +197,9 @@ const TrackRow = React.memo<TrackRowProps>(({
                 {isCurrentPlaying ? (
                   <div className={`flex items-center justify-center font-bold ${isLight ? 'text-blue-600' : 'text-indigo-400'}`}>
                     {isPlaying ? (
-                      <Volume2 className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : isLight ? 'text-blue-600' : 'text-indigo-400'} animate-pulse`} />
+                      // animate-pulse suppressed on Linux: CSS keyframe animations on visible
+                      // rows keep the row dirty in the compositor, causing repaints during scroll.
+                      <Volume2 className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : isLight ? 'text-blue-600' : 'text-indigo-400'}${isLinux ? '' : ' animate-pulse'}`} />
                     ) : (
                       <Play className={`w-3 h-3 fill-current ${isSelected ? 'text-white' : isLight ? 'text-blue-600' : 'text-indigo-400'}`} />
                     )}
@@ -484,6 +492,7 @@ const TrackRow = React.memo<TrackRowProps>(({
     prev.isZebraOdd === next.isZebraOdd &&
     prev.isMenuOpen === next.isMenuOpen &&
     prev.isLight === next.isLight &&
+    prev.isLinux === next.isLinux &&
     prev.pyClass === next.pyClass &&
     prev.visibleColumns === next.visibleColumns &&
     prev.columnWidths === next.columnWidths &&
@@ -861,6 +870,13 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   }, [resizingCol]);
 
   const isLight = theme === 'light';
+  // Detect Linux/WebKitGTK to disable compositing-heavy CSS that causes scroll jank.
+  // WebKit2GTK does not GPU-composite CSS transitions and animations as efficiently as
+  // Chromium (Windows) or WKWebView (macOS), so keeping these on Linux causes the
+  // compositor to repaint all visible rows on every scroll frame.
+  const isLinux = typeof navigator !== 'undefined' &&
+    (/Linux/i.test((navigator as any).userAgentData?.platform || navigator.platform || '') ||
+     /Linux/i.test(navigator.userAgent));
   const userPlaylists = playlists.filter(p => !p.systemType || p.systemType === 'user');
 
   const toggleColumn = (colId: ColumnId) => {
@@ -1173,7 +1189,15 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       isLight ? 'bg-white text-gray-800' : 'bg-[#121212] text-gray-300'
     }`}>
       {/* Table Container */}
-      <div ref={tableContainerRef} className="flex-1 overflow-auto custom-scrollbar relative" onMouseDown={handleContainerMouseDown}>
+      <div
+        ref={tableContainerRef}
+        className="flex-1 overflow-auto custom-scrollbar relative"
+        onMouseDown={handleContainerMouseDown}
+        // On Linux/WebKitGTK, explicitly promoting the scroll container to its own
+        // compositor layer avoids the browser having to repaint the full-page layer
+        // on every scroll event. willChange is intentionally only set on Linux.
+        style={isLinux ? { willChange: 'transform' } : undefined}
+      >
         {/* Rubberband / Box Selection Overlay */}
         {selectionBox && (
           <div
@@ -1292,6 +1316,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
                   visibleColumns={visibleColumns}
                   columnWidths={columnWidths}
                   isLight={isLight}
+                  isLinux={isLinux}
                   pyClass={pyClass}
                   isMenuOpen={contextMenuTrackId === track.id}
                   userPlaylists={userPlaylists}

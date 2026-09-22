@@ -506,8 +506,9 @@ export class AudioEngine {
         deck.audio.addEventListener('loadeddata', onReady, { once: true });
         deck.audio.addEventListener('canplay', onReady, { once: true });
         deck.audio.addEventListener('error', onReady, { once: true });
-        // Max wait 250ms so playback is not noticeably delayed if events already dispatched
-        setTimeout(onReady, 250);
+        // Max wait 100ms; the local HTTP stream server (Linux) and asset:// (Windows/macOS)
+        // both respond within a few milliseconds, so 250ms was unnecessary dead time.
+        setTimeout(onReady, 100);
       });
     };
 

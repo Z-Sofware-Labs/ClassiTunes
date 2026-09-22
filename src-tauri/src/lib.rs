@@ -666,9 +666,19 @@ fn start_audio_stream_server_internal() -> u16 {
     let port = server.server_addr().to_ip().map(|addr| addr.port()).unwrap_or(0);
     AUDIO_SERVER_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
 
+    // Use a fixed-size thread pool instead of spawning one OS thread per request.
+    // Without this, rapid seeking fires many HTTP Range requests in quick succession,
+    // each spawning its own thread — leading to unbounded thread churn and memory pressure
+    // on Linux where seek-heavy usage is common due to the stream server workaround.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .thread_name(|i| format!("audio-stream-{i}"))
+        .build()
+        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap());
+
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
-            std::thread::spawn(move || {
+            pool.spawn(move || {
                 let url = request.url().to_string();
                 if request.method() == &tiny_http::Method::Options {
                     let resp = tiny_http::Response::empty(204)
