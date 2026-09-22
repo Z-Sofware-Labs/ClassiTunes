@@ -118,6 +118,8 @@ interface TrackRowProps {
   handleRowClick: (trackId: string, e: React.MouseEvent) => void;
   handleDragStart: (e: React.DragEvent, trackId: string) => void;
   handleDragEnd: () => void;
+  setContextMenuTrackId: (id: string | null) => void;
+  selectedTrackIds: string[];
   updateSelectedTrackIds: (ids: string[]) => void;
 }
 
@@ -144,6 +146,8 @@ const TrackRow = React.memo<TrackRowProps>(({
   handleRowClick,
   handleDragStart,
   handleDragEnd,
+  setContextMenuTrackId,
+  selectedTrackIds,
   updateSelectedTrackIds,
 }) => {
   return (
@@ -1276,6 +1280,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
                   handleDragStart={handleDragStart}
                   handleDragEnd={handleDragEnd}
                   setContextMenuTrackId={setContextMenuTrackId}
+                  selectedTrackIds={selectedTrackIds}
                   updateSelectedTrackIds={updateSelectedTrackIds}
                 />
               );

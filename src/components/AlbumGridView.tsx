@@ -9,7 +9,7 @@ interface AlbumGridViewProps {
   albums: Album[];
   currentTrack: Track | null;
   isPlaying: boolean;
-  onPlayTrack: (track: Track) => void;
+  onPlayTrack: (track: Track, albumTracks?: Track[]) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onOpenGetInfo: (trackOrTracks: Track | Track[]) => void;
   onTrackContextMenu?: (track: Track, e: React.MouseEvent) => void;
@@ -224,7 +224,7 @@ const AlbumDrawer: React.FC<{
   isPlaying: boolean;
   isLight: boolean;
   onClose: () => void;
-  onPlayTrack: (track: Track) => void;
+  onPlayTrack: (track: Track, albumTracks?: Track[]) => void;
   onPlayAlbum: (shuffle?: boolean) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onOpenGetInfo: (trackOrTracks: Track | Track[]) => void;
@@ -275,7 +275,7 @@ const AlbumDrawer: React.FC<{
     return (
       <div
         key={track.id}
-        onDoubleClick={() => onPlayTrack(track)}
+        onDoubleClick={() => onPlayTrack(track, album.tracks)}
         onContextMenu={(e) => {
           e.preventDefault();
           if (onTrackContextMenu) onTrackContextMenu(track, e);
@@ -301,7 +301,7 @@ const AlbumDrawer: React.FC<{
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onPlayTrack(track);
+                    onPlayTrack(track, album.tracks);
                   }}
                   className={`hidden group-hover:flex items-center justify-center ${isCurrent ? 'text-white' : isLight ? 'text-blue-600' : 'text-blue-400'}`}
                 >
@@ -548,7 +548,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
     const tracksToPlay = shuffle
       ? [...album.tracks].sort(() => Math.random() - 0.5)
       : album.tracks;
-    onPlayTrack(tracksToPlay[0]);
+    onPlayTrack(tracksToPlay[0], tracksToPlay);
   }, [onPlayTrack]);
 
   // Smoothly scroll the drawer into view when an album is selected

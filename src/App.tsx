@@ -386,6 +386,7 @@ export default function App() {
     setSearchQuery('');
   }, []);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
+  const [albumPlayQueue, setAlbumPlayQueue] = useState<Track[] | null>(null);
 
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -551,7 +552,10 @@ export default function App() {
   }, []);
 
   // Audio Playback Handlers
-  const playTrack = useCallback((track: Track) => {
+  const playTrack = useCallback((track: Track, albumQueue?: Track[]) => {
+    if (albumQueue) {
+      setAlbumPlayQueue(albumQueue);
+    }
     // 0. Instantly resolve cover artwork from memory cache or sibling tracks from same album
     const albumKey = (track.album || '').trim().toLowerCase();
     let cachedArt = track.coverUrl || getCachedArtwork(track.id) || (albumKey ? getCachedArtwork(albumKey) : undefined);
@@ -625,7 +629,7 @@ export default function App() {
       }
       return t;
     }));
-  }, []);
+  }, [tracks]);
 
   const togglePlay = () => {
     if (!currentTrack) {
@@ -691,9 +695,80 @@ export default function App() {
     return list;
   }, [tracks, playlists, selectedPlaylistId, searchQuery]);
 
+  // Derived Albums for Album Grid View (Grouped strictly by Album Name)
+  // NOTE: defined here (before refs) so albumsRef can reference it without use-before-declaration
+  const albums = useMemo(() => {
+    const albumMap = new Map<string, Album>();
+
+    filteredTracks.forEach(t => {
+      const albumName = (t.album || 'Unknown Album').trim();
+      const key = albumName.toLowerCase();
+
+      if (!albumMap.has(key)) {
+        albumMap.set(key, {
+          id: `album_${key}`,
+          name: albumName,
+          artist: t.albumArtist || t.artist || 'Unknown Artist',
+          year: t.year,
+          coverUrl: t.coverUrl,
+          tracks: [t],
+        });
+      } else {
+        const existing = albumMap.get(key)!;
+        existing.tracks.push(t);
+
+        // Keep a valid coverUrl if first track didn't have one
+        if (!existing.coverUrl && t.coverUrl) {
+          existing.coverUrl = t.coverUrl;
+        }
+        // Keep year if first track didn't have one
+        if (!existing.year && t.year) {
+          existing.year = t.year;
+        }
+      }
+    });
+
+    // Resolve final album artist & sort tracks properly by disc/track number
+    albumMap.forEach((album) => {
+      const artists = new Set(album.tracks.map(t => (t.artist || '').trim()).filter(Boolean));
+      const albumArtists = new Set(album.tracks.map(t => (t.albumArtist || '').trim()).filter(Boolean));
+
+      if (albumArtists.size === 1 && albumArtists.values().next().value) {
+        album.artist = albumArtists.values().next().value!;
+      } else if (artists.size > 1) {
+        album.artist = 'Various Artists';
+      } else if (artists.size === 1) {
+        album.artist = artists.values().next().value!;
+      }
+
+      // Sort tracks within the album by Disc Number then Track Number
+      album.tracks.sort((a, b) => {
+        const discA = a.discNumber || 1;
+        const discB = b.discNumber || 1;
+        if (discA !== discB) return discA - discB;
+
+        const trackA = a.trackNumber ?? 9999;
+        const trackB = b.trackNumber ?? 9999;
+        if (trackA !== trackB) return trackA - trackB;
+
+        return (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+      });
+    });
+
+    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  }, [filteredTracks]);
+
+  // Determine active playback pool based on view mode
+  const activePlaybackPool = useMemo(() => {
+    if (viewMode === 'grid' && albumPlayQueue && albumPlayQueue.length > 0) {
+      return albumPlayQueue;
+    }
+    return filteredTracks.length > 0 ? filteredTracks : tracks;
+  }, [viewMode, albumPlayQueue, filteredTracks, tracks]);
+
   // Next/Prev logic
   const handleNextTrack = useCallback(() => {
-    const activePool = filteredTracks.length > 0 ? filteredTracks : tracks;
+    const activePool = activePlaybackPool;
     if (activePool.length === 0) return;
     
     if (!currentTrack) {
@@ -708,15 +783,35 @@ export default function App() {
     }
 
     const currentIndex = activePool.findIndex(t => t.id === currentTrack.id);
-    if (currentIndex === -1 || currentIndex === activePool.length - 1) {
+    if (currentIndex === -1) {
       playTrack(activePool[0]);
-    } else {
-      playTrack(activePool[currentIndex + 1]);
+      return;
     }
-  }, [tracks, filteredTracks, currentTrack, isShuffle, playTrack]);
+
+    if (currentIndex < activePool.length - 1) {
+      playTrack(activePool[currentIndex + 1]);
+      return;
+    }
+
+    // At last track of current pool — in Albums view advance to the next album
+    if (viewMode === 'grid' && albumPlayQueue) {
+      const albumName = (currentTrack.album || '').trim().toLowerCase();
+      const albumIdx = albums.findIndex(a => a.name.trim().toLowerCase() === albumName);
+      if (albumIdx !== -1) {
+        const nextIdx = albumIdx < albums.length - 1 ? albumIdx + 1 : 0;
+        const nextAlbum = albums[nextIdx];
+        if (nextAlbum.tracks.length > 0) {
+          playTrack(nextAlbum.tracks[0], nextAlbum.tracks);
+          return;
+        }
+      }
+    }
+    // Default: wrap to beginning of current pool
+    playTrack(activePool[0]);
+  }, [activePlaybackPool, currentTrack, isShuffle, playTrack, viewMode, albumPlayQueue, albums]);
 
   const getCrossfadeTarget = useCallback((): Track | null => {
-    const activePool = filteredTracks.length > 0 ? filteredTracks : tracks;
+    const activePool = activePlaybackPool;
     if (!currentTrack || activePool.length < 2) return null;
     if (repeatMode === 'one') return null;
 
@@ -729,7 +824,7 @@ export default function App() {
     if (currentIndex >= 0 && currentIndex < activePool.length - 1) return activePool[currentIndex + 1];
     if (repeatMode === 'all') return activePool[0];
     return null;
-  }, [tracks, filteredTracks, currentTrack, isShuffle, repeatMode]);
+  }, [activePlaybackPool, currentTrack, isShuffle, repeatMode]);
 
   const startCrossfade = useCallback(async (target: Track) => {
     setCurrentTrack(target);
@@ -742,7 +837,7 @@ export default function App() {
   }, [appSettings.crossfadeSeconds]);
 
   const handlePrevTrack = useCallback(() => {
-    const activePool = filteredTracks.length > 0 ? filteredTracks : tracks;
+    const activePool = activePlaybackPool;
     if (activePool.length === 0) return;
     if (!currentTrack) {
       playTrack(activePool[0]);
@@ -755,30 +850,35 @@ export default function App() {
     } else {
       playTrack(activePool[currentIndex - 1]);
     }
-  }, [tracks, filteredTracks, currentTrack, playTrack]);
+  }, [activePlaybackPool, currentTrack, playTrack]);
 
   // Stable references to prevent constant tear-down/re-binding of audio event listeners
   const repeatModeRef = useRef(repeatMode);
   const currentTrackRef = useRef(currentTrack);
   const isShuffleRef = useRef(isShuffle);
-  const filteredTracksRef = useRef(filteredTracks);
-  const tracksRef = useRef(tracks);
+  const activePlaybackPoolRef = useRef(activePlaybackPool);
   const playTrackRef = useRef(playTrack);
   const handleNextTrackRef = useRef(handleNextTrack);
   const handlePrevTrackRef = useRef(handlePrevTrack);
   const togglePlayRef = useRef(togglePlay);
   const crossfadeTriggeredRef = useRef(false);
+  // Albums-view next-album progression refs
+  const albumsRef = useRef<Album[]>(albums);
+  const albumPlayQueueRef = useRef<Track[] | null>(albumPlayQueue);
+  const viewModeRef = useRef<ViewMode>(viewMode);
 
   useEffect(() => {
     repeatModeRef.current = repeatMode;
     currentTrackRef.current = currentTrack;
     isShuffleRef.current = isShuffle;
-    filteredTracksRef.current = filteredTracks;
-    tracksRef.current = tracks;
+    activePlaybackPoolRef.current = activePlaybackPool;
     playTrackRef.current = playTrack;
     handleNextTrackRef.current = handleNextTrack;
     handlePrevTrackRef.current = handlePrevTrack;
     togglePlayRef.current = togglePlay;
+    albumsRef.current = albums;
+    albumPlayQueueRef.current = albumPlayQueue;
+    viewModeRef.current = viewMode;
     if (!currentTrack) crossfadeTriggeredRef.current = false;
   });
 
@@ -853,7 +953,7 @@ export default function App() {
       if (appSettings.crossfadeEnabled && duration > 0 && currentTrackRef.current && !crossfadeTriggeredRef.current) {
         const fadeWindow = Math.max(0.25, Math.min(appSettings.crossfadeSeconds, duration * 0.5));
         if (duration - position <= fadeWindow) {
-          const activePool = filteredTracksRef.current.length > 0 ? filteredTracksRef.current : tracksRef.current;
+          const activePool = activePlaybackPoolRef.current;
           const track = currentTrackRef.current;
           let target: Track | null = null;
           if (repeatModeRef.current !== 'one' && activePool.length > 1) {
@@ -862,8 +962,27 @@ export default function App() {
               target = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)] : null;
             } else {
               const index = activePool.findIndex(t => t.id === track.id);
-              if (index >= 0 && index < activePool.length - 1) target = activePool[index + 1];
-              else if (repeatModeRef.current === 'all') target = activePool[0];
+              if (index >= 0 && index < activePool.length - 1) {
+                target = activePool[index + 1];
+              } else {
+                // At last track — in Albums view advance to next album for crossfade
+                if (viewModeRef.current === 'grid' && albumPlayQueueRef.current) {
+                  const albumName = (track.album || '').trim().toLowerCase();
+                  const allAlbums = albumsRef.current;
+                  const albumIdx = allAlbums.findIndex(a => a.name.trim().toLowerCase() === albumName);
+                  if (albumIdx !== -1 && albumIdx < allAlbums.length - 1) {
+                    const nextAlbum = allAlbums[albumIdx + 1];
+                    setAlbumPlayQueue(nextAlbum.tracks);
+                    target = nextAlbum.tracks[0];
+                  } else if (repeatModeRef.current === 'all' && allAlbums.length > 0) {
+                    const firstAlbum = allAlbums[0];
+                    setAlbumPlayQueue(firstAlbum.tracks);
+                    target = firstAlbum.tracks[0];
+                  }
+                } else if (repeatModeRef.current === 'all') {
+                  target = activePool[0];
+                }
+              }
             }
           }
           if (target) {
@@ -897,15 +1016,13 @@ export default function App() {
       const currentTrack = currentTrackRef.current;
       const repeatMode = repeatModeRef.current;
       const isShuffle = isShuffleRef.current;
-      const filteredTracks = filteredTracksRef.current;
-      const tracks = tracksRef.current;
+      const activePool = activePlaybackPoolRef.current;
       const playTrack = playTrackRef.current;
 
       if (repeatMode === 'one' && currentTrack) {
         audioEngine.seek(0);
         audioEngine.resume();
       } else {
-        const activePool = filteredTracks.length > 0 ? filteredTracks : tracks;
         if (activePool.length === 0) return;
         if (!currentTrack) {
           playTrack(activePool[0]);
@@ -920,7 +1037,31 @@ export default function App() {
 
         const currentIndex = activePool.findIndex(t => t.id === currentTrack.id);
         if (currentIndex === activePool.length - 1) {
-          // Reached the end of the last song on the list
+          // Reached the end of the last song in the current pool
+          if (viewModeRef.current === 'grid' && albumPlayQueueRef.current) {
+            // Albums view: advance to the first track of the next album
+            const albumName = (currentTrack.album || '').trim().toLowerCase();
+            const allAlbums = albumsRef.current;
+            const albumIdx = allAlbums.findIndex(a => a.name.trim().toLowerCase() === albumName);
+            if (albumIdx !== -1) {
+              if (albumIdx < allAlbums.length - 1) {
+                const nextAlbum = allAlbums[albumIdx + 1];
+                playTrack(nextAlbum.tracks[0], nextAlbum.tracks);
+                return;
+              } else if (repeatMode === 'all' && allAlbums.length > 0) {
+                const firstAlbum = allAlbums[0];
+                playTrack(firstAlbum.tracks[0], firstAlbum.tracks);
+                return;
+              } else {
+                // Last album, repeat off — stop
+                setCurrentTrack(null);
+                setIsPlaying(false);
+                audioEngine.pause();
+                return;
+              }
+            }
+          }
+          // Non-albums-view default
           if (repeatMode === 'all') {
             playTrack(activePool[0]);
           } else {
@@ -939,68 +1080,6 @@ export default function App() {
 
     return () => unsub();
   }, []);
-
-  // Derived Albums for Album Grid View (Grouped strictly by Album Name)
-  const albums = useMemo(() => {
-    const albumMap = new Map<string, Album>();
-
-    filteredTracks.forEach(t => {
-      const albumName = (t.album || 'Unknown Album').trim();
-      const key = albumName.toLowerCase();
-
-      if (!albumMap.has(key)) {
-        albumMap.set(key, {
-          id: `album_${key}`,
-          name: albumName,
-          artist: t.albumArtist || t.artist || 'Unknown Artist',
-          year: t.year,
-          coverUrl: t.coverUrl,
-          tracks: [t],
-        });
-      } else {
-        const existing = albumMap.get(key)!;
-        existing.tracks.push(t);
-
-        // Keep a valid coverUrl if first track didn't have one
-        if (!existing.coverUrl && t.coverUrl) {
-          existing.coverUrl = t.coverUrl;
-        }
-        // Keep year if first track didn't have one
-        if (!existing.year && t.year) {
-          existing.year = t.year;
-        }
-      }
-    });
-
-    // Resolve final album artist & sort tracks properly by disc/track number
-    albumMap.forEach((album) => {
-      const artists = new Set(album.tracks.map(t => (t.artist || '').trim()).filter(Boolean));
-      const albumArtists = new Set(album.tracks.map(t => (t.albumArtist || '').trim()).filter(Boolean));
-
-      if (albumArtists.size === 1 && albumArtists.values().next().value) {
-        album.artist = albumArtists.values().next().value!;
-      } else if (artists.size > 1) {
-        album.artist = 'Various Artists';
-      } else if (artists.size === 1) {
-        album.artist = artists.values().next().value!;
-      }
-
-      // Sort tracks within the album by Disc Number then Track Number
-      album.tracks.sort((a, b) => {
-        const discA = a.discNumber || 1;
-        const discB = b.discNumber || 1;
-        if (discA !== discB) return discA - discB;
-
-        const trackA = a.trackNumber ?? 9999;
-        const trackB = b.trackNumber ?? 9999;
-        if (trackA !== trackB) return trackA - trackB;
-
-        return (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
-      });
-    });
-
-    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [filteredTracks]);
 
   // Track Counts for Sidebar
   const trackCounts = useMemo(() => {
