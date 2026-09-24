@@ -183,6 +183,7 @@ const TrackRow = React.memo<TrackRowProps>(({
           : isLight ? 'bg-white hover:bg-blue-100/70 text-gray-900' : 'bg-[#131315] hover:bg-[#282932] text-gray-100'
       }`}
       id={`track-row-${track.id}`}
+      style={isLinux ? { contentVisibility: 'auto', containIntrinsicSize: 'auto 36px' } : undefined}
     >
       {/* Dynamic Ordered Columns */}
       {visibleColumns.map((colId) => {
@@ -946,8 +947,9 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     return map;
   }, [sortedTracks]);
 
-  // Windowed Virtualization Calculation
-  const OVERSCAN = 20;
+  // Windowed Virtualization Calculation: on Linux/WebKitGTK use 35 rows overscan buffer
+  // to ensure zero blank frame stutter during high-speed momentum mousewheel/touchpad scrolling
+  const OVERSCAN = isLinux ? 35 : 20;
   const totalTrackCount = sortedTracks.length;
   const isVirtualizationActive = totalTrackCount > 60;
 
@@ -1191,8 +1193,8 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         onMouseDown={handleContainerMouseDown}
         // On Linux/WebKitGTK, explicitly promoting the scroll container to its own
         // compositor layer avoids the browser having to repaint the full-page layer
-        // on every scroll event. willChange is intentionally only set on Linux.
-        style={isLinux ? { willChange: 'transform' } : undefined}
+        // on every scroll event. transform: translateZ(0) ensures hardware rasterization.
+        style={isLinux ? { willChange: 'transform', transform: 'translateZ(0)', contain: 'paint' } : undefined}
       >
         {/* Rubberband / Box Selection Overlay */}
         {selectionBox && (

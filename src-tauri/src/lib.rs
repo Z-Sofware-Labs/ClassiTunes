@@ -1366,6 +1366,10 @@ pub fn run() {
                 std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
             }
         }
+        // Force hardware compositing mode on Linux unless in software-rendering mode
+        if std::env::var("WEBKIT_FORCE_COMPOSITING_MODE").is_err() && std::env::var("LIBGL_ALWAYS_SOFTWARE").as_deref() != Ok("1") {
+            std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+        }
         // Ensure GStreamer discovers plugins on Debian/Ubuntu/Mint (multiarch), Fedora/RHEL, and generic Linux
         let current_gst_path = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0").unwrap_or_default();
         let standard_paths = "/usr/lib/x86_64-linux-gnu/gstreamer-1.0:/usr/lib/aarch64-linux-gnu/gstreamer-1.0:/usr/lib64/gstreamer-1.0:/usr/lib/gstreamer-1.0";
