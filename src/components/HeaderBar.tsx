@@ -8,6 +8,7 @@ import { Track, ViewMode } from '../types';
 import { audioEngine } from '../services/audioEngine';
 import { tauriMinimize, tauriMaximize, tauriClose } from '../utils/tauriWindow';
 import { MarqueeText } from './MarqueeText';
+import { platformInfo } from '../utils/platform';
 
 interface HeaderBarProps {
   currentTrack: Track | null;
@@ -178,14 +179,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const remainingTime = Math.max(0, activeDuration - (isDraggingSeek ? seekVal : currentTime));
   const progressPercent = activeDuration > 0 ? ((isDraggingSeek ? seekVal : currentTime) / activeDuration) * 100 : 0;
 
-  const isMac = typeof window !== 'undefined' && (/Mac|iPod|iPhone|iPad/i.test(navigator.platform) || /Mac OS X/i.test(navigator.userAgent) || (window as any).electronAPI?.platform === 'darwin');
-  const isLinux = typeof window !== 'undefined' && (/Linux/i.test(navigator.platform) || /Linux/i.test(navigator.userAgent) || (window as any).electronAPI?.platform === 'linux');
-  const isAppWindow = typeof window !== 'undefined' && (
-    !!(window as any).__TAURI__ ||
-    !!(window as any).__TAURI_INTERNALS__ ||
-    !!(window as any).__TAURI_METADATA__ ||
-    !!(window as any).electronAPI
-  );
+  const isMac = platformInfo.isMacOS;
+  const isLinux = platformInfo.isLinux;
+  const isAppWindow = platformInfo.isTauri || platformInfo.isElectron;
 
   const handleMinimize = async () => {
     await tauriMinimize();

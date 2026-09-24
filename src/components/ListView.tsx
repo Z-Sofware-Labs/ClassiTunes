@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
 import { logToFile } from '../utils/tauriWindow';
+import { platformInfo } from '../utils/platform';
 
 interface ListViewProps {
   tracks: Track[];
@@ -870,13 +871,8 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   }, [resizingCol]);
 
   const isLight = theme === 'light';
-  // Detect Linux/WebKitGTK to disable compositing-heavy CSS that causes scroll jank.
-  // WebKit2GTK does not GPU-composite CSS transitions and animations as efficiently as
-  // Chromium (Windows) or WKWebView (macOS), so keeping these on Linux causes the
-  // compositor to repaint all visible rows on every scroll frame.
-  const isLinux = typeof navigator !== 'undefined' &&
-    (/Linux/i.test((navigator as any).userAgentData?.platform || navigator.platform || '') ||
-     /Linux/i.test(navigator.userAgent));
+  // Centralized detection for Linux/WebKitGTK to disable compositing-heavy CSS that causes scroll jank.
+  const isLinux = platformInfo.isLinux;
   const userPlaylists = playlists.filter(p => !p.systemType || p.systemType === 'user');
 
   const toggleColumn = (colId: ColumnId) => {

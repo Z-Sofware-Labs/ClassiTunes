@@ -506,9 +506,14 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
             // ID3 TLEN tag for duration
             if res.duration.is_none() {
                 if let Some(dur_frame) = tag.get("TLEN").and_then(|f| f.content().text()) {
-                    if let Ok(ms) = dur_frame.parse::<f64>() {
-                        if ms > 0.0 {
-                            res.duration = Some(ms / 1000.0);
+                    if let Ok(val) = dur_frame.trim().parse::<f64>() {
+                        if val > 0.0 {
+                            // According to ID3v2 spec, TLEN is in milliseconds.
+                            // However, many tags incorrectly write TLEN in seconds (e.g. "230" for 3m50s, "264.61" for 4m24s).
+                            // If parsed as milliseconds, 230ms = 0.23s, which renders as 0:00!
+                            // Any value < 1000 is almost certainly in seconds, as almost no real song is < 1 second.
+                            let secs = if val < 1000.0 { val } else { val / 1000.0 };
+                            res.duration = Some(secs);
                         }
                     }
                 }
@@ -584,6 +589,19 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
         }
     }
 
+    // 4. Fallback estimation: if duration is still missing, calculate from file size and bitrate
+    if res.duration.is_none() {
+        if let Some(size) = res.size_bytes {
+            let br = res.bitrate.unwrap_or(320); // kbps
+            if br > 0 && size > 0 {
+                let estimated_secs = (size as f64 * 8.0) / (br as f64 * 1000.0);
+                if estimated_secs > 0.0 && estimated_secs.is_finite() {
+                    res.duration = Some((estimated_secs * 100.0).round() / 100.0);
+                }
+            }
+        }
+    }
+
     Ok(res)
 }
 
@@ -609,6 +627,387 @@ fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadataItem> 
         .collect()
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchFileStat {
+    path: String,
+    exists: bool,
+    is_file: bool,
+    is_directory: bool,
+    size: u64,
+    mtime_ms: Option<u64>,
+}
+
+#[tauri::command]
+fn batch_stat_files(paths: Vec<String>) -> Vec<BatchFileStat> {
+    use std::fs;
+    use std::time::UNIX_EPOCH;
+
+    paths
+        .into_iter()
+        .map(|path_str| {
+            let p = std::path::Path::new(&path_str);
+            match fs::metadata(p) {
+                Ok(meta) => {
+                    let mtime_ms = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64);
+
+                    BatchFileStat {
+                        path: path_str,
+                        exists: true,
+                        is_file: meta.is_file(),
+                        is_directory: meta.is_dir(),
+                        size: meta.len(),
+                        mtime_ms,
+                    }
+                }
+                Err(_) => BatchFileStat {
+                    path: path_str,
+                    exists: false,
+                    is_file: false,
+                    is_directory: false,
+                    size: 0,
+                    mtime_ms: None,
+                },
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanProgressPayload {
+    count: usize,
+    current_folder: String,
+}
+
+#[tauri::command]
+fn scan_directory_native(
+    app: tauri::AppHandle,
+    dir_path: String,
+    progress_event: Option<String>,
+) -> Result<Vec<String>, String> {
+    use std::collections::HashSet;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::Instant;
+    use tauri::Emitter;
+
+    let root_path = PathBuf::from(&dir_path);
+    if !root_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut audio_paths: Vec<String> = Vec::new();
+    let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
+
+    let root_folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&dir_path)
+        .to_string();
+
+    let mut last_progress_emit = Instant::now();
+
+    if let Some(ref ev) = progress_event {
+        let _ = app.emit(
+            ev,
+            ScanProgressPayload {
+                count: 0,
+                current_folder: root_folder_name.clone(),
+            },
+        );
+    }
+
+    let mut dir_stack: Vec<PathBuf> = vec![root_path];
+
+    while let Some(current_dir) = dir_stack.pop() {
+        // Resolve canonical path or symlink target to prevent infinite directory loops
+        let canonical_or_path = fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
+        if !visited_dirs.insert(canonical_or_path) {
+            continue;
+        }
+
+        let folder_name = current_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        if let Some(ref ev) = progress_event {
+            if last_progress_emit.elapsed().as_millis() >= 60 {
+                let _ = app.emit(
+                    ev,
+                    ScanProgressPayload {
+                        count: audio_paths.len(),
+                        current_folder: if folder_name.is_empty() {
+                            root_folder_name.clone()
+                        } else {
+                            folder_name.clone()
+                        },
+                    },
+                );
+                last_progress_emit = Instant::now();
+            }
+        }
+
+        let entries = match fs::read_dir(&current_dir) {
+            Ok(iter) => iter,
+            Err(_) => continue,
+        };
+
+        for entry_res in entries {
+            let entry = match entry_res {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+            let file_name_os = entry.file_name();
+            let name_str = file_name_os.to_string_lossy();
+
+            // Ignore hidden files and dot-folders
+            if name_str.starts_with('.') {
+                continue;
+            }
+
+            // Read file type safely (without unwrap)
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+
+            if file_type.is_dir() {
+                let name_lower = name_str.to_ascii_lowercase();
+                let should_ignore = match name_lower.as_str() {
+                    // Dependency / Dev folders
+                    "node_modules" | ".git" | ".cache" | ".npm" | ".vscode" | ".cargo" | ".idea" |
+                    ".settings" | ".gradle" | "dist" | "build" | "out" | "target" | "vendor" |
+                    "bower_components" | "bin" | "obj" |
+                    // System / OS folders
+                    "appdata" | "application data" | "system32" | "windows" | "temp" | "tmp" |
+                    "program files" | "program files (x86)" | "programdata" | "msocache" | "recovery" |
+                    "system volume information" | "$recycle.bin" | "recycle.bin" | "system" |
+                    "private" | "usr" | "sbin" | "etc" | "var" | "dev" | "cores" | "opt" |
+                    // Cloud / sync folders
+                    "onedrive" | "dropbox" | "google drive" | "googledrive" | "icloud" |
+                    "icloud drive" | "iclouddrive" | "box" | "creative cloud" | "creativecloud" |
+                    "nextcloud" | "owncloud" | "skydrive" => true,
+                    _ => false,
+                };
+
+                if !should_ignore {
+                    dir_stack.push(path);
+                }
+            } else if file_type.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_ascii_lowercase();
+                    let is_audio = match ext_lower.as_str() {
+                        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "wma" | "aiff" | "alac" => true,
+                        _ => false,
+                    };
+                    if is_audio {
+                        if let Some(p_str) = path.to_str() {
+                            audio_paths.push(p_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(ref ev) = progress_event {
+        let _ = app.emit(
+            ev,
+            ScanProgressPayload {
+                count: audio_paths.len(),
+                current_folder: root_folder_name,
+            },
+        );
+    }
+
+    Ok(audio_paths)
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn stat_music_files_windows(paths: Vec<String>) -> Vec<BatchFileStat> {
+    batch_stat_files(paths)
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn scan_windows_music_directory(
+    app: tauri::AppHandle,
+    dir_path: String,
+    progress_event: Option<String>,
+) -> Result<Vec<String>, String> {
+    use std::collections::HashSet;
+    use std::fs;
+    use std::os::windows::fs::MetadataExt;
+    use std::path::PathBuf;
+    use std::time::Instant;
+    use tauri::Emitter;
+
+    let root_path = PathBuf::from(&dir_path);
+    if !root_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut audio_paths: Vec<String> = Vec::new();
+    let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
+
+    let root_folder_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&dir_path)
+        .to_string();
+
+    let mut last_progress_emit = Instant::now();
+
+    if let Some(ref ev) = progress_event {
+        let _ = app.emit(
+            ev,
+            ScanProgressPayload {
+                count: 0,
+                current_folder: root_folder_name.clone(),
+            },
+        );
+    }
+
+    let mut dir_stack: Vec<PathBuf> = vec![root_path];
+
+    while let Some(current_dir) = dir_stack.pop() {
+        let canonical_or_path = fs::canonicalize(&current_dir).unwrap_or_else(|_| current_dir.clone());
+        if !visited_dirs.insert(canonical_or_path) {
+            continue;
+        }
+
+        let folder_name = current_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        if let Some(ref ev) = progress_event {
+            if last_progress_emit.elapsed().as_millis() >= 60 {
+                let _ = app.emit(
+                    ev,
+                    ScanProgressPayload {
+                        count: audio_paths.len(),
+                        current_folder: if folder_name.is_empty() {
+                            root_folder_name.clone()
+                        } else {
+                            folder_name.clone()
+                        },
+                    },
+                );
+                last_progress_emit = Instant::now();
+            }
+        }
+
+        let entries = match fs::read_dir(&current_dir) {
+            Ok(iter) => iter,
+            Err(_) => continue,
+        };
+
+        for entry_res in entries {
+            let entry = match entry_res {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+            let file_name_os = entry.file_name();
+            let name_str = file_name_os.to_string_lossy();
+
+            if name_str.starts_with('.') {
+                continue;
+            }
+
+            // Check symlink_metadata to avoid following Windows reparse point junction loops (e.g. Application Data)
+            let symlink_meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            // FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            let is_reparse_point = (symlink_meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+
+            if symlink_meta.is_dir() {
+                // Do not recurse through Windows reparse points / junctions
+                if is_reparse_point {
+                    continue;
+                }
+
+                let name_lower = name_str.to_ascii_lowercase();
+                let should_ignore = match name_lower.as_str() {
+                    "node_modules" | ".git" | ".cache" | ".npm" | ".vscode" | ".cargo" | ".idea" |
+                    ".settings" | ".gradle" | "dist" | "build" | "out" | "target" | "vendor" |
+                    "bower_components" | "bin" | "obj" |
+                    "appdata" | "application data" | "system32" | "windows" | "temp" | "tmp" |
+                    "program files" | "program files (x86)" | "programdata" | "msocache" | "recovery" |
+                    "system volume information" | "$recycle.bin" | "recycle.bin" | "system" |
+                    "private" | "usr" | "sbin" | "etc" | "var" | "dev" | "cores" | "opt" |
+                    "onedrive" | "dropbox" | "google drive" | "googledrive" | "icloud" |
+                    "icloud drive" | "iclouddrive" | "box" | "creative cloud" | "creativecloud" |
+                    "nextcloud" | "owncloud" | "skydrive" => true,
+                    _ => false,
+                };
+
+                if !should_ignore {
+                    dir_stack.push(path);
+                }
+            } else if symlink_meta.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_ascii_lowercase();
+                    let is_audio = match ext_lower.as_str() {
+                        "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "wma" | "aiff" | "alac" => true,
+                        _ => false,
+                    };
+                    if is_audio {
+                        if let Some(p_str) = path.to_str() {
+                            audio_paths.push(p_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(ref ev) = progress_event {
+        let _ = app.emit(
+            ev,
+            ScanProgressPayload {
+                count: audio_paths.len(),
+                current_folder: root_folder_name,
+            },
+        );
+    }
+
+    Ok(audio_paths)
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn stat_music_files_windows(_paths: Vec<String>) -> Result<Vec<BatchFileStat>, String> {
+    Err("stat_music_files_windows is only available on Windows".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn scan_windows_music_directory(
+    _app: tauri::AppHandle,
+    _dir_path: String,
+    _progress_event: Option<String>,
+) -> Result<Vec<String>, String> {
+    Err("scan_windows_music_directory is only available on Windows".to_string())
+}
+
 #[tauri::command]
 fn get_os() -> &'static str {
     #[cfg(target_os = "linux")]
@@ -622,6 +1021,7 @@ fn get_os() -> &'static str {
 }
 
 static AUDIO_SERVER_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+static AUDIO_SERVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn percent_decode_path(input: &str) -> String {
     let mut bytes = Vec::with_capacity(input.len());
@@ -650,6 +1050,16 @@ fn percent_decode_path(input: &str) -> String {
 }
 
 fn start_audio_stream_server_internal() -> u16 {
+    let existing = AUDIO_SERVER_PORT.load(std::sync::atomic::Ordering::SeqCst);
+    if existing != 0 {
+        return existing;
+    }
+
+    let _guard = match AUDIO_SERVER_LOCK.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
     let existing = AUDIO_SERVER_PORT.load(std::sync::atomic::Ordering::SeqCst);
     if existing != 0 {
         return existing;
@@ -775,22 +1185,27 @@ fn start_audio_stream_server_internal() -> u16 {
                         return;
                     }
 
-                    let chunk_len = (end - start + 1) as usize;
+                    let chunk_len = end - start + 1;
                     use std::io::Read;
-                    let mut take_reader = file.take(chunk_len as u64);
-                    let mut buffer = Vec::with_capacity(chunk_len);
-                    let _ = take_reader.read_to_end(&mut buffer);
+                    let take_reader = file.take(chunk_len);
 
-                    let resp = tiny_http::Response::from_data(buffer)
-                        .with_status_code(206)
-                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], mime_type.as_bytes()).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Content-Range"[..], format!("bytes {start}-{end}/{total_len}").as_bytes()).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Content-Length"[..], format!("{}", end - start + 1).as_bytes()).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, HEAD, OPTIONS"[..]).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Range, Content-Type, Accept"[..]).unwrap())
-                        .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Expose-Headers"[..], &b"Content-Range, Content-Length, Accept-Ranges"[..]).unwrap());
+                    // Zero-copy streaming HTTP 206 response via tiny_http::Response::new
+                    let resp = tiny_http::Response::new(
+                        tiny_http::StatusCode(206),
+                        vec![
+                            tiny_http::Header::from_bytes(&b"Content-Type"[..], mime_type.as_bytes()).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Content-Range"[..], format!("bytes {start}-{end}/{total_len}").as_bytes()).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Content-Length"[..], format!("{chunk_len}").as_bytes()).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, HEAD, OPTIONS"[..]).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Range, Content-Type, Accept"[..]).unwrap(),
+                            tiny_http::Header::from_bytes(&b"Access-Control-Expose-Headers"[..], &b"Content-Range, Content-Length, Accept-Ranges"[..]).unwrap(),
+                        ],
+                        take_reader,
+                        Some(chunk_len as usize),
+                        None,
+                    );
 
                     let _ = request.respond(resp);
                 } else {
@@ -959,7 +1374,7 @@ pub fn run() {
         } else {
             std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", format!("{standard_paths}:{current_gst_path}"));
         }
-        start_audio_stream_server_internal();
+        // Audio stream server is started lazily upon first audio playback requirement via get_audio_stream_port()
     }
 
     tauri::Builder::default()
@@ -984,6 +1399,10 @@ pub fn run() {
             get_audio_stream_port,
             read_music_metadata,
             read_music_metadata_batch,
+            batch_stat_files,
+            stat_music_files_windows,
+            scan_directory_native,
+            scan_windows_music_directory,
             write_id3_tags,
             write_music_metadata,
             organize_music_file,
@@ -992,3 +1411,40 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_percent_decode_path() {
+        assert_eq!(percent_decode_path("Hello%20World"), "Hello World");
+        assert_eq!(percent_decode_path("/home/user/Music/song%2Btrack.mp3"), "/home/user/Music/song+track.mp3");
+        assert_eq!(percent_decode_path("plain_path.flac"), "plain_path.flac");
+    }
+
+    #[test]
+    fn test_batch_stat_files_missing_and_existing() {
+        let stats = batch_stat_files(vec![
+            "non_existent_file_xyz_12345.mp3".to_string(),
+            "Cargo.toml".to_string(),
+        ]);
+        assert_eq!(stats.len(), 2);
+        assert!(!stats[0].exists);
+        assert_eq!(stats[0].size, 0);
+
+        assert!(stats[1].exists);
+        assert!(stats[1].is_file);
+        assert!(stats[1].size > 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_stat_music_files_windows() {
+        let stats = stat_music_files_windows(vec!["Cargo.toml".to_string()]);
+        assert_eq!(stats.len(), 1);
+        assert!(stats[0].exists);
+        assert!(stats[0].is_file);
+    }
+}
+

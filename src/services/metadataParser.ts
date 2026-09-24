@@ -647,8 +647,11 @@ async function parseBinaryID3(file: File): Promise<BinaryID3Result | null> {
                 if (!isNaN(tot)) result.discTotal = tot;
               }
             } else if (frameId === 'TLEN' && textContent) {
-              const ms = parseInt(textContent, 10);
-              if (!isNaN(ms) && ms > 0) result.duration = ms / 1000;
+              const val = parseFloat(textContent);
+              if (!isNaN(val) && val > 0) {
+                // If val < 1000, it's stored in seconds rather than milliseconds
+                result.duration = val < 1000 ? val : val / 1000;
+              }
             } else if (frameId === 'APIC') {
               try {
                 let p = 1;
@@ -1126,7 +1129,28 @@ export async function parseAudioFile(file: File): Promise<Track> {
 
   // 4. Fallback duration using HTML Audio element
   if (!duration || duration === 0) {
-    duration = await getAudioDuration(objectUrl);
+    if (objectUrl) {
+      duration = await getAudioDuration(objectUrl);
+    }
+    // If objectUrl (such as asset://) failed or yielded 0, attempt fallback using direct blob URL
+    if ((!duration || duration === 0) && file && file.size > 0) {
+      try {
+        const tempBlobUrl = URL.createObjectURL(file);
+        duration = await getAudioDuration(tempBlobUrl);
+        URL.revokeObjectURL(tempBlobUrl);
+      } catch (_) {}
+    }
+  }
+
+  // 5. Estimation fallback: If bitrate and file size are known, estimate duration
+  if ((!duration || duration === 0) && file.size > 0) {
+    const effectiveBitrate = bitrate || 320; // kbps
+    if (effectiveBitrate > 0) {
+      const estimated = (file.size * 8) / (effectiveBitrate * 1000);
+      if (estimated > 0 && isFinite(estimated)) {
+        duration = Math.round(estimated * 100) / 100;
+      }
+    }
   }
 
   // Fallback cover if no embedded artwork found
@@ -1388,20 +1412,57 @@ export async function extractID3TagsFromTrack(track: Track, options: { fallbackT
     if ((track.file as any).name) filename = (track.file as any).name;
   }
 
-  // 2. Tauri native file path
-  if (!fileOrBlob && track.filePath) {
+  // 2. Tauri native file path: On macOS, query native Rust metadata directly first to avoid reading entire file into memory
+  if (track.filePath) {
     const isTauri = typeof window !== 'undefined' && !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__);
     if (isTauri) {
       try {
-        const { readFile } = await import('@tauri-apps/plugin-fs');
-        const uint8Array = await readFile(track.filePath);
-        if (uint8Array && uint8Array.length > 0) {
-          const parts = track.filePath.replace(/\\/g, '/').split('/');
-          filename = parts[parts.length - 1] || filename;
-          fileOrBlob = new File([uint8Array], filename, { type: track.format || 'audio/mpeg' });
+        const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
+        const nativeTags = await readTauriMusicMetadata(track.filePath);
+        if (nativeTags && (nativeTags.title || nativeTags.artist || nativeTags.album || nativeTags.duration)) {
+          return {
+            title: nativeTags.title || (fallbackToTrack ? track.title : undefined),
+            artist: nativeTags.artist || (fallbackToTrack ? track.artist : undefined),
+            albumArtist: nativeTags.albumArtist || (fallbackToTrack ? track.albumArtist : undefined),
+            album: nativeTags.album || (fallbackToTrack ? track.album : undefined),
+            composer: nativeTags.composer || (fallbackToTrack ? track.composer : undefined),
+            publisher: nativeTags.publisher || (fallbackToTrack ? track.publisher : undefined),
+            lyrics: nativeTags.lyrics || (fallbackToTrack ? track.lyrics : undefined),
+            replayGainDb: nativeTags.replayGainDb !== undefined ? nativeTags.replayGainDb : (fallbackToTrack ? track.replayGainDb : undefined),
+            genre: nativeTags.genre || (fallbackToTrack ? track.genre : undefined),
+            year: nativeTags.year !== undefined ? nativeTags.year : (fallbackToTrack ? track.year : undefined),
+            trackNumber: nativeTags.trackNumber !== undefined ? nativeTags.trackNumber : (fallbackToTrack ? track.trackNumber : undefined),
+            trackTotal: nativeTags.trackTotal !== undefined ? nativeTags.trackTotal : (fallbackToTrack ? track.trackTotal : undefined),
+            discNumber: nativeTags.discNumber !== undefined ? nativeTags.discNumber : (fallbackToTrack ? track.discNumber : undefined),
+            discTotal: nativeTags.discTotal !== undefined ? nativeTags.discTotal : (fallbackToTrack ? track.discTotal : undefined),
+            bpm: nativeTags.bpm !== undefined ? nativeTags.bpm : (fallbackToTrack ? track.bpm : undefined),
+            mediaKind: nativeTags.mediaKind || (fallbackToTrack ? track.mediaKind : undefined) || 'Music',
+            format: nativeTags.format || (fallbackToTrack ? track.format : undefined),
+            bitrate: nativeTags.bitrate || (fallbackToTrack ? track.bitrate : undefined),
+            sampleRate: nativeTags.sampleRate || (fallbackToTrack ? track.sampleRate : undefined),
+            duration: nativeTags.duration || (fallbackToTrack ? track.duration : undefined),
+            sizeBytes: nativeTags.sizeBytes || (fallbackToTrack ? track.sizeBytes : undefined),
+            coverUrl: nativeTags.coverUrl || (fallbackToTrack ? track.coverUrl : undefined),
+            comments: nativeTags.comments || (fallbackToTrack ? track.comments : undefined),
+          };
         }
       } catch (e) {
-        console.warn('Tauri readFile error in extractID3TagsFromTrack:', e);
+        console.warn('Native metadata extraction failed in extractID3TagsFromTrack:', e);
+      }
+
+      // Fallback: Read file bytes only if native metadata failed or was insufficient
+      if (!fileOrBlob) {
+        try {
+          const { readFile } = await import('@tauri-apps/plugin-fs');
+          const uint8Array = await readFile(track.filePath);
+          if (uint8Array && uint8Array.length > 0) {
+            const parts = track.filePath.replace(/\\/g, '/').split('/');
+            filename = parts[parts.length - 1] || filename;
+            fileOrBlob = new File([uint8Array], filename, { type: track.format || 'audio/mpeg' });
+          }
+        } catch (e) {
+          console.warn('Tauri readFile error in extractID3TagsFromTrack:', e);
+        }
       }
     }
   }
@@ -1489,7 +1550,7 @@ export async function extractID3TagsFromTrack(track: Track, options: { fallbackT
   };
 }
 
-function getAudioDuration(url: string): Promise<number> {
+export function getAudioDuration(url: string): Promise<number> {
   return new Promise((resolve) => {
     const audio = new Audio();
     audio.preload = 'metadata';
@@ -1500,6 +1561,7 @@ function getAudioDuration(url: string): Promise<number> {
       audio.onloadedmetadata = null;
       audio.ondurationchange = null;
       audio.oncanplay = null;
+      audio.onseeked = null;
       audio.src = '';
     };
 
@@ -1575,6 +1637,9 @@ function getAudioDuration(url: string): Promise<number> {
     };
 
     audio.src = url;
+    try {
+      audio.load();
+    } catch (_) {}
   });
 }
 

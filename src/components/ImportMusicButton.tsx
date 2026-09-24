@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, FolderPlus, FileAudio, ChevronDown } from 'lucide-react';
-import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory, convertPathsToFiles } from '../utils/tauriWindow';
+import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory } from '../utils/tauriWindow';
 
 interface ImportMusicButtonProps {
   onImportFiles: (files: FileList | File[] | string[]) => void;

@@ -23,14 +23,19 @@ export function dataURLtoBlob(dataurl: string): Blob | null {
   }
 }
 
+let dbPromise: Promise<IDBDatabase> | null = null;
+
 function getDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+
+  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
+      dbPromise = null;
       reject(new Error('IndexedDB not supported'));
       return;
     }
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = (event) => {
+    request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME);
@@ -39,9 +44,31 @@ function getDB(): Promise<IDBDatabase> {
         db.createObjectStore(METADATA_STORE);
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      db.onerror = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      dbPromise = null;
+      reject(request.error);
+    };
+    request.onblocked = () => {
+      dbPromise = null;
+      console.warn('[mediaStorage] IndexedDB upgrade blocked by another connection');
+    };
   });
+
+  return dbPromise;
 }
 
 export async function saveMediaFile(key: string, blob: Blob): Promise<void> {
@@ -153,6 +180,23 @@ export function setCachedArtwork(albumOrTrackKey: string, url: string): void {
   }
 }
 
+export function clearCachedArtwork(key?: string): void {
+  if (key) {
+    const url = globalArtworkCache.get(key);
+    if (url && url.startsWith('blob:')) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+    globalArtworkCache.delete(key);
+  } else {
+    for (const url of globalArtworkCache.values()) {
+      if (url && url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(url); } catch {}
+      }
+    }
+    globalArtworkCache.clear();
+  }
+}
+
 export async function hydrateTrackMedia(track: any): Promise<any> {
   // Demo or sample tracks don't need IndexedDB rehydration
   if (track.id.startsWith('demo_') || track.id.startsWith('sample_')) {
@@ -202,19 +246,33 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
         const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
         const meta = await readTauriMusicMetadata(track.filePath);
         if (meta?.coverUrl) {
-          updatedTrack.coverUrl = meta.coverUrl;
           if (meta.coverUrl.startsWith('data:')) {
             const b = dataURLtoBlob(meta.coverUrl);
             if (b) {
               saveMediaFile(`cover_${track.id}`, b);
               updatedTrack.coverUrl = URL.createObjectURL(b);
+            } else {
+              updatedTrack.coverUrl = meta.coverUrl;
             }
+          } else {
+            updatedTrack.coverUrl = meta.coverUrl;
           }
         }
       } catch (e) {}
     }
 
     if (updatedTrack.coverUrl) {
+      // Memory optimization: cap cache size to 200 entries to prevent memory bloat
+      if (globalArtworkCache.size > 200) {
+        const firstKey = globalArtworkCache.keys().next().value;
+        if (firstKey) {
+          const oldUrl = globalArtworkCache.get(firstKey);
+          if (oldUrl && oldUrl.startsWith('blob:')) {
+            try { URL.revokeObjectURL(oldUrl); } catch {}
+          }
+          globalArtworkCache.delete(firstKey);
+        }
+      }
       globalArtworkCache.set(track.id, updatedTrack.coverUrl);
       if (albumKey) {
         globalArtworkCache.set(albumKey, updatedTrack.coverUrl);

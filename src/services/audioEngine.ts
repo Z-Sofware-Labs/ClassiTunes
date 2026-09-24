@@ -1,5 +1,6 @@
 import { EqualizerBands, EQPreset } from '../types';
 import { isOggNativelySupported, urlOrPathIsOgg, decodeOggToWav, decodeOggUrlToWav } from './oggDecoder';
+import { platformInfo } from '../utils/platform';
 
 export const EQ_PRESETS: Record<EQPreset, EqualizerBands> = {
   'Flat': { b32: 0, b64: 0, b125: 0, b250: 0, b500: 0, b1k: 0, b2k: 0, b4k: 0, b8k: 0, b16k: 0 },
@@ -68,35 +69,12 @@ export class AudioEngine {
   // decodes the audio data in-process using WebKit's own codec stack rather than
   // the sandboxed GStreamer pipeline, which resolves the error on Fedora/GNOME.
 
-  // Robust synchronous platform detection:
-  // 1. Checks navigator.userAgentData?.platform (modern standard)
-  // 2. Checks navigator.platform (legacy standard, e.g. "Win32", "Linux x86_64", "MacIntel")
-  // 3. Checks navigator.userAgent
-  // Notice: Windows is always checked first to prevent WebView2 on Windows from matching "Linux".
   private getPlatformSync(): 'linux' | 'windows' | 'macos' | 'other' {
-    if (typeof navigator === 'undefined') return 'other';
-    const ua = (navigator.userAgent || '').toLowerCase();
-    const platform = (
-      (navigator as any).userAgentData?.platform ||
-      navigator.platform ||
-      ''
-    ).toLowerCase();
-
-    if (platform.includes('win') || ua.includes('windows') || ua.includes('win32') || ua.includes('win64')) {
-      return 'windows';
-    }
-    if (platform.includes('mac') || ua.includes('macintosh') || ua.includes('mac os')) {
-      return 'macos';
-    }
-    if (platform.includes('linux') || ua.includes('linux') || ua.includes('x11')) {
-      return 'linux';
-    }
-    return 'other';
+    return platformInfo.os;
   }
 
   private isTauriEnv(): boolean {
-    return typeof window !== 'undefined' &&
-      !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__);
+    return platformInfo.isTauri;
   }
 
   private revokeStaleBlobUrls(keepUrl?: string): void {
@@ -205,11 +183,14 @@ export class AudioEngine {
           try {
             const { readFile } = await import('@tauri-apps/plugin-fs');
             const raw = await readFile(fsPath);
-            const wavBlob = await decodeOggToWav(new Uint8Array(raw));
+            // On macOS WKWebView, bound decoded PCM to 128 MB to avoid giant memory spikes.
+            const wavBlob = await decodeOggToWav(new Uint8Array(raw), 128 * 1024 * 1024);
             if (wavBlob) {
               const blobUrl = URL.createObjectURL(wavBlob);
               this.activeBlobUrls.add(blobUrl);
               return blobUrl;
+            } else {
+              console.warn('[AudioEngine] OGG decode returned null (file may exceed 128MB PCM or be corrupt).');
             }
           } catch (e) {
             console.warn('[AudioEngine] OGG->WAV decode failed (Tauri path):', e);
@@ -395,17 +376,20 @@ export class AudioEngine {
     alert(message);
   }
 
-  private async estimateNormalizationGain(url: string, replayGainDb?: number): Promise<number> {
+  private async estimateNormalizationGain(url: string, replayGainDb?: number, trackInfo?: { filePath?: string; sizeBytes?: number }): Promise<number> {
     if (!this.normalizationEnabled || !url) return 1;
     if (replayGainDb !== undefined && Number.isFinite(replayGainDb)) {
       return Math.pow(10, Math.max(-12, Math.min(12, replayGainDb)) / 20);
     }
-    const cached = this.normalizationCache.get(url);
+    // On macOS / Tauri, form a robust cache key based on path + size if available, preventing stale cache on file edit
+    const isMac = this.getPlatformSync() === 'macos';
+    const cacheKey = (isMac && trackInfo?.filePath) 
+      ? `mac:${trackInfo.filePath}:${trackInfo.sizeBytes || 0}`
+      : url;
+
+    const cached = this.normalizationCache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    // Prefer an actual ReplayGain/RVA2 value when callers supply one through the URL cache.
-    // Otherwise estimate average RMS from a bounded decoded sample. This is playback
-    // normalization, not destructive file rewriting.
     try {
       const response = await fetch(url);
       if (!response.ok) return 1;
@@ -435,7 +419,7 @@ export class AudioEngine {
       // Target roughly -18 dBFS RMS; clamp to avoid extreme boosts/cuts and prevent clipping.
       let gainDb = Math.max(-12, Math.min(12, -18 - db));
       const gain = Math.pow(10, gainDb / 20);
-      this.normalizationCache.set(url, gain);
+      this.normalizationCache.set(cacheKey, gain);
       return gain;
     } catch (e) {
       console.warn('Audio normalization analysis failed:', e);
@@ -447,7 +431,7 @@ export class AudioEngine {
     }
   }
 
-  public async playTrack(url: string, replayGainDb?: number, filePathHint?: string): Promise<void> {
+  public async playTrack(url: string, replayGainDb?: number, filePathHint?: string, trackInfo?: { sizeBytes?: number }): Promise<void> {
     this.initWebAudio();
     if (!this.activeDeck || !this.audioCtx) return;
     if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
@@ -564,7 +548,7 @@ export class AudioEngine {
     if (this.normalizationEnabled) {
       const capturedDeck = deck;
       const capturedUrl = finalUrl;
-      this.estimateNormalizationGain(finalUrl, replayGainDb).then(gain => {
+      this.estimateNormalizationGain(finalUrl, replayGainDb, { filePath: filePathHint, sizeBytes: trackInfo?.sizeBytes }).then(gain => {
         // Only apply if this deck is still playing the same track.
         if (capturedDeck.audio.src === capturedUrl) {
           capturedDeck.normalizationGain = gain;
@@ -704,6 +688,21 @@ export class AudioEngine {
     return () => this.playbackErrorCallbacks.delete(callback);
   }
 
+  /**
+   * Fully releases and resets audio resources, active blob URLs, and pauses decks.
+   * Ensures no dangling AudioContext or unreleased memory during reset or track unmount.
+   */
+  public releaseResources(): void {
+    this.decks.forEach(deck => {
+      if (deck?.audio) {
+        deck.audio.pause();
+        deck.audio.src = '';
+        deck.audio.load();
+      }
+    });
+    this.revokeStaleBlobUrls();
+    this.normalizationCache.clear();
+  }
 }
 
 export const audioEngine = new AudioEngine();

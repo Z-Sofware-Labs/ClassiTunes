@@ -1,4 +1,5 @@
 // Safe Window Controls & Position Persistence Helper for Tauri v1/v2, Electron & Web
+import { platformInfo, isWindowsTauri } from './platform';
 
 export async function tauriMinimize(): Promise<boolean> {
   if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
@@ -37,6 +38,10 @@ export async function tauriMaximize(): Promise<boolean> {
       }
 
       if (winObj) {
+        if (platformInfo.isMacOS && typeof winObj.toggleMaximize === 'function') {
+          await winObj.toggleMaximize();
+          return true;
+        }
         const isMax = typeof winObj.isMaximized === 'function' ? await winObj.isMaximized() : false;
         if (isMax) {
           await winObj.unmaximize();
@@ -130,14 +135,47 @@ export async function setupWindowStatePersistence(): Promise<void> {
         if (saved) {
           try {
             const { x, y, width, height, isMaximized } = JSON.parse(saved);
+            const dpi = await import('@tauri-apps/api/dpi');
+
             if (width && height && typeof winObj.setSize === 'function') {
-              const dpi = await import('@tauri-apps/api/dpi');
               await winObj.setSize(new dpi.PhysicalSize(width, height));
             }
+
             if (x !== undefined && y !== undefined && typeof winObj.setPosition === 'function') {
-              const dpi = await import('@tauri-apps/api/dpi');
-              await winObj.setPosition(new dpi.PhysicalPosition(x, y));
+              let finalX = x;
+              let finalY = y;
+
+              // macOS Retina & multi-monitor safety: verify coordinates fall on an active monitor
+              if (platformInfo.isMacOS && typeof winObj.availableMonitors === 'function') {
+                try {
+                  const monitors = await winObj.availableMonitors();
+                  if (Array.isArray(monitors) && monitors.length > 0) {
+                    const isVisibleOnAnyMonitor = monitors.some((m: any) => {
+                      const pos = m.position;
+                      const size = m.size;
+                      return (
+                        finalX >= pos.x - 50 &&
+                        finalX < pos.x + size.width &&
+                        finalY >= pos.y - 50 &&
+                        finalY < pos.y + size.height
+                      );
+                    });
+
+                    // If disconnected or moved off-screen, reposition to primary monitor origin or center
+                    if (!isVisibleOnAnyMonitor && monitors[0]) {
+                      const primary = monitors[0];
+                      finalX = primary.position.x + Math.max(0, Math.floor((primary.size.width - (width || 1200)) / 2));
+                      finalY = primary.position.y + Math.max(0, Math.floor((primary.size.height - (height || 800)) / 2));
+                    }
+                  }
+                } catch (monErr) {
+                  console.warn('Monitor enumeration notice during macOS window restore:', monErr);
+                }
+              }
+
+              await winObj.setPosition(new dpi.PhysicalPosition(finalX, finalY));
             }
+
             if (isMaximized && typeof winObj.maximize === 'function') {
               await winObj.maximize();
             }
@@ -245,6 +283,12 @@ export async function logToFile(message: string): Promise<void> {
     return;
   }
 
+  if (platformInfo.isMacOS && isTauri()) {
+    macLogQueue.push(`${logLine}\n`);
+    scheduleMacLogFlush();
+    return;
+  }
+
   try {
     const { writeTextFile, mkdir, BaseDirectory } = await import('@tauri-apps/plugin-fs');
     if (!isDirEnsured) {
@@ -265,6 +309,53 @@ export async function logToFile(message: string): Promise<void> {
   } catch (err) {
     console.error("Failed to write log to file:", err);
   }
+}
+
+// ── macOS Buffered Log Writer ────────────────────────────────────────────────
+const macLogQueue: string[] = [];
+let macLogFlushTimer: any = null;
+
+async function flushMacLogs(): Promise<void> {
+  if (macLogQueue.length === 0) return;
+  const chunk = macLogQueue.splice(0, macLogQueue.length).join('');
+  try {
+    const { writeTextFile, mkdir, BaseDirectory } = await import('@tauri-apps/plugin-fs');
+    if (!isDirEnsured) {
+      try {
+        await mkdir('', { baseDir: BaseDirectory.AppLocalData, recursive: true });
+        isDirEnsured = true;
+      } catch {}
+    }
+    await writeTextFile('app_log.txt', chunk, {
+      baseDir: BaseDirectory.AppLocalData,
+      append: true,
+    });
+  } catch (err) {
+    console.error("Failed to flush macOS buffered logs:", err);
+  }
+}
+
+function scheduleMacLogFlush(): void {
+  if (macLogQueue.length >= 25) {
+    clearTimeout(macLogFlushTimer);
+    macLogFlushTimer = null;
+    void flushMacLogs();
+    return;
+  }
+  if (!macLogFlushTimer) {
+    macLogFlushTimer = setTimeout(() => {
+      macLogFlushTimer = null;
+      void flushMacLogs();
+    }, 400);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (macLogQueue.length > 0) {
+      void flushMacLogs();
+    }
+  });
 }
 
 export async function openLogDirectory(): Promise<boolean> {
@@ -414,6 +505,75 @@ export async function scanTauriDirectory(
 ): Promise<string[]> {
   try {
     await logToFile(`--- Starting directory scan at: ${dirPath} ---`);
+
+    // On Windows/Tauri, use the native Rust directory scanner with reparse-point protection
+    // and throttled progress events to eliminate recursive JavaScript IPC overhead.
+    if (isWindowsTauri) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const { listen } = await import('@tauri-apps/api/event');
+
+        const eventName = `scan-progress-win-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        let unlisten: (() => void) | null = null;
+
+        if (onProgress) {
+          unlisten = await listen<{ count: number; currentFolder: string }>(eventName, (event) => {
+            onProgress(event.payload.count, event.payload.currentFolder);
+          });
+        }
+
+        try {
+          const nativeResults = await invoke<string[]>('scan_windows_music_directory', {
+            dirPath,
+            progressEvent: onProgress ? eventName : null,
+          });
+          await logToFile(`--- Native Windows directory scan complete. Scanned ${nativeResults.length} audio file(s) ---`);
+          return nativeResults;
+        } finally {
+          if (unlisten) {
+            unlisten();
+          }
+        }
+      } catch (nativeErr) {
+        console.warn('Native Windows directory scan failed, falling back to standard traversal:', nativeErr);
+        await logToFile(`Native Windows directory scan failed, falling back to standard traversal: ${nativeErr}`);
+      }
+    }
+
+    // On Linux/Tauri, use the native kernel-level recursive scan with throttled progress events
+    // to bypass thousands of asynchronous IPC round-trips through WebKitGTK.
+    if (platformInfo.isLinux && platformInfo.isTauri) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const { listen } = await import('@tauri-apps/api/event');
+
+        const eventName = `scan-progress-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        let unlisten: (() => void) | null = null;
+
+        if (onProgress) {
+          unlisten = await listen<{ count: number; currentFolder: string }>(eventName, (event) => {
+            onProgress(event.payload.count, event.payload.currentFolder);
+          });
+        }
+
+        try {
+          const nativeResults = await invoke<string[]>('scan_directory_native', {
+            dirPath,
+            progressEvent: onProgress ? eventName : null,
+          });
+          await logToFile(`--- Native Linux directory scan complete. Scanned ${nativeResults.length} audio file(s) ---`);
+          return nativeResults;
+        } finally {
+          if (unlisten) {
+            unlisten();
+          }
+        }
+      } catch (nativeErr) {
+        console.warn('Native Linux directory scan failed, falling back to standard traversal:', nativeErr);
+        await logToFile(`Native directory scan failed, falling back to standard traversal: ${nativeErr}`);
+      }
+    }
+
     const { readDir } = await import('@tauri-apps/plugin-fs');
     const audioPaths: string[] = [];
     const audioExtensions = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg', 'wma', 'aiff', 'alac'];
@@ -559,6 +719,19 @@ export async function scanTauriDirectory(
     const errMsg = e instanceof Error ? e.message : String(e);
     await logToFile(`Tauri scanTauriDirectory failed overall: ${errMsg}`);
     console.error('Tauri scanTauriDirectory failed:', e);
+
+    // On macOS, detect Permission Denied (EACCES/EPERM/operation not permitted) and inform user
+    if (platformInfo.isMacOS) {
+      const isPermDenied = /permission|operation not permitted|denied|eacces|eperm/i.test(errMsg);
+      if (isPermDenied && typeof window !== 'undefined') {
+        alert(
+          'ClassiTunes does not currently have permission to access this folder.\n\n' +
+          'Please select the folder again or grant ClassiTunes permission in:\n' +
+          'System Settings → Privacy & Security → Files and Folders.'
+        );
+      }
+    }
+
     return [];
   }
 }
@@ -601,37 +774,119 @@ export async function convertPathsToFiles(paths: string[]): Promise<File[]> {
   }
 }
 
+export interface BatchFileStat {
+  path: string;
+  exists: boolean;
+  isFile: boolean;
+  isDirectory: boolean;
+  size: number;
+  mtimeMs?: number | null;
+}
+
+export async function statMusicFilesWindows(paths: string[]): Promise<BatchFileStat[]> {
+  if (paths.length === 0) return [];
+  if (isWindowsTauri) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<BatchFileStat[]>('stat_music_files_windows', { paths });
+    } catch (e) {
+      console.warn('Native stat_music_files_windows failed, falling back to batchStatFiles:', e);
+    }
+  }
+  return batchStatFiles(paths);
+}
+
+export async function batchStatFiles(paths: string[]): Promise<BatchFileStat[]> {
+  if (paths.length === 0) return [];
+  const isTauri = typeof window !== 'undefined' && !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__);
+  if (isTauri) {
+    if (isWindowsTauri) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        return await invoke<BatchFileStat[]>('stat_music_files_windows', { paths });
+      } catch (e) {
+        console.warn('stat_music_files_windows failed, falling back to batch_stat_files:', e);
+      }
+    }
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<BatchFileStat[]>('batch_stat_files', { paths });
+    } catch (e) {
+      console.warn('Native batch_stat_files failed, falling back to plugin-fs stat:', e);
+    }
+  }
+
+  // Graceful fallback for non-Tauri or command failure
+  try {
+    const { stat } = await import('@tauri-apps/plugin-fs');
+    const results: BatchFileStat[] = [];
+    for (const p of paths) {
+      try {
+        const s = await stat(p);
+        results.push({
+          path: p,
+          exists: true,
+          isFile: s.isFile,
+          isDirectory: s.isDirectory,
+          size: s.size,
+          mtimeMs: s.mtime ? new Date(s.mtime).getTime() : null,
+        });
+      } catch {
+        results.push({
+          path: p,
+          exists: false,
+          isFile: false,
+          isDirectory: false,
+          size: 0,
+          mtimeMs: null,
+        });
+      }
+    }
+    return results;
+  } catch (err) {
+    console.error('Failed to stat files in fallback:', err);
+    return paths.map(p => ({
+      path: p,
+      exists: false,
+      isFile: false,
+      isDirectory: false,
+      size: 0,
+      mtimeMs: null,
+    }));
+  }
+}
+
 export async function processDroppedPaths(
   paths: string[],
   onProgress?: (count: number, currentFolder?: string) => void
 ): Promise<string[]> {
   try {
-    const { stat } = await import('@tauri-apps/plugin-fs');
     const allFilePaths: string[] = [];
     const audioExtensions = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg', 'wma', 'aiff', 'alac'];
 
-    for (const path of paths) {
-      try {
-        const info = await stat(path);
-        if (info.isDirectory) {
-          const scannedPaths = await scanTauriDirectory(path, (count, folder) => {
-            if (onProgress) {
-              onProgress(allFilePaths.length + count, folder);
-            }
-          });
-          allFilePaths.push(...scannedPaths);
-        } else if (info.isFile) {
-          const ext = path.split('.').pop()?.toLowerCase();
-          if (ext && audioExtensions.includes(ext)) {
-            allFilePaths.push(path);
-            if (onProgress) {
-              onProgress(allFilePaths.length);
-            }
+    const statResults = await batchStatFiles(paths);
+
+    for (let i = 0; i < paths.length; i++) {
+      const path = paths[i];
+      const info = statResults[i];
+
+      if (info && info.isDirectory) {
+        const scannedPaths = await scanTauriDirectory(path, (count, folder) => {
+          if (onProgress) {
+            onProgress(allFilePaths.length + count, folder);
+          }
+        });
+        allFilePaths.push(...scannedPaths);
+      } else if (info && info.isFile) {
+        const ext = path.split('.').pop()?.toLowerCase();
+        if (ext && audioExtensions.includes(ext)) {
+          allFilePaths.push(path);
+          if (onProgress) {
+            onProgress(allFilePaths.length);
           }
         }
-      } catch (err) {
-        console.error('Failed to get stat for path:', path, err);
-        // Fallback: if stat fails, assume it might be a file if it has a valid audio extension
+      } else {
+        // Fallback: if stat failed or could not determine, check audio extension
         const ext = path.split('.').pop()?.toLowerCase();
         if (ext && audioExtensions.includes(ext)) {
           allFilePaths.push(path);

@@ -100,9 +100,13 @@ export function encodeWAV(channelData: Float32Array[], sampleRate: number): Blob
  * Decodes raw OGG Vorbis bytes to a WAV Blob via the WASM decoder
  * (@wasm-audio-decoders/ogg-vorbis), lazily loaded on first call.
  *
- * Returns null if the decoder fails to load or the data is corrupt.
+ * For memory safety (especially on macOS WKWebView), accepts an optional maxOutputBytes
+ * guard (defaults to 128 MB PCM, ~12 minutes stereo 44.1kHz). If an OGG file is unusually huge,
+ * decoding can be bounded to prevent multi-hundred-megabyte out-of-memory crashes.
+ *
+ * Returns null if the decoder fails to load, data is corrupt, or output exceeds safety limits.
  */
-export async function decodeOggToWav(bytes: Uint8Array): Promise<Blob | null> {
+export async function decodeOggToWav(bytes: Uint8Array, maxOutputBytes: number = 128 * 1024 * 1024): Promise<Blob | null> {
   try {
     // Dynamic import keeps the ~1 MB WASM bundle out of the critical path.
     // Vite places this in a separate split chunk (see vite.config.ts manualChunks).
@@ -118,6 +122,14 @@ export async function decodeOggToWav(bytes: Uint8Array): Promise<Blob | null> {
       return null;
     }
 
+    const numChannels = channelData.length;
+    const numSamples = channelData[0].length;
+    const estimatedPcmSize = numChannels * numSamples * 2;
+    if (estimatedPcmSize > maxOutputBytes) {
+      console.warn(`[OggDecoder] Decoded PCM size (${(estimatedPcmSize / (1024 * 1024)).toFixed(1)} MB) exceeds safe ceiling (${(maxOutputBytes / (1024 * 1024)).toFixed(1)} MB). Aborting to avoid WKWebView memory spike.`);
+      return null;
+    }
+
     return encodeWAV(channelData, sampleRate);
   } catch (err) {
     console.warn('[OggDecoder] Failed to decode OGG Vorbis:', err);
@@ -129,14 +141,14 @@ export async function decodeOggToWav(bytes: Uint8Array): Promise<Blob | null> {
  * Fetches an OGG file from any URL (blob:, asset://, http(s)://) and decodes
  * it to a WAV Blob. Returns null on fetch or decode failure.
  */
-export async function decodeOggUrlToWav(url: string): Promise<Blob | null> {
+export async function decodeOggUrlToWav(url: string, maxOutputBytes?: number): Promise<Blob | null> {
   try {
     const res = await fetch(url);
     if (!res.ok) {
       console.warn(`[OggDecoder] HTTP ${res.status} fetching OGG: ${url.slice(0, 80)}`);
       return null;
     }
-    return decodeOggToWav(new Uint8Array(await res.arrayBuffer()));
+    return decodeOggToWav(new Uint8Array(await res.arrayBuffer()), maxOutputBytes);
   } catch (err) {
     console.warn('[OggDecoder] Failed to fetch OGG for decoding:', err);
     return null;

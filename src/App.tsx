@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import { Track, Album, Playlist, ViewMode } from './types';
 import { INITIAL_TRACKS, INITIAL_PLAYLISTS } from './data/demoTracks';
 import { audioEngine } from './services/audioEngine';
-import { parseAudioFile, extractID3TagsFromTrack } from './services/metadataParser';
+import { parseAudioFile, extractID3TagsFromTrack, getAudioDuration } from './services/metadataParser';
 import { HeaderBar } from './components/HeaderBar';
 import { Sidebar } from './components/Sidebar';
 import { ListView } from './components/ListView';
@@ -20,7 +20,8 @@ import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, logToFile } from './utils/tauriWindow';
-import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork } from './services/mediaStorage';
+import { platformInfo } from './utils/platform';
+import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
 export default function App() {
@@ -532,7 +533,12 @@ export default function App() {
           return { ...rest, coverUrl, audioUrl };
         });
 
-        localStorage.setItem('classitunes_tracks', JSON.stringify(lightweightTracks));
+        // On macOS Tauri, avoid writing large JSON blobs into localStorage (keep IndexedDB as the primary backing store).
+        // Non-macOS platforms (Windows/Linux) continue to write to localStorage as before.
+        const isMacTauri = platformInfo.isMacOS && platformInfo.isTauri;
+        if (!isMacTauri || lightweightTracks.length < 100) {
+          localStorage.setItem('classitunes_tracks', JSON.stringify(lightweightTracks));
+        }
         saveTracksMetadata(userTracksOnly);
       } catch (e) {
         console.warn('Failed to save tracks to localStorage/IndexedDB', e);
@@ -570,6 +576,11 @@ export default function App() {
   }, []);
 
   // Audio Playback Handlers
+  const mergedTracksRef = useRef(mergedTracks);
+  useEffect(() => {
+    mergedTracksRef.current = mergedTracks;
+  }, [mergedTracks]);
+
   const playTrack = useCallback((track: Track, albumQueue?: Track[]) => {
     if (albumQueue) {
       setAlbumPlayQueue(albumQueue);
@@ -580,8 +591,8 @@ export default function App() {
     
     // Check if another loaded track with the same album has a valid coverUrl
     if (!cachedArt && albumKey) {
-      // Search mergedTracks (base + playbackMeta) for sibling artwork
-      const sibling = mergedTracks.find(t => (t.album || '').trim().toLowerCase() === albumKey && t.coverUrl);
+      // Search current mergedTracks (base + playbackMeta) for sibling artwork without invalidating playTrack identity
+      const sibling = mergedTracksRef.current.find(t => (t.album || '').trim().toLowerCase() === albumKey && t.coverUrl);
       if (sibling?.coverUrl) {
         cachedArt = sibling.coverUrl;
         setCachedArtwork(albumKey, cachedArt);
@@ -594,7 +605,7 @@ export default function App() {
     setCurrentTrack(immediateTrack);
     setIsPlaying(true);
     if (track.audioUrl) {
-      void audioEngine.playTrack(track.audioUrl, track.replayGainDb, track.filePath);
+      void audioEngine.playTrack(track.audioUrl, track.replayGainDb, track.filePath, { sizeBytes: track.sizeBytes });
     }
 
     // 2. Hydrate artwork & audio URL on-demand immediately (critical for 1st song on launch)
@@ -616,7 +627,7 @@ export default function App() {
 
           // If audio URL was resolved via hydration and wasn't playing yet, start playback
           if (hydrated.audioUrl && (!track.audioUrl || track.audioUrl !== hydrated.audioUrl)) {
-            void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb, track.filePath);
+            void audioEngine.playTrack(hydrated.audioUrl, track.replayGainDb, track.filePath, { sizeBytes: track.sizeBytes });
           }
 
           // Cache resolved artwork globally and write into playbackMeta (not base tracks)
@@ -625,18 +636,18 @@ export default function App() {
             if (albumKey) setCachedArtwork(albumKey, hydrated.coverUrl);
             setPlaybackMeta(prev => {
               const next = new Map(prev);
-              const existing = next.get(track.id) || {};
+              const existing: Partial<Track> = next.get(track.id) || {};
               next.set(track.id, {
                 ...existing,
-                coverUrl: hydrated.coverUrl || (existing as Track).coverUrl,
-                audioUrl: hydrated.audioUrl || (existing as Track).audioUrl || track.audioUrl,
+                coverUrl: hydrated.coverUrl || existing.coverUrl,
+                audioUrl: hydrated.audioUrl || existing.audioUrl || track.audioUrl,
               });
               return next;
             });
           } else if (hydrated.audioUrl && hydrated.audioUrl !== track.audioUrl) {
             setPlaybackMeta(prev => {
               const next = new Map(prev);
-              const existing = next.get(track.id) || {};
+              const existing: Partial<Track> = next.get(track.id) || {};
               next.set(track.id, { ...existing, audioUrl: hydrated.audioUrl });
               return next;
             });
@@ -650,15 +661,15 @@ export default function App() {
     // 3. Update Play Count — write to playbackMeta only (does not invalidate filteredTracks/albums)
     setPlaybackMeta(prev => {
       const next = new Map(prev);
-      const existing = next.get(track.id) || {};
+      const existing: Partial<Track> = next.get(track.id) || {};
       next.set(track.id, {
         ...existing,
-        playCount: ((existing as Track).playCount ?? (track.playCount || 0)) + 1,
+        playCount: (existing.playCount ?? track.playCount ?? 0) + 1,
         lastPlayed: new Date(),
       });
       return next;
     });
-  }, [mergedTracks]);
+  }, []);
 
   const togglePlay = () => {
     if (!currentTrack) {
@@ -699,7 +710,7 @@ export default function App() {
         });
       } else if (activePlaylist.systemType === 'top_rated') {
         // Use mergedTracks so rating updates are reflected without base track mutation
-        const mergedMap = playbackMeta.size > 0 ? new Map(mergedTracks.map(t => [t.id, t])) : null;
+        const mergedMap: Map<string, Track> | null = playbackMeta.size > 0 ? new Map<string, Track>(mergedTracks.map(t => [t.id, t])) : null;
         list = list.filter(t => (mergedMap ? (mergedMap.get(t.id)?.rating ?? t.rating) : t.rating) >= 4);
       } else if (activePlaylist.systemType === 'party_shuffle') {
         // Keep as is
@@ -959,6 +970,61 @@ export default function App() {
     });
     return unsub;
   }, [currentTrack]);
+
+  // Background resolver for tracks that have 0:00 duration before playback
+  const isResolvingDurationsRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (isResolvingDurationsRef.current) return;
+    // Consider any track with duration <= 1.0 as unmeasured/corrupted (no real song is <= 1 second)
+    const unmeasured = tracks.filter(t => (!t.duration || t.duration <= 1.0) && (t.audioUrl || (t as any).filePath));
+    if (unmeasured.length === 0) return;
+
+    isResolvingDurationsRef.current = true;
+    let cancelled = false;
+
+    const resolveAll = async () => {
+      // First pass: instantly resolve any tracks that have sizeBytes and bitrate
+      const quickResolutions = new Map<string, number>();
+      for (const t of unmeasured) {
+        if (t.sizeBytes && t.bitrate) {
+          const est = (t.sizeBytes * 8) / (t.bitrate * 1000);
+          if (est > 0 && isFinite(est)) {
+            quickResolutions.set(t.id, Math.round(est * 100) / 100);
+          }
+        }
+      }
+
+      if (quickResolutions.size > 0 && !cancelled) {
+        setTracks(prev => prev.map(t => {
+          const d = quickResolutions.get(t.id);
+          return d ? { ...t, duration: d } : t;
+        }));
+      }
+
+      // Second pass: for any remaining without duration, probe via getAudioDuration
+      const remaining = unmeasured.filter(t => !quickResolutions.has(t.id));
+      for (const track of remaining) {
+        if (cancelled) break;
+        let resolved = 0;
+        if (track.audioUrl) {
+          resolved = await getAudioDuration(track.audioUrl);
+        }
+        if (resolved > 0 && !cancelled) {
+          const finalDur = Math.round(resolved * 100) / 100;
+          setTracks(prev => prev.map(t => (t.id === track.id ? { ...t, duration: finalDur } : t)));
+        }
+        await new Promise(r => setTimeout(r, 40));
+      }
+      isResolvingDurationsRef.current = false;
+    };
+
+    const timer = setTimeout(resolveAll, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      isResolvingDurationsRef.current = false;
+    };
+  }, [tracks.length]);
 
   // MediaSession Position State & Action Handlers
   useEffect(() => {
@@ -1234,6 +1300,7 @@ export default function App() {
     trackIds.forEach(id => {
       deleteMediaFile(`audio_${id}`);
       deleteMediaFile(`cover_${id}`);
+      clearCachedArtwork(id);
     });
     setTracks(prev => prev.filter(t => !trackIds.includes(t.id)));
     setSelectedTrackIds(prev => prev.filter(id => !trackIds.includes(id)));
@@ -1385,14 +1452,27 @@ export default function App() {
               allChildren = allChildren.concat(batch);
               batch = await readBatch();
             }
-            const nested = await Promise.all(allChildren.map(c => readEntry(c)));
-            return nested.flat();
+            // On macOS / browser, avoid unlimited fan-out: chunk child traversal with concurrency limit
+            const results: File[][] = [];
+            const CHUNK_SIZE = 4;
+            for (let i = 0; i < allChildren.length; i += CHUNK_SIZE) {
+              const slice = allChildren.slice(i, i + CHUNK_SIZE);
+              const batchFiles = await Promise.all(slice.map(c => readEntry(c)));
+              results.push(...batchFiles);
+            }
+            return results.flat();
           }
           return [];
         };
 
-        const recursiveFiles = await Promise.all(entries.map(e => readEntry(e)));
-        fileList.push(...recursiveFiles.flat());
+        const results: File[][] = [];
+        const CHUNK_SIZE = 4;
+        for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+          const slice = entries.slice(i, i + CHUNK_SIZE);
+          const batchFiles = await Promise.all(slice.map(e => readEntry(e)));
+          results.push(...batchFiles);
+        }
+        fileList.push(...results.flat());
         return fileList;
       }
     }
@@ -1500,6 +1580,12 @@ export default function App() {
               objectUrl = path;
             }
 
+            let finalDuration = nativeMeta?.duration ? Math.round(nativeMeta.duration * 100) / 100 : 0;
+            if ((!finalDuration || finalDuration <= 0) && nativeMeta?.sizeBytes && nativeMeta?.bitrate) {
+              const est = (nativeMeta.sizeBytes * 8) / (nativeMeta.bitrate * 1000);
+              if (est > 0 && isFinite(est)) finalDuration = Math.round(est * 100) / 100;
+            }
+
             allNewlyParsed.push({
               id: trackId,
               title: finalTitle,
@@ -1510,7 +1596,7 @@ export default function App() {
               publisher: nativeMeta?.publisher?.trim() || undefined,
               lyrics: nativeMeta?.lyrics?.trim() || undefined,
               genre: nativeMeta?.genre?.trim() || 'Uncategorized',
-              duration: nativeMeta?.duration ? Math.round(nativeMeta.duration * 100) / 100 : 0,
+              duration: finalDuration,
               year: nativeMeta?.year,
               trackNumber: nativeMeta?.trackNumber,
               trackTotal: nativeMeta?.trackTotal,
@@ -1550,8 +1636,8 @@ export default function App() {
         await new Promise(r => setTimeout(r, 5));
       }
     } else {
-      // Standard File fallback with higher concurrency
-      const CONCURRENCY = 16;
+      // Standard File fallback: on macOS bound concurrency to 4 to prevent WKWebView stalls and memory spikes; non-macOS remains 16
+      const CONCURRENCY = platformInfo.isMacOS ? 4 : 16;
       let completed = 0;
 
       for (let i = 0; i < totalToProcess; i += CONCURRENCY) {
@@ -1608,8 +1694,8 @@ export default function App() {
 
   // Reset entire library (all tracks, custom playlists, IndexedDB, and localStorage)
   const handleResetLibrary = useCallback(async () => {
-    // 1. Stop active audio
-    audioEngine.pause();
+    // 1. Stop active audio and release audio resources
+    audioEngine.releaseResources();
     setIsPlaying(false);
     setCurrentTrack(null);
     setSelectedTrackIds([]);
@@ -1621,8 +1707,9 @@ export default function App() {
     setPlaylists(INITIAL_PLAYLISTS);
     setSelectedPlaylistId('lib_music');
 
-    // 4. Clear IndexedDB storage
+    // 4. Clear IndexedDB storage and in-memory artwork cache
     await clearAllMediaStorage();
+    clearCachedArtwork();
 
     // 5. Clear LocalStorage keys
     try {
@@ -1719,16 +1806,18 @@ export default function App() {
     }
 
     // 2. Identify new paths vs existing paths and check for modifications
+    // For macOS, do NOT force path.toLowerCase() because macOS filesystems may be case-sensitive.
+    // For Windows, toLowerCase is preserved.
+    const isMac = platformInfo.isMacOS;
     const existingPathMap = new Map<string, Track>();
     tracks.forEach(t => {
       if (t.filePath) {
-        // Normalize slashes for robust matching
-        const norm = t.filePath.replace(/\\/g, '/').toLowerCase();
-        existingPathMap.set(norm, t);
+        const key = isMac ? t.filePath.replace(/\\/g, '/') : t.filePath.replace(/\\/g, '/').toLowerCase();
+        existingPathMap.set(key, t);
       }
     });
 
-    const { stat } = await import('@tauri-apps/plugin-fs');
+    const { batchStatFiles, readTauriMusicMetadataBatch } = await import('./utils/tauriWindow');
     const newPathsToImport: string[] = [];
     const modifiedTracksToUpdate: { path: string; existingTrack: Track }[] = [];
 
@@ -1739,23 +1828,43 @@ export default function App() {
       phase: 'scanning'
     });
 
+    // Check which paths already exist in the library vs need importing
+    const pathsToStat: { path: string; existingTrack: Track }[] = [];
     for (const filePath of scannedPaths) {
-      const norm = filePath.replace(/\\/g, '/').toLowerCase();
-      const existing = existingPathMap.get(norm);
-
+      const key = isMac ? filePath.replace(/\\/g, '/') : filePath.replace(/\\/g, '/').toLowerCase();
+      const existing = existingPathMap.get(key);
       if (!existing) {
         newPathsToImport.push(filePath);
       } else {
-        // Check if modified or size differs
-        try {
-          const fileInfo = await stat(filePath);
-          const currentSize = fileInfo.size;
-          const prevSize = existing.sizeBytes;
+        pathsToStat.push({ path: filePath, existingTrack: existing });
+      }
+    }
+
+    // Batch stat check for existing tracks to detect modifications in a single native call
+    if (pathsToStat.length > 0) {
+      const stats = await batchStatFiles(pathsToStat.map(p => p.path));
+      for (let i = 0; i < pathsToStat.length; i++) {
+        const { path, existingTrack } = pathsToStat[i];
+        const statResult = stats[i];
+        if (statResult && statResult.exists) {
+          const currentSize = statResult.size;
+          const prevSize = existingTrack.sizeBytes;
+          const currentMtime = statResult.mtimeMs;
+          const prevDateAdded = typeof existingTrack.dateAdded === 'number' 
+            ? existingTrack.dateAdded 
+            : Date.parse(existingTrack.dateAdded || '');
+
+          // On macOS, check both file size change AND mtime change if available
+          let isModified = false;
           if (prevSize && currentSize && Math.abs(currentSize - prevSize) > 0) {
-            modifiedTracksToUpdate.push({ path: filePath, existingTrack: existing });
+            isModified = true;
+          } else if (isMac && currentMtime && prevDateAdded && currentMtime > prevDateAdded + 2000) {
+            isModified = true;
           }
-        } catch (e) {
-          // If stat fails, skip modification check
+
+          if (isModified) {
+            modifiedTracksToUpdate.push({ path, existingTrack });
+          }
         }
       }
     }
@@ -1776,79 +1885,181 @@ export default function App() {
       phase: 'importing'
     });
 
-    const { convertFileSrc } = await import('@tauri-apps/api/core');
-    const CONCURRENCY = 8;
     const newlyParsedList: Track[] = [];
     const updatedTrackMap = new Map<string, Track>();
     let completed = 0;
 
-    // Process new tracks
-    for (let i = 0; i < newPathsToImport.length; i += CONCURRENCY) {
-      const chunk = newPathsToImport.slice(i, i + CONCURRENCY);
-      const results = await Promise.all(
-        chunk.map(async (path) => {
-          try {
-            const filename = path.split(/[/\\]/).pop() || 'song.mp3';
-            const assetUrl = convertFileSrc(path);
-            const res = await fetch(assetUrl);
-            if (!res.ok) return null;
-            const blob = await res.blob();
-            const ext = filename.split('.').pop()?.toLowerCase() || '';
-            const mimeType = ext === 'm4a' || ext === 'aac' || ext === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
-            const file = new File([blob], filename, { type: mimeType });
-            Object.defineProperty(file, 'path', { value: path, writable: true, configurable: true, enumerable: true });
-            return await parseAudioFile(file);
-          } catch (e) {
-            return null;
-          }
-        })
-      );
-      results.forEach(t => { if (t) newlyParsedList.push(t); });
-      completed += chunk.length;
-      setImportProgress({
-        current: completed,
-        total: totalToProcess,
-        statusText: `Refreshing ${completed} of ${totalToProcess} tracks...`,
-        phase: 'importing'
-      });
-    }
+    // On macOS / Tauri, process via native Rust metadata reader to avoid giant fetch->Blob->File->JS parser conversions
+    if (isMac && isTauri()) {
+      const MAC_BATCH_SIZE = 4; // Bounded concurrency for macOS filesystem & WKWebView responsiveness
+      const allPaths = [...newPathsToImport, ...modifiedTracksToUpdate.map(m => m.path)];
 
-    // Process modified tracks (re-parse metadata while preserving user rating / playCount / playlist references)
-    for (let i = 0; i < modifiedTracksToUpdate.length; i += CONCURRENCY) {
-      const chunk = modifiedTracksToUpdate.slice(i, i + CONCURRENCY);
-      await Promise.all(
-        chunk.map(async ({ path, existingTrack }) => {
+      for (let i = 0; i < allPaths.length; i += MAC_BATCH_SIZE) {
+        const chunk = allPaths.slice(i, i + MAC_BATCH_SIZE);
+        const metaMap = await readTauriMusicMetadataBatch(chunk);
+        const { convertFileSrc } = await import('@tauri-apps/api/core');
+
+        for (const p of chunk) {
+          const nativeMeta = metaMap[p];
+          const filename = p.split(/[/\\]/).pop() || 'song.mp3';
+          const cleanFileName = filename.replace(/\.[^/.]+$/, '').trim();
+          const finalTitle = nativeMeta?.title?.trim() || cleanFileName;
+          const finalArtist = nativeMeta?.artist?.trim() || 'Unknown Artist';
+          const finalAlbum = nativeMeta?.album?.trim() || 'Unknown Album';
+          const finalCoverUrl = nativeMeta?.coverUrl || '';
+
+          let audioUrl = p;
           try {
-            const filename = path.split(/[/\\]/).pop() || 'song.mp3';
-            const assetUrl = convertFileSrc(path);
-            const res = await fetch(assetUrl);
-            if (!res.ok) return;
-            const blob = await res.blob();
-            const ext = filename.split('.').pop()?.toLowerCase() || '';
-            const mimeType = ext === 'm4a' || ext === 'aac' || ext === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
-            const file = new File([blob], filename, { type: mimeType });
-            Object.defineProperty(file, 'path', { value: path, writable: true, configurable: true, enumerable: true });
-            const freshParsed = await parseAudioFile(file);
-            // Retain user custom fields
-            const merged: Track = {
-              ...freshParsed,
-              id: existingTrack.id,
-              rating: existingTrack.rating,
-              playCount: existingTrack.playCount,
-              lastPlayed: existingTrack.lastPlayed,
-              dateAdded: existingTrack.dateAdded,
-            };
-            updatedTrackMap.set(existingTrack.id, merged);
-          } catch (e) {}
-        })
-      );
-      completed += chunk.length;
-      setImportProgress({
-        current: completed,
-        total: totalToProcess,
-        statusText: `Refreshing ${completed} of ${totalToProcess} tracks...`,
-        phase: 'importing'
-      });
+            audioUrl = convertFileSrc(p);
+          } catch {}
+
+          const isNew = newPathsToImport.includes(p);
+          if (isNew) {
+            const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            newlyParsedList.push({
+              id: trackId,
+              title: finalTitle,
+              artist: finalArtist,
+              albumArtist: nativeMeta?.albumArtist?.trim() || undefined,
+              album: finalAlbum,
+              composer: nativeMeta?.composer?.trim() || undefined,
+              publisher: nativeMeta?.publisher?.trim() || undefined,
+              lyrics: nativeMeta?.lyrics?.trim() || undefined,
+              genre: nativeMeta?.genre?.trim() || 'Uncategorized',
+              duration: nativeMeta?.duration ? Math.round(nativeMeta.duration * 100) / 100 : 0,
+              year: nativeMeta?.year,
+              trackNumber: nativeMeta?.trackNumber,
+              trackTotal: nativeMeta?.trackTotal,
+              discNumber: nativeMeta?.discNumber,
+              discTotal: nativeMeta?.discTotal,
+              bpm: nativeMeta?.bpm,
+              mediaKind: nativeMeta?.mediaKind || 'Music',
+              comments: nativeMeta?.comments?.trim() || undefined,
+              rating: 0,
+              playCount: 0,
+              coverUrl: finalCoverUrl,
+              audioUrl,
+              file: undefined,
+              format: nativeMeta?.format || 'Audio file',
+              bitrate: nativeMeta?.bitrate || 320,
+              sampleRate: nativeMeta?.sampleRate || 44100,
+              sizeBytes: nativeMeta?.sizeBytes || 0,
+              dateAdded: new Date().toISOString(),
+              filePath: p,
+            });
+          } else {
+            const existingMatch = modifiedTracksToUpdate.find(m => m.path === p);
+            if (existingMatch) {
+              const { existingTrack } = existingMatch;
+              updatedTrackMap.set(existingTrack.id, {
+                ...existingTrack,
+                title: finalTitle,
+                artist: finalArtist,
+                albumArtist: nativeMeta?.albumArtist?.trim() || existingTrack.albumArtist,
+                album: finalAlbum,
+                composer: nativeMeta?.composer?.trim() || existingTrack.composer,
+                publisher: nativeMeta?.publisher?.trim() || existingTrack.publisher,
+                lyrics: nativeMeta?.lyrics?.trim() || existingTrack.lyrics,
+                genre: nativeMeta?.genre?.trim() || existingTrack.genre,
+                duration: nativeMeta?.duration ? Math.round(nativeMeta.duration * 100) / 100 : existingTrack.duration,
+                year: nativeMeta?.year ?? existingTrack.year,
+                trackNumber: nativeMeta?.trackNumber ?? existingTrack.trackNumber,
+                trackTotal: nativeMeta?.trackTotal ?? existingTrack.trackTotal,
+                discNumber: nativeMeta?.discNumber ?? existingTrack.discNumber,
+                discTotal: nativeMeta?.discTotal ?? existingTrack.discTotal,
+                bpm: nativeMeta?.bpm ?? existingTrack.bpm,
+                coverUrl: finalCoverUrl || existingTrack.coverUrl,
+                audioUrl: audioUrl || existingTrack.audioUrl,
+                format: nativeMeta?.format || existingTrack.format,
+                bitrate: nativeMeta?.bitrate || existingTrack.bitrate,
+                sampleRate: nativeMeta?.sampleRate || existingTrack.sampleRate,
+                sizeBytes: nativeMeta?.sizeBytes || existingTrack.sizeBytes,
+              });
+            }
+          }
+        }
+
+        completed += chunk.length;
+        setImportProgress({
+          current: completed,
+          total: totalToProcess,
+          statusText: `Refreshing ${completed} of ${totalToProcess} tracks...`,
+          phase: 'importing'
+        });
+        await new Promise(r => setTimeout(r, 10));
+      }
+    } else {
+      // Non-macOS (Windows / Linux) original path remains completely untouched
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const CONCURRENCY = 8;
+
+      // Process new tracks
+      for (let i = 0; i < newPathsToImport.length; i += CONCURRENCY) {
+        const chunk = newPathsToImport.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(
+          chunk.map(async (path) => {
+            try {
+              const filename = path.split(/[/\\]/).pop() || 'song.mp3';
+              const assetUrl = convertFileSrc(path);
+              const res = await fetch(assetUrl);
+              if (!res.ok) return null;
+              const blob = await res.blob();
+              const ext = filename.split('.').pop()?.toLowerCase() || '';
+              const mimeType = ext === 'm4a' || ext === 'aac' || ext === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
+              const file = new File([blob], filename, { type: mimeType });
+              Object.defineProperty(file, 'path', { value: path, writable: true, configurable: true, enumerable: true });
+              return await parseAudioFile(file);
+            } catch (e) {
+              return null;
+            }
+          })
+        );
+        results.forEach(t => { if (t) newlyParsedList.push(t); });
+        completed += chunk.length;
+        setImportProgress({
+          current: completed,
+          total: totalToProcess,
+          statusText: `Refreshing ${completed} of ${totalToProcess} tracks...`,
+          phase: 'importing'
+        });
+      }
+
+      // Process modified tracks
+      for (let i = 0; i < modifiedTracksToUpdate.length; i += CONCURRENCY) {
+        const chunk = modifiedTracksToUpdate.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          chunk.map(async ({ path, existingTrack }) => {
+            try {
+              const filename = path.split(/[/\\]/).pop() || 'song.mp3';
+              const assetUrl = convertFileSrc(path);
+              const res = await fetch(assetUrl);
+              if (!res.ok) return;
+              const blob = await res.blob();
+              const ext = filename.split('.').pop()?.toLowerCase() || '';
+              const mimeType = ext === 'm4a' || ext === 'aac' || ext === 'mp4' ? 'audio/mp4' : 'audio/mpeg';
+              const file = new File([blob], filename, { type: mimeType });
+              Object.defineProperty(file, 'path', { value: path, writable: true, configurable: true, enumerable: true });
+              const freshParsed = await parseAudioFile(file);
+              const merged: Track = {
+                ...freshParsed,
+                id: existingTrack.id,
+                rating: existingTrack.rating,
+                playCount: existingTrack.playCount,
+                lastPlayed: existingTrack.lastPlayed,
+                dateAdded: existingTrack.dateAdded,
+              };
+              updatedTrackMap.set(existingTrack.id, merged);
+            } catch (e) {}
+          })
+        );
+        completed += chunk.length;
+        setImportProgress({
+          current: completed,
+          total: totalToProcess,
+          statusText: `Refreshing ${completed} of ${totalToProcess} tracks...`,
+          phase: 'importing'
+        });
+      }
     }
 
     // Merge into tracks state

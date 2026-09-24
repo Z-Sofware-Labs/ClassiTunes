@@ -3,6 +3,8 @@ import { X, Maximize2, Minimize2, Sparkles, Activity, Radio, Orbit } from 'lucid
 import { audioEngine } from '../services/audioEngine';
 import { VisualizerMode } from '../types';
 
+import { platformInfo } from '../utils/platform';
+
 interface VisualizerModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -16,6 +18,7 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
   trackTitle = 'Now Playing',
   artistName = 'ClassiTunes Visualizer',
 }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [mode, setMode] = useState<VisualizerMode>('classic_bars');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -23,12 +26,34 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
 
-    let animationFrameId: number;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    // Track dimensions via ResizeObserver without querying DOM layout properties every frame
+    let canvasW = container.clientWidth || 800;
+    let canvasH = container.clientHeight || 500;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          canvasW = Math.floor(width);
+          canvasH = Math.floor(height);
+          canvas.width = canvasW;
+          canvas.height = canvasH;
+        }
+      }
+    });
+    ro.observe(container);
+
+    let animationFrameId: number;
+    let lastRenderTime = 0;
 
     const bufferLength = 128;
     const dataArray = new Uint8Array(bufferLength);
@@ -36,14 +61,27 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
 
     let hue = 0;
 
-    const render = () => {
-      const parentW = canvas.parentElement?.clientWidth || 800;
-      const parentH = canvas.parentElement?.clientHeight || 500;
-      if (canvas.width !== parentW) canvas.width = parentW;
-      if (canvas.height !== parentH) canvas.height = parentH;
+    const render = (currentTime: number) => {
+      // Cap rendering frame rate on specific platforms to avoid unnecessary CPU/GPU usage:
+      // - Under Linux WebKitGTK: pace to ~30 FPS (>= 32ms) to drastically lower compositing load.
+      // - Under macOS: cap to ~60 FPS (>= 16ms) so 120Hz ProMotion MacBook displays don't burn CPU unnecessarily.
+      // - Windows: runs at display refresh rate.
+      if (document.hidden) {
+        animationFrameId = requestAnimationFrame(render);
+        return;
+      }
+      if (platformInfo.isLinux && currentTime - lastRenderTime < 32) {
+        animationFrameId = requestAnimationFrame(render);
+        return;
+      }
+      if (platformInfo.isMacOS && currentTime - lastRenderTime < 16) {
+        animationFrameId = requestAnimationFrame(render);
+        return;
+      }
+      lastRenderTime = currentTime;
 
-      const width = canvas.width;
-      const height = canvas.height;
+      const width = canvasW;
+      const height = canvasH;
 
       audioEngine.getAnalyserData(dataArray);
       audioEngine.getWaveformData(waveformArray);
@@ -55,26 +93,31 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
       ctx.fillRect(0, 0, width, height);
 
       if (mode === 'classic_bars') {
-        // Classic Spectrum Analyzer Bars
+        // Classic Spectrum Analyzer Bars:
+        // Use a single pre-calculated vertical gradient for the full height instead of 128 allocations per frame
         const barWidth = (width / bufferLength) * 2.2;
         let x = 0;
 
+        const baseGradient = ctx.createLinearGradient(0, height, 0, height * 0.25);
+        baseGradient.addColorStop(0, `hsl(${hue % 360}, 100%, 50%)`);
+        baseGradient.addColorStop(0.5, `hsl(${(hue + 40) % 360}, 100%, 60%)`);
+        baseGradient.addColorStop(1, `#ffffff`);
+
+        ctx.fillStyle = baseGradient;
         for (let i = 0; i < bufferLength; i++) {
           const barHeight = (dataArray[i] / 255) * height * 0.75;
-
-          const gradient = ctx.createLinearGradient(0, height, 0, height - barHeight);
-          gradient.addColorStop(0, `hsl(${(i * 3 + hue) % 360}, 100%, 50%)`);
-          gradient.addColorStop(0.5, `hsl(${(i * 3 + hue + 40) % 360}, 100%, 60%)`);
-          gradient.addColorStop(1, `#ffffff`);
-
-          ctx.fillStyle = gradient;
           ctx.fillRect(x, height - barHeight, barWidth - 2, barHeight);
 
-          // Top peak LED dot
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(x, height - barHeight - 4, barWidth - 2, 2);
-
           x += barWidth;
+        }
+
+        // Top peak LED dots drawn in one single fill style pass
+        ctx.fillStyle = '#ffffff';
+        let peakX = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const barHeight = (dataArray[i] / 255) * height * 0.75;
+          ctx.fillRect(peakX, height - barHeight - 4, barWidth - 2, 2);
+          peakX += barWidth;
         }
       } else if (mode === 'laser_wave') {
         // Neon Oscilloscope Sine Wave
@@ -164,10 +207,11 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
       animationFrameId = requestAnimationFrame(render);
     };
 
-    render();
+    animationFrameId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
+      ro.disconnect();
     };
   }, [isOpen, mode]);
 
@@ -242,7 +286,7 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
       </div>
 
       {/* Main Canvas Stage */}
-      <div className="flex-1 w-full h-full relative flex items-center justify-center">
+      <div ref={containerRef} className="flex-1 w-full h-full relative flex items-center justify-center">
         <canvas ref={canvasRef} className="w-full h-full block" />
       </div>
 

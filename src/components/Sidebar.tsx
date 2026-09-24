@@ -5,7 +5,7 @@ import {
   Play, Pause, Maximize2, Info, Image as ImageIcon, X, Sparkles, Sliders, Edit2
 } from 'lucide-react';
 import { Playlist, Track } from '../types';
-import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory, convertPathsToFiles } from '../utils/tauriWindow';
+import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory } from '../utils/tauriWindow';
 import { getCachedArtwork } from '../services/mediaStorage';
 
 interface SidebarProps {
