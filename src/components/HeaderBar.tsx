@@ -368,7 +368,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
 
         {/* Center Section: LCD Display (True Dead Center) */}
-        <div className="flex items-center justify-center w-full min-w-0 sm:min-w-[340px] md:min-w-[440px] lg:min-w-[512px] max-w-[640px] mx-auto">
+        <div className="flex items-center justify-center w-[512px] shrink-0 mx-auto">
           <div className={`relative border rounded-md px-2.5 pt-1.5 pb-1 text-center overflow-hidden transition-colors w-full h-[44px] flex flex-col justify-center ${isLight
             ? 'bg-gradient-to-b from-white via-[#f0f4fa] to-[#dbe5f2] border-[#8a97a8] shadow-[inset_0_1px_3px_rgba(0,0,0,0.15)] text-gray-900'
             : 'bg-gradient-to-b from-[#2a2a2a] to-[#1a1a1a] border-[#333] shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)] text-gray-100'
