@@ -15,7 +15,7 @@ interface ContextMenuProps {
   isPlaying: boolean;
   currentTrack: Track | null;
   playlists: Playlist[];
-  onPlayTrack: (track: Track) => void;
+  onPlayTrack: (track: Track, queue?: Track[]) => void;
   onTogglePlay: () => void;
   onOpenGetInfo: (trackOrTracks: Track | Track[]) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
@@ -116,7 +116,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
           if (currentTrack?.id === track.id) {
             onTogglePlay();
           } else {
-            onPlayTrack(track);
+            onPlayTrack(track, tracks);
           }
           onClose();
         }}

@@ -402,6 +402,7 @@ export default function App() {
   }, []);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
   const [albumPlayQueue, setAlbumPlayQueue] = useState<Track[] | null>(null);
+  const [activeQueue, setActiveQueue] = useState<Track[] | null>(null);
 
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -581,9 +582,10 @@ export default function App() {
     mergedTracksRef.current = mergedTracks;
   }, [mergedTracks]);
 
-  const playTrack = useCallback((track: Track, albumQueue?: Track[]) => {
-    if (albumQueue) {
-      setAlbumPlayQueue(albumQueue);
+  const playTrack = useCallback((track: Track, queue?: Track[]) => {
+    if (queue && queue.length > 0) {
+      setActiveQueue(queue);
+      setAlbumPlayQueue(queue);
     }
     // 0. Instantly resolve cover artwork from memory cache or sibling tracks from same album
     const albumKey = (track.album || '').trim().toLowerCase();
@@ -812,15 +814,18 @@ export default function App() {
     return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   }, [filteredTracks]);
 
-  // Determine active playback pool based on view mode
+  // Determine active playback pool based on view mode and active queue
   // Use displayTracks (filteredTracks + playbackMeta) so next/prev operates on the same
   // track objects the user sees (with up-to-date playCount, coverUrl, etc.)
   const activePlaybackPool = useMemo(() => {
     if (viewMode === 'grid' && albumPlayQueue && albumPlayQueue.length > 0) {
       return albumPlayQueue;
     }
+    if (activeQueue && activeQueue.length > 0 && currentTrack && activeQueue.some(t => t.id === currentTrack.id)) {
+      return activeQueue;
+    }
     return displayTracks.length > 0 ? displayTracks : mergedTracks;
-  }, [viewMode, albumPlayQueue, displayTracks, mergedTracks]);
+  }, [viewMode, albumPlayQueue, activeQueue, currentTrack, displayTracks, mergedTracks]);
 
   // Next/Prev logic
   const handleNextTrack = useCallback(() => {

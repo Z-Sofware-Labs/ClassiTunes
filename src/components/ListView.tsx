@@ -15,7 +15,7 @@ interface ListViewProps {
   currentTrack: Track | null;
   isPlaying: boolean;
   playlists: Playlist[];
-  onPlayTrack: (track: Track) => void;
+  onPlayTrack: (track: Track, queue?: Track[]) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onOpenGetInfo: (track: Track) => void;
   onDeleteTrack: (trackId: string) => void;
@@ -111,7 +111,7 @@ interface TrackRowProps {
   isMenuOpen: boolean;
   userPlaylists: Playlist[];
   dateAddedFormatted: Map<string, string>;
-  onPlayTrack: (track: Track) => void;
+  onPlayTrack: (track: Track, queue?: Track[]) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onOpenGetInfo: (track: Track) => void;
   onDeleteTrack: (trackId: string) => void;
@@ -124,6 +124,7 @@ interface TrackRowProps {
   setContextMenuTrackId: (id: string | null) => void;
   selectedTrackIds: string[];
   updateSelectedTrackIds: (ids: string[]) => void;
+  sortedTracks: Track[];
 }
 
 const TrackRow = React.memo<TrackRowProps>(({
@@ -154,6 +155,7 @@ const TrackRow = React.memo<TrackRowProps>(({
   setContextMenuTrackId,
   selectedTrackIds,
   updateSelectedTrackIds,
+  sortedTracks,
 }) => {
   return (
     <tr
@@ -161,7 +163,7 @@ const TrackRow = React.memo<TrackRowProps>(({
       onDragStart={(e) => handleDragStart(e, track.id)}
       onDragEnd={handleDragEnd}
       onClick={(e) => handleRowClick(track.id, e)}
-      onDoubleClick={() => onPlayTrack(track)}
+      onDoubleClick={() => onPlayTrack(track, sortedTracks)}
       onContextMenu={(e) => {
         e.preventDefault();
         if (!isSelected) {
@@ -412,7 +414,7 @@ const TrackRow = React.memo<TrackRowProps>(({
           >
             <button
               onClick={() => {
-                onPlayTrack(track);
+                onPlayTrack(track, sortedTracks);
                 setContextMenuTrackId(null);
               }}
               className={`w-full px-3 py-1.5 flex items-center gap-2 ${
@@ -1332,6 +1334,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
                   setContextMenuTrackId={setContextMenuTrackId}
                   selectedTrackIds={selectedTrackIds}
                   updateSelectedTrackIds={updateSelectedTrackIds}
+                  sortedTracks={sortedTracks}
                 />
               );
             })}
