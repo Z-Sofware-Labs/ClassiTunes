@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { X, Info, Image as ImageIcon, FileText, Sparkles, RefreshCw, CheckCircle2, Music, Tag, Disc, AlertCircle } from 'lucide-react';
+import { X, Info, Image as ImageIcon, FileText, Sparkles, RefreshCw, CheckCircle2, Music, Tag, Disc, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Track } from '../types';
 import { extractID3TagsFromTrack, ExtractedID3Tags } from '../services/metadataParser';
+import { platformInfo } from '../utils/platform';
 
 type EditableTrack = Track & { artworkDataUrl?: string; artworkRemoved?: boolean };
 
@@ -13,6 +14,8 @@ export interface GetInfoModalProps {
   onSaveTrack: (updatedTrack: EditableTrack) => void | Promise<void>;
   onSaveTracks?: (updatedTracks: EditableTrack[]) => void | Promise<void>;
   theme?: 'dark' | 'light';
+  /** Ordered list of tracks for prev/next navigation (e.g. displayTracks or album tracks) */
+  navigationTracks?: Track[];
 }
 
 export const GetInfoModal: React.FC<GetInfoModalProps> = ({
@@ -23,17 +26,32 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   onSaveTrack,
   onSaveTracks,
   theme = 'dark',
+  navigationTracks,
 }) => {
   const isLight = theme === 'light';
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const isMac = platformInfo.isMacOS;
+
+  // Navigation state: internalNavTrack overrides `track` prop while navigating
+  const [internalNavTrack, setInternalNavTrack] = useState<Track | null>(null);
+  const [navIndex, setNavIndex] = useState(-1);
+  const navInitTrackIdRef = React.useRef<string | null>(null);
+  // True while the modal is navigating between songs — prevents the tab from resetting
+  const isNavigatingRef = React.useRef(false);
 
   const activeTracks = React.useMemo(() => {
-    if (tracks && tracks.length > 0) return tracks;
-    if (track) return [track];
+    // Multi-edit mode: tracks prop contains multiple items — navigation doesn't apply.
+    if (tracks && tracks.length > 1) return tracks;
+    // Single-track mode: internalNavTrack overrides the original track prop when the
+    // user navigates to an adjacent song via the prev/next buttons.
+    const singleT = internalNavTrack || (tracks && tracks.length === 1 ? tracks[0] : null) || track;
+    if (singleT) return [singleT];
     return [];
-  }, [tracks, track]);
+  }, [tracks, track, internalNavTrack]);
 
-  const isMulti = activeTracks.length > 1;
+  // isMulti is based purely on the tracks prop (multi-edit mode), not navigation
+  const isMulti = !!(tracks && tracks.length > 1);
+  // Convenience: the single track being displayed/edited (navigation-aware)
+  const singleTrack = activeTracks[0] ?? null;
 
   const [activeTab, setActiveTab] = useState<'info' | 'lyrics' | 'summary' | 'artwork'>('info');
 
@@ -94,120 +112,73 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
     setter(val);
   };
 
-  // Initialize and auto-extract ID3 tags whenever a track is opened
-  const loadTrackAndExtractID3 = useCallback(async (targetTrack: Track, forceOverwrite = false) => {
-    if (forceOverwrite) {
-      manuallyEditedRef.current.clear();
+  // Populate form fields instantly from the in-memory Track object (zero I/O).
+  // This is the "instant" phase used on every track load and navigation.
+  const seedFieldsFromTrack = useCallback((targetTrack: Track, forceOverwrite = false) => {
+    if (forceOverwrite) manuallyEditedRef.current.clear();
+
+    const ow = forceOverwrite;
+    const edited = manuallyEditedRef.current;
+    if (!edited.has('title') || ow) setTitle(targetTrack.title || '');
+    if (!edited.has('artist') || ow) setArtist(targetTrack.artist || '');
+    if (!edited.has('albumArtist') || ow) setAlbumArtist(targetTrack.albumArtist || '');
+    if (!edited.has('album') || ow) setAlbum(targetTrack.album || '');
+    if (!edited.has('composer') || ow) setComposer(targetTrack.composer || '');
+    if (!edited.has('publisher') || ow) setPublisher(targetTrack.publisher || '');
+    if (!edited.has('lyrics') || ow) setLyrics(targetTrack.lyrics || '');
+    if (!edited.has('genre') || ow) setGenre(targetTrack.genre || '');
+    if (!edited.has('mediaKind') || ow) setMediaKind(targetTrack.mediaKind || 'Music');
+    if (!edited.has('bpm') || ow) setBpm(targetTrack.bpm !== undefined ? String(targetTrack.bpm) : '');
+    if (!edited.has('format') || ow) setFormat(targetTrack.format || '');
+    if (!edited.has('year') || ow) setYear(targetTrack.year !== undefined ? String(targetTrack.year) : '');
+    if (!edited.has('trackNumber') || ow) setTrackNumber(targetTrack.trackNumber !== undefined ? String(targetTrack.trackNumber) : '');
+    if (!edited.has('trackTotal') || ow) setTrackTotal(targetTrack.trackTotal !== undefined ? String(targetTrack.trackTotal) : '');
+    if (!edited.has('discNumber') || ow) setDiscNumber(targetTrack.discNumber !== undefined ? String(targetTrack.discNumber) : '');
+    if (!edited.has('discTotal') || ow) setDiscTotal(targetTrack.discTotal !== undefined ? String(targetTrack.discTotal) : '');
+    if (!edited.has('comments') || ow) setComments(targetTrack.comments || '');
+    if (!edited.has('coverUrl') || ow) {
+      setCustomCoverUrl(targetTrack.coverUrl || '');
+      setArtworkChanged(false);
+      setArtworkRemoved(false);
     }
-
-    // The Get Info editor is intentionally sourced from the metadata embedded in the
-    // music file. Do not seed editable tag fields from the library's cached Track
-    // object; that cache may contain stale values from an earlier import/edit.
-    setTitle('');
-    setArtist('');
-    setAlbumArtist('');
-    setAlbum('');
-    setComposer('');
-    setPublisher('');
-    setLyrics('');
-    setGenre('');
-    setMediaKind('Music');
-    setBpm('');
-    setYear('');
-    setTrackNumber('');
-    setTrackTotal('');
-    setDiscNumber('');
-    setDiscTotal('');
-    setComments('');
-    setCustomCoverUrl('');
-    setArtworkChanged(false);
-    setArtworkRemoved(false);
-
     setBitrate(targetTrack.bitrate);
     setSampleRate(targetTrack.sampleRate);
     setSizeBytes(targetTrack.sizeBytes);
     setDuration(targetTrack.duration);
+  }, []);
 
-    // 2. Automatically retrieve and auto-fill ID3 tags from the underlying audio file / storage
+  // Async phase: refine fields with ID3 data read directly from the audio file.
+  // Called in the background after seedFieldsFromTrack so the UI is never blocked.
+  const refineWithID3 = useCallback(async (targetTrack: Track, forceOverwrite = false) => {
     setIsExtractingID3(true);
     setId3Status('extracting');
-    setId3TagInfo('Reading ID3 tags...');
+    setId3TagInfo('Verifying tags from file...');
 
     try {
       const extracted: ExtractedID3Tags = await extractID3TagsFromTrack(targetTrack, { fallbackToTrack: false });
-      // Lyrics are a known weak spot for browser-side ID3/MP4 parsers (USLT frame
-      // support is patchy). If the file parser returned nothing, fall back to the
-      // in-memory track value so previously-saved lyrics are not silently lost.
+      const ow = forceOverwrite;
+      const edited = manuallyEditedRef.current;
       let filledCount = 0;
 
-      if (extracted.title && (!manuallyEditedRef.current.has('title') || forceOverwrite)) {
-        setTitle(extracted.title);
-        filledCount++;
-      }
-      if (extracted.artist && (!manuallyEditedRef.current.has('artist') || forceOverwrite)) {
-        setArtist(extracted.artist);
-        filledCount++;
-      }
-      if (extracted.albumArtist && (!manuallyEditedRef.current.has('albumArtist') || forceOverwrite)) {
-        setAlbumArtist(extracted.albumArtist);
-        filledCount++;
-      }
-      if (extracted.album && (!manuallyEditedRef.current.has('album') || forceOverwrite)) {
-        setAlbum(extracted.album);
-        filledCount++;
-      }
-      if (extracted.composer && (!manuallyEditedRef.current.has('composer') || forceOverwrite)) {
-        setComposer(extracted.composer);
-        filledCount++;
-      }
-      if (extracted.publisher && (!manuallyEditedRef.current.has('publisher') || forceOverwrite)) {
-        setPublisher(extracted.publisher);
-        filledCount++;
-      }
+      if (extracted.title && (!edited.has('title') || ow)) { setTitle(extracted.title); filledCount++; }
+      if (extracted.artist && (!edited.has('artist') || ow)) { setArtist(extracted.artist); filledCount++; }
+      if (extracted.albumArtist && (!edited.has('albumArtist') || ow)) { setAlbumArtist(extracted.albumArtist); filledCount++; }
+      if (extracted.album && (!edited.has('album') || ow)) { setAlbum(extracted.album); filledCount++; }
+      if (extracted.composer && (!edited.has('composer') || ow)) { setComposer(extracted.composer); filledCount++; }
+      if (extracted.publisher && (!edited.has('publisher') || ow)) { setPublisher(extracted.publisher); filledCount++; }
       const resolvedLyrics = extracted.lyrics || targetTrack.lyrics || '';
-      if (resolvedLyrics && (!manuallyEditedRef.current.has('lyrics') || forceOverwrite)) {
-        setLyrics(resolvedLyrics);
-        filledCount++;
-      }
-      if (extracted.genre && (!manuallyEditedRef.current.has('genre') || forceOverwrite)) {
-        setGenre(extracted.genre);
-        filledCount++;
-      }
-      if (extracted.year !== undefined && (!manuallyEditedRef.current.has('year') || forceOverwrite)) {
-        setYear(String(extracted.year));
-        filledCount++;
-      }
-      if (extracted.trackNumber !== undefined && (!manuallyEditedRef.current.has('trackNumber') || forceOverwrite)) {
-        setTrackNumber(String(extracted.trackNumber));
-        filledCount++;
-      }
-      if (extracted.trackTotal !== undefined && (!manuallyEditedRef.current.has('trackTotal') || forceOverwrite)) {
-        setTrackTotal(String(extracted.trackTotal));
-        filledCount++;
-      }
-      if (extracted.discNumber !== undefined && (!manuallyEditedRef.current.has('discNumber') || forceOverwrite)) {
-        setDiscNumber(String(extracted.discNumber));
-        filledCount++;
-      }
-      if (extracted.discTotal !== undefined && (!manuallyEditedRef.current.has('discTotal') || forceOverwrite)) {
-        setDiscTotal(String(extracted.discTotal));
-        filledCount++;
-      }
-      if (extracted.bpm !== undefined && (!manuallyEditedRef.current.has('bpm') || forceOverwrite)) {
-        setBpm(String(extracted.bpm));
-        filledCount++;
-      }
-      if (extracted.mediaKind && (!manuallyEditedRef.current.has('mediaKind') || forceOverwrite)) {
-        setMediaKind(extracted.mediaKind);
-      }
-      if (extracted.format && (!manuallyEditedRef.current.has('format') || forceOverwrite)) {
-        setFormat(extracted.format);
-      }
-      if (extracted.comments && (!manuallyEditedRef.current.has('comments') || forceOverwrite)) {
-        setComments(extracted.comments);
-        filledCount++;
-      }
-      if (!manuallyEditedRef.current.has('coverUrl') || forceOverwrite) {
+      if (resolvedLyrics && (!edited.has('lyrics') || ow)) { setLyrics(resolvedLyrics); filledCount++; }
+      if (extracted.genre && (!edited.has('genre') || ow)) { setGenre(extracted.genre); filledCount++; }
+      if (extracted.year !== undefined && (!edited.has('year') || ow)) { setYear(String(extracted.year)); filledCount++; }
+      if (extracted.trackNumber !== undefined && (!edited.has('trackNumber') || ow)) { setTrackNumber(String(extracted.trackNumber)); filledCount++; }
+      if (extracted.trackTotal !== undefined && (!edited.has('trackTotal') || ow)) { setTrackTotal(String(extracted.trackTotal)); filledCount++; }
+      if (extracted.discNumber !== undefined && (!edited.has('discNumber') || ow)) { setDiscNumber(String(extracted.discNumber)); filledCount++; }
+      if (extracted.discTotal !== undefined && (!edited.has('discTotal') || ow)) { setDiscTotal(String(extracted.discTotal)); filledCount++; }
+      if (extracted.bpm !== undefined && (!edited.has('bpm') || ow)) { setBpm(String(extracted.bpm)); filledCount++; }
+      if (extracted.mediaKind && (!edited.has('mediaKind') || ow)) setMediaKind(extracted.mediaKind);
+      if (extracted.format && (!edited.has('format') || ow)) setFormat(extracted.format);
+      if (extracted.comments && (!edited.has('comments') || ow)) { setComments(extracted.comments); filledCount++; }
+      if (!edited.has('coverUrl') || ow) {
         setCustomCoverUrl(extracted.coverUrl || '');
         setArtworkChanged(false);
         setArtworkRemoved(false);
@@ -219,11 +190,11 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
       if (extracted.duration) setDuration(extracted.duration);
 
       setId3Status('success');
-      setId3TagInfo(`ID3 tags auto-filled (${filledCount} tags)`);
+      setId3TagInfo(`ID3 tags verified (${filledCount} tags)`);
     } catch (err) {
       console.warn('ID3 tag extraction error in GetInfoModal:', err);
       setId3Status('error');
-      setId3TagInfo('Could not read ID3 tags');
+      setId3TagInfo('Could not read ID3 tags from file');
     } finally {
       setIsExtractingID3(false);
     }
@@ -232,7 +203,11 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   useEffect(() => {
     if (isOpen && activeTracks.length > 0) {
       manuallyEditedRef.current.clear();
-      setActiveTab('info');
+      // Only reset the tab when the modal first opens; preserve it during prev/next navigation
+      if (!isNavigatingRef.current) {
+        setActiveTab('info');
+      }
+      isNavigatingRef.current = false;
       if (isMulti) {
         setTitle(getCommonString(t => t.title));
         setArtist(getCommonString(t => t.artist));
@@ -257,101 +232,148 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
         setId3Status('idle');
         setId3TagInfo('');
       } else {
-        loadTrackAndExtractID3(activeTracks[0], false);
+        // Phase 1: instantly populate from the cached Track object (synchronous, zero I/O)
+        seedFieldsFromTrack(activeTracks[0], false);
+        // Phase 2: refine in the background with ID3 data from the audio file
+        setId3Status('extracting');
+        setId3TagInfo('Verifying tags from file...');
+        refineWithID3(activeTracks[0], false);
       }
     } else {
       setId3Status('idle');
       setId3TagInfo('');
       manuallyEditedRef.current.clear();
     }
-  }, [isOpen, activeTracks, isMulti, getCommonString, getCommonNumber, loadTrackAndExtractID3]);
+  }, [isOpen, activeTracks, isMulti, getCommonString, getCommonNumber, seedFieldsFromTrack, refineWithID3]);
+
+  // Navigation initialization: runs when modal opens or the SOURCE track (prop) changes.
+  // Uses a ref to avoid re-running on internal nav state changes.
+  useEffect(() => {
+    if (!isOpen) {
+      setNavIndex(-1);
+      setInternalNavTrack(null);
+      navInitTrackIdRef.current = null;
+      isNavigatingRef.current = false;
+      return;
+    }
+    const trackId = track?.id ?? null;
+    if (trackId === navInitTrackIdRef.current) return; // same source track, already initialised
+    navInitTrackIdRef.current = trackId;
+    setInternalNavTrack(null); // reset any previous nav override
+
+    if (track && navigationTracks && navigationTracks.length > 1 && !isMulti) {
+      const idx = navigationTracks.findIndex(t => t.id === track.id);
+      setNavIndex(idx >= 0 ? idx : -1);
+    } else {
+      setNavIndex(-1);
+    }
+  }, [isOpen, track, navigationTracks, isMulti]);
 
   if (!isOpen || activeTracks.length === 0) return null;
 
+
+  // Shared save logic — does NOT close the modal (used by OK button and nav)
+  const performSave = async (): Promise<void> => {
+    if (isMulti) {
+      const hasTitle = manuallyEditedRef.current.has('title');
+      const hasArtist = manuallyEditedRef.current.has('artist');
+      const hasAlbumArtist = manuallyEditedRef.current.has('albumArtist');
+      const hasAlbum = manuallyEditedRef.current.has('album');
+      const hasComposer = manuallyEditedRef.current.has('composer');
+      const hasPublisher = manuallyEditedRef.current.has('publisher');
+      const hasGenre = manuallyEditedRef.current.has('genre');
+      const hasYear = manuallyEditedRef.current.has('year');
+      const hasBpm = manuallyEditedRef.current.has('bpm');
+      const hasDiscNumber = manuallyEditedRef.current.has('discNumber');
+      const hasDiscTotal = manuallyEditedRef.current.has('discTotal');
+      const hasTrackTotal = manuallyEditedRef.current.has('trackTotal');
+      const hasTrackNumber = manuallyEditedRef.current.has('trackNumber');
+      const hasComments = manuallyEditedRef.current.has('comments');
+      const hasMediaKind = manuallyEditedRef.current.has('mediaKind');
+
+      const updatedBatch: EditableTrack[] = activeTracks.map(t => ({
+        ...t,
+        title: hasTitle ? title.trim() : t.title,
+        artist: hasArtist ? artist.trim() : t.artist,
+        albumArtist: hasAlbumArtist ? albumArtist.trim() : t.albumArtist,
+        album: hasAlbum ? album.trim() : t.album,
+        composer: hasComposer ? composer.trim() : t.composer,
+        publisher: hasPublisher ? publisher.trim() : t.publisher,
+        genre: hasGenre ? genre.trim() : t.genre,
+        year: hasYear ? (year ? parseInt(year, 10) : undefined) : t.year,
+        bpm: hasBpm ? (bpm ? parseInt(bpm, 10) : undefined) : t.bpm,
+        discNumber: hasDiscNumber ? (discNumber ? parseInt(discNumber, 10) : undefined) : t.discNumber,
+        discTotal: hasDiscTotal ? (discTotal ? parseInt(discTotal, 10) : undefined) : t.discTotal,
+        trackTotal: hasTrackTotal ? (trackTotal ? parseInt(trackTotal, 10) : undefined) : t.trackTotal,
+        trackNumber: hasTrackNumber ? (trackNumber ? parseInt(trackNumber, 10) : undefined) : t.trackNumber,
+        comments: hasComments ? comments.trim() : t.comments,
+        mediaKind: hasMediaKind ? (mediaKind || 'Music') : t.mediaKind,
+        ...(artworkChanged ? {
+          coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
+          artworkDataUrl: artworkRemoved ? '' : (customCoverUrl || undefined),
+          artworkRemoved: artworkRemoved,
+        } : {}),
+      }));
+
+      if (onSaveTracks) {
+        await onSaveTracks(updatedBatch);
+      } else {
+        for (const item of updatedBatch) {
+          await onSaveTrack(item);
+        }
+      }
+    } else if (singleTrack) {
+      await onSaveTrack({
+        ...singleTrack,
+        title: title.trim(),
+        artist: artist.trim(),
+        albumArtist: albumArtist.trim(),
+        album: album.trim(),
+        composer: composer.trim(),
+        publisher: publisher.trim(),
+        lyrics: lyrics,
+        genre: genre.trim(),
+        mediaKind: mediaKind || 'Music',
+        bpm: bpm ? parseInt(bpm, 10) : undefined,
+        format: format.trim(),
+        year: year ? parseInt(year, 10) : undefined,
+        trackNumber: trackNumber ? parseInt(trackNumber, 10) : undefined,
+        trackTotal: trackTotal ? parseInt(trackTotal, 10) : undefined,
+        discNumber: discNumber ? parseInt(discNumber, 10) : undefined,
+        discTotal: discTotal ? parseInt(discTotal, 10) : undefined,
+        comments: comments.trim(),
+        coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
+        artworkDataUrl: artworkChanged ? (artworkRemoved ? '' : customCoverUrl) : undefined,
+        artworkRemoved: artworkChanged && artworkRemoved,
+        bitrate: bitrate || singleTrack.bitrate,
+        sampleRate: sampleRate || singleTrack.sampleRate,
+        sizeBytes: sizeBytes || singleTrack.sizeBytes,
+        duration: duration || singleTrack.duration,
+      });
+    }
+  };
+
   const handleSave = async () => {
     try {
-      if (isMulti) {
-        const hasTitle = manuallyEditedRef.current.has('title');
-        const hasArtist = manuallyEditedRef.current.has('artist');
-        const hasAlbumArtist = manuallyEditedRef.current.has('albumArtist');
-        const hasAlbum = manuallyEditedRef.current.has('album');
-        const hasComposer = manuallyEditedRef.current.has('composer');
-        const hasPublisher = manuallyEditedRef.current.has('publisher');
-        const hasGenre = manuallyEditedRef.current.has('genre');
-        const hasYear = manuallyEditedRef.current.has('year');
-        const hasBpm = manuallyEditedRef.current.has('bpm');
-        const hasDiscNumber = manuallyEditedRef.current.has('discNumber');
-        const hasDiscTotal = manuallyEditedRef.current.has('discTotal');
-        const hasTrackTotal = manuallyEditedRef.current.has('trackTotal');
-        const hasTrackNumber = manuallyEditedRef.current.has('trackNumber');
-        const hasComments = manuallyEditedRef.current.has('comments');
-        const hasMediaKind = manuallyEditedRef.current.has('mediaKind');
-
-        const updatedBatch: EditableTrack[] = activeTracks.map(t => ({
-          ...t,
-          title: hasTitle ? title.trim() : t.title,
-          artist: hasArtist ? artist.trim() : t.artist,
-          albumArtist: hasAlbumArtist ? albumArtist.trim() : t.albumArtist,
-          album: hasAlbum ? album.trim() : t.album,
-          composer: hasComposer ? composer.trim() : t.composer,
-          publisher: hasPublisher ? publisher.trim() : t.publisher,
-          genre: hasGenre ? genre.trim() : t.genre,
-          year: hasYear ? (year ? parseInt(year, 10) : undefined) : t.year,
-          bpm: hasBpm ? (bpm ? parseInt(bpm, 10) : undefined) : t.bpm,
-          discNumber: hasDiscNumber ? (discNumber ? parseInt(discNumber, 10) : undefined) : t.discNumber,
-          discTotal: hasDiscTotal ? (discTotal ? parseInt(discTotal, 10) : undefined) : t.discTotal,
-          trackTotal: hasTrackTotal ? (trackTotal ? parseInt(trackTotal, 10) : undefined) : t.trackTotal,
-          trackNumber: hasTrackNumber ? (trackNumber ? parseInt(trackNumber, 10) : undefined) : t.trackNumber,
-          comments: hasComments ? comments.trim() : t.comments,
-          mediaKind: hasMediaKind ? (mediaKind || 'Music') : t.mediaKind,
-          ...(artworkChanged ? {
-            coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
-            artworkDataUrl: artworkRemoved ? '' : (customCoverUrl || undefined),
-            artworkRemoved: artworkRemoved,
-          } : {}),
-        }));
-
-        if (onSaveTracks) {
-          await onSaveTracks(updatedBatch);
-        } else {
-          for (const item of updatedBatch) {
-            await onSaveTrack(item);
-          }
-        }
-      } else if (activeTracks[0]) {
-        const singleTrack = activeTracks[0];
-        await onSaveTrack({
-          ...singleTrack,
-          title: title.trim(),
-          artist: artist.trim(),
-          albumArtist: albumArtist.trim(),
-          album: album.trim(),
-          composer: composer.trim(),
-          publisher: publisher.trim(),
-          lyrics: lyrics,
-          genre: genre.trim(),
-          mediaKind: mediaKind || 'Music',
-          bpm: bpm ? parseInt(bpm, 10) : undefined,
-          format: format.trim(),
-          year: year ? parseInt(year, 10) : undefined,
-          trackNumber: trackNumber ? parseInt(trackNumber, 10) : undefined,
-          trackTotal: trackTotal ? parseInt(trackTotal, 10) : undefined,
-          discNumber: discNumber ? parseInt(discNumber, 10) : undefined,
-          discTotal: discTotal ? parseInt(discTotal, 10) : undefined,
-          comments: comments.trim(),
-          coverUrl: artworkRemoved ? undefined : (customCoverUrl || undefined),
-          artworkDataUrl: artworkChanged ? (artworkRemoved ? '' : customCoverUrl) : undefined,
-          artworkRemoved: artworkChanged && artworkRemoved,
-          bitrate: bitrate || singleTrack.bitrate,
-          sampleRate: sampleRate || singleTrack.sampleRate,
-          sizeBytes: sizeBytes || singleTrack.sizeBytes,
-          duration: duration || singleTrack.duration,
-        });
-      }
+      await performSave();
       onClose();
     } catch (err) {
       console.error('GetInfoModal save error:', err);
     }
+  };
+
+  // Navigate to adjacent track, auto-saving current edits first
+  const handleNavigate = async (direction: 'prev' | 'next') => {
+    if (!navigationTracks || navIndex < 0) return;
+    const newIdx = direction === 'prev' ? navIndex - 1 : navIndex + 1;
+    if (newIdx < 0 || newIdx >= navigationTracks.length) return;
+
+    // Fire-and-forget the save — don't block the UI while writing to disk
+    performSave().catch(err => console.error('GetInfoModal: error saving before navigation:', err));
+
+    isNavigatingRef.current = true;
+    setNavIndex(newIdx);
+    setInternalNavTrack(navigationTracks[newIdx]);
   };
 
   const handleArtworkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -380,10 +402,10 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   };
 
   const handleReExtractArtwork = async () => {
-    if (!track) return;
+    if (!singleTrack) return;
     setIsExtractingID3(true);
     try {
-      const tags = await extractID3TagsFromTrack(track, { fallbackToTrack: false });
+      const tags = await extractID3TagsFromTrack(singleTrack, { fallbackToTrack: false });
       setCustomCoverUrl(tags.coverUrl || '');
       setArtworkChanged(false);
       setArtworkRemoved(false);
@@ -393,6 +415,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
       setIsExtractingID3(false);
     }
   };
+
 
   const formatFileSize = (bytes?: number) => {
     if (!bytes) return 'Unknown size';
@@ -476,7 +499,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
             )}
 
             <button
-              onClick={() => track && loadTrackAndExtractID3(track, true)}
+              onClick={() => singleTrack && loadTrackAndExtractID3(singleTrack, true)}
               disabled={isExtractingID3}
               className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
                 isLight
@@ -723,7 +746,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                         : 'bg-[#181818] border-[#2c2c2c] text-gray-300'
                     }`}
                   >
-                    <span className="truncate font-medium">{format || track.format || 'MPEG audio'}</span>
+                    <span className="truncate font-medium">{format || singleTrack?.format || 'MPEG audio'}</span>
                     <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded uppercase tracking-wider ${
                       isLight ? 'bg-gray-200/80 text-gray-600' : 'bg-[#262626] text-gray-400'
                     }`}>
@@ -881,17 +904,26 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                   isLight ? 'border-gray-200' : 'border-white/10'
                 }`}
               >
-                <img
-                  src={customCoverUrl || track.coverUrl}
-                  alt={title || track.title}
-                  className="w-16 h-16 rounded-md object-cover shadow border border-white/10 bg-black/50 shrink-0"
-                />
+                {(customCoverUrl || singleTrack?.coverUrl) ? (
+                  <img
+                    src={customCoverUrl || singleTrack?.coverUrl}
+                    alt={title || singleTrack?.title}
+                    className="w-16 h-16 rounded-md object-cover shadow border border-white/10 bg-black/50 shrink-0"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                ) : (
+                  <div className={`w-16 h-16 rounded-md shadow border border-white/10 flex items-center justify-center shrink-0 ${
+                    isLight ? 'bg-gray-200' : 'bg-black/50'
+                  }`}>
+                    <Disc className={`w-7 h-7 ${isLight ? 'text-gray-400' : 'text-gray-600'}`} />
+                  </div>
+                )}
                 <div className="min-w-0">
                   <h3 className={`font-bold text-sm truncate ${isLight ? 'text-gray-900' : 'text-white'}`}>
-                    {title || track.title}
+                    {title || singleTrack?.title}
                   </h3>
                   <p className={`truncate text-xs ${isLight ? 'text-gray-600' : 'text-gray-300'}`}>
-                    {artist || track.artist} — {album || track.album}
+                    {artist || singleTrack?.artist} — {album || singleTrack?.album}
                   </p>
                   {composer && (
                     <p className={`truncate text-[11px] ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
@@ -905,29 +937,29 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
               <div className="grid grid-cols-2 gap-y-3 gap-x-4 pt-1 text-xs">
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Kind / Format</span>
-                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{format || track.format || 'MPEG audio file'}</span>
+                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{format || singleTrack?.format || 'MPEG audio file'}</span>
                 </div>
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Bit Rate</span>
-                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{bitrate || track.bitrate || 320} kbps</span>
+                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{bitrate || singleTrack?.bitrate || 320} kbps</span>
                 </div>
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Sample Rate</span>
                   <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>
-                    {sampleRate || track.sampleRate ? `${((sampleRate || track.sampleRate || 44100) / 1000).toFixed(1)} kHz` : '44.1 kHz'}
+                    {sampleRate || singleTrack?.sampleRate ? `${((sampleRate || singleTrack?.sampleRate || 44100) / 1000).toFixed(1)} kHz` : '44.1 kHz'}
                   </span>
                 </div>
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Size</span>
-                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{formatFileSize(sizeBytes || track.sizeBytes)}</span>
+                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{formatFileSize(sizeBytes || singleTrack?.sizeBytes)}</span>
                 </div>
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Duration</span>
-                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{formatDuration(duration || track.duration)}</span>
+                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{formatDuration(duration || singleTrack?.duration)}</span>
                 </div>
 
                 <div>
@@ -945,13 +977,13 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Plays</span>
-                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{track.playCount || 0} times</span>
+                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{singleTrack?.playCount || 0} times</span>
                 </div>
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Date Added</span>
                   <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>
-                    {track.dateAdded ? new Date(track.dateAdded).toLocaleDateString() : 'Today'}
+                    {singleTrack?.dateAdded ? new Date(singleTrack.dateAdded).toLocaleDateString() : 'Today'}
                   </span>
                 </div>
 
@@ -962,17 +994,18 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                   </span>
                 </div>
 
-                {track.filePath && (
+                {singleTrack?.filePath && (
                   <div className="col-span-2 pt-2 border-t border-white/5">
                     <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Location</span>
                     <span className={`break-all font-mono text-[10px] ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
-                      {track.filePath}
+                      {singleTrack.filePath}
                     </span>
                   </div>
                 )}
               </div>
             </div>
           )}
+
 
           {/* TAB 3: ARTWORK */}
           {activeTab === 'artwork' && (
@@ -981,8 +1014,10 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                 {customCoverUrl ? (
                   <img
                     src={customCoverUrl}
-                    alt={title || track.title}
+                    alt={title || singleTrack?.title}
                     className="w-full h-full object-cover"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    onLoad={(e) => { (e.target as HTMLImageElement).style.display = ''; }}
                   />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-gray-500 gap-2">
@@ -1049,9 +1084,40 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
           }`}
         >
           <div className="flex items-center gap-2">
+            {/* Prev / Next navigation — only shown for single-track mode with a navigation context */}
+            {!isMulti && navIndex >= 0 && navigationTracks && navigationTracks.length > 1 && (
+              <div className="flex items-center gap-0.5 mr-1">
+                <button
+                  type="button"
+                  onClick={() => handleNavigate('prev')}
+                  disabled={navIndex <= 0}
+                  className={`p-1.5 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                    isLight ? 'hover:bg-gray-300 text-gray-700' : 'hover:bg-[#333] text-gray-300'
+                  }`}
+                  title={navIndex > 0 ? `Previous: ${navigationTracks[navIndex - 1]?.title}` : 'No previous track'}
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className={`text-[10px] font-mono tabular-nums px-1 ${isLight ? 'text-gray-500' : 'text-gray-500'}`}>
+                  {navIndex + 1}/{navigationTracks.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleNavigate('next')}
+                  disabled={navIndex >= navigationTracks.length - 1}
+                  className={`p-1.5 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                    isLight ? 'hover:bg-gray-300 text-gray-700' : 'hover:bg-[#333] text-gray-300'
+                  }`}
+                  title={navIndex < navigationTracks.length - 1 ? `Next: ${navigationTracks[navIndex + 1]?.title}` : 'No next track'}
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             <button
               type="button"
-              onClick={() => track && loadTrackAndExtractID3(track, true)}
+              onClick={() => { if (singleTrack) { seedFieldsFromTrack(singleTrack, true); refineWithID3(singleTrack, true); } }}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 ${
                 isLight
                   ? 'bg-gray-200 hover:bg-gray-300 text-gray-700'
