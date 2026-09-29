@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+dist-electron/
+src-tauri/target/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+*.key
+*.key.pub
+src-tauri/*.key
+src-tauri/*.key.pub
+bun.lock
+bun.lockb

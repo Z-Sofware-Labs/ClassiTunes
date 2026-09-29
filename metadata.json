@@ -1,0 +1,6 @@
+{
+  "name": "ClassiTunes",
+  "description": "Local music player with classic iTunes UI, Cover Flow, Album Grid, List View, right-click context menu, drag-and-drop file organization, and playlist management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

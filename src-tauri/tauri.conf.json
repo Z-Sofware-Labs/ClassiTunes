@@ -1,0 +1,101 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ClassiTunes",
+  "version": "1.6.2",
+  "identifier": "com.classitunes.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:3000",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "ClassiTunes",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "resizable": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "publisher": "Z Software Labs",
+    "shortDescription": "ClassiTunes - Modern desktop audio player inspired by classic design",
+    "longDescription": "ClassiTunes is a high performance audio player and library manager built with modern web technologies and Rust.",
+    "copyright": "Copyright © 2026 Z Software Labs. All rights reserved.",
+    "category": "Music",
+    "targets": [
+      "nsis",
+      "msi",
+      "app",
+      "dmg",
+      "deb",
+      "rpm"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": null
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "desktop.template",
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgstreamer1.0-0",
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good"
+        ]
+      },
+      "rpm": {
+        "desktopTemplate": "desktop.template",
+        "depends": [
+          "webkit2gtk4.1",
+          "gstreamer1",
+          "gstreamer1-plugins-base",
+          "gstreamer1-plugins-good"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ3NDkyOTEwRkY0RTNEMTYKUldRV1BVNy9FQ2xKUndUaGlocDEvTWdZNnVmMFZkMGdVZ2VnMEpYOHpsaDlwcG5ZaWJoYVZPa00K",
+      "endpoints": [
+        "https://github.com/Z-Sofware-Labs/ClassiTunes/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

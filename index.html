@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/itunes-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <title>ClassiPlayer</title>
+    <script>
+      (function() {
+        try {
+          var settings = localStorage.getItem('classitunes_settings');
+          var pref = (settings && JSON.parse(settings).defaultTheme) || localStorage.getItem('itunes_theme') || 'system';
+          var isDark = false;
+          if (pref === 'dark') {
+            isDark = true;
+          } else if (pref === 'light') {
+            isDark = false;
+          } else {
+            // System mode: test media query for prefers-color-scheme: dark
+            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+              isDark = true;
+            } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+              isDark = false;
+            } else {
+              isDark = true; // Fallback only if browser cannot evaluate prefers-color-scheme
+            }
+          }
+          var theme = isDark ? 'dark' : 'light';
+          var bgColor = isDark ? '#121212' : '#f8fafc';
+          var textColor = isDark ? '#e5e5e5' : '#1e293b';
+          document.documentElement.style.backgroundColor = bgColor;
+          document.documentElement.style.colorScheme = theme;
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.classList.remove('light');
+          } else {
+            document.documentElement.classList.add('light');
+            document.documentElement.classList.remove('dark');
+          }
+          var style = document.createElement('style');
+          style.id = 'theme-bootstrap-style';
+          style.innerHTML = 'html, body { background-color: ' + bgColor + ' !important; color: ' + textColor + ' !important; }';
+          document.head.appendChild(style);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
