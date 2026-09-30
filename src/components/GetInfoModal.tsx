@@ -246,8 +246,8 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
     }
   }, [isOpen, activeTracks, isMulti, getCommonString, getCommonNumber, seedFieldsFromTrack, refineWithID3]);
 
-  // Navigation initialization: runs when modal opens or the SOURCE track (prop) changes.
-  // Uses a ref to avoid re-running on internal nav state changes.
+  // Navigation initialization: runs when modal opens, the SOURCE track (prop) changes,
+  // or navigationTracks changes (e.g. async library restore completing in production).
   useEffect(() => {
     if (!isOpen) {
       setNavIndex(-1);
@@ -257,10 +257,19 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
       return;
     }
     const trackId = track?.id ?? null;
-    if (trackId === navInitTrackIdRef.current) return; // same source track, already initialised
-    navInitTrackIdRef.current = trackId;
-    setInternalNavTrack(null); // reset any previous nav override
+    const isNewSourceTrack = trackId !== navInitTrackIdRef.current;
 
+    // Only reset the internal nav override when the SOURCE track itself changes.
+    // This prevents flickering when the user navigates via prev/next (which updates
+    // navIndex + internalNavTrack but keeps the original `track` prop the same).
+    if (isNewSourceTrack) {
+      navInitTrackIdRef.current = trackId;
+      setInternalNavTrack(null);
+    }
+
+    // Always recalculate navIndex — even if the source track hasn't changed —
+    // because navigationTracks may be populated asynchronously (e.g. IndexedDB
+    // restore completing after the modal is already open in production builds).
     if (track && navigationTracks && navigationTracks.length > 1 && !isMulti) {
       const idx = navigationTracks.findIndex(t => t.id === track.id);
       setNavIndex(idx >= 0 ? idx : -1);
