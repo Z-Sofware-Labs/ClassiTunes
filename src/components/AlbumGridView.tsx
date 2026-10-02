@@ -80,9 +80,11 @@ const AlbumCard = React.memo<{
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
+  const albumKey = (album.name || '').trim().toLowerCase();
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
     if (album.coverUrl) return album.coverUrl;
     if (artworkCache.has(album.id)) return artworkCache.get(album.id)!;
+    if (albumKey && artworkCache.has(albumKey)) return artworkCache.get(albumKey)!;
     return null;
   });
   const [imgError, setImgError] = useState(false);
@@ -98,16 +100,25 @@ const AlbumCard = React.memo<{
       setCoverUrl(artworkCache.get(album.id)!);
       return;
     }
-
-    let isMounted = true;
-    const firstTrack = album.tracks[0];
-    if (!firstTrack) return;
-
-    if (firstTrack.coverUrl) {
-      artworkCache.set(album.id, firstTrack.coverUrl);
-      if (isMounted) setCoverUrl(firstTrack.coverUrl);
+    if (albumKey && artworkCache.has(albumKey)) {
+      const cached = artworkCache.get(albumKey)!;
+      artworkCache.set(album.id, cached);
+      setCoverUrl(cached);
       return;
     }
+
+    let isMounted = true;
+    // Check if ANY track in the album already has a coverUrl
+    const trackWithArt = album.tracks.find(t => !!t.coverUrl);
+    if (trackWithArt && trackWithArt.coverUrl) {
+      artworkCache.set(album.id, trackWithArt.coverUrl);
+      if (albumKey) artworkCache.set(albumKey, trackWithArt.coverUrl);
+      if (isMounted) setCoverUrl(trackWithArt.coverUrl);
+      return;
+    }
+
+    const firstTrack = album.tracks[0];
+    if (!firstTrack) return;
 
     // Lazy load from IndexedDB or native metadata
     getMediaFile(`cover_${firstTrack.id}`).then((blob) => {
@@ -115,12 +126,14 @@ const AlbumCard = React.memo<{
       if (blob) {
         const url = URL.createObjectURL(blob);
         artworkCache.set(album.id, url);
+        if (albumKey) artworkCache.set(albumKey, url);
         setCoverUrl(url);
       } else if (isTauri() && firstTrack.filePath) {
         readTauriMusicMetadata(firstTrack.filePath).then((meta) => {
           if (!isMounted) return;
           if (meta?.coverUrl) {
             artworkCache.set(album.id, meta.coverUrl);
+            if (albumKey) artworkCache.set(albumKey, meta.coverUrl);
             setCoverUrl(meta.coverUrl);
           }
         }).catch(() => {});
@@ -130,7 +143,7 @@ const AlbumCard = React.memo<{
     return () => {
       isMounted = false;
     };
-  }, [album.id, album.tracks, coverUrl, isVisible]);
+  }, [album.id, album.name, albumKey, album.tracks, coverUrl, isVisible]);
 
   return (
     <div

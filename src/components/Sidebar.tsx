@@ -5,8 +5,8 @@ import {
   Play, Pause, Maximize2, Info, Image as ImageIcon, X, Sparkles, Sliders, Edit2
 } from 'lucide-react';
 import { Playlist, Track } from '../types';
-import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory } from '../utils/tauriWindow';
-import { getCachedArtwork } from '../services/mediaStorage';
+import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory, readTauriMusicMetadata } from '../utils/tauriWindow';
+import { getCachedArtwork, getMediaFile, setCachedArtwork } from '../services/mediaStorage';
 
 interface SidebarProps {
   playlists: Playlist[];
@@ -165,8 +165,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
       img.src = resolvedCoverUrl;
     } else if (!displayTrack) {
       setActiveCoverUrl(undefined);
+    } else if (!resolvedCoverUrl && displayTrack) {
+      let isMounted = true;
+      getMediaFile(`cover_${displayTrack.id}`).then((blob) => {
+        if (!isMounted) return;
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          setCachedArtwork(displayTrack.id, url);
+          if (albumKey) setCachedArtwork(albumKey, url);
+          setActiveCoverUrl(url);
+        } else if (isTauri() && displayTrack.filePath) {
+          readTauriMusicMetadata(displayTrack.filePath).then((meta) => {
+            if (!isMounted) return;
+            if (meta?.coverUrl) {
+              setCachedArtwork(displayTrack.id, meta.coverUrl);
+              if (albumKey) setCachedArtwork(albumKey, meta.coverUrl);
+              setActiveCoverUrl(meta.coverUrl);
+            }
+          }).catch(() => {});
+        }
+      }).catch(() => {});
+
+      return () => {
+        isMounted = false;
+      };
     }
-  }, [resolvedCoverUrl, displayTrack]);
+  }, [resolvedCoverUrl, displayTrack, activeCoverUrl, albumKey]);
 
   const displayCoverUrl = resolvedCoverUrl || activeCoverUrl;
 
@@ -844,7 +868,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             left: `${Math.min(sidebarContextMenu.x, window.innerWidth - 200)}px`,
             top: `${Math.min(sidebarContextMenu.y, window.innerHeight - 240)}px`,
           }}
-          className={`fixed z-50 w-52 rounded-lg shadow-2xl border py-1.5 text-xs select-none animate-in fade-in zoom-in-95 duration-100 ${
+          className={`fixed z-50 w-52 rounded-lg shadow-2xl border py-1.5 text-xs select-none ${
             isLight
               ? 'bg-white/95 backdrop-blur-md border-gray-300 text-gray-800 shadow-[0_10px_25px_rgba(0,0,0,0.15)]'
               : 'bg-[#1e1e1e]/95 backdrop-blur-md border-[#3a3a3a] text-gray-200 shadow-[0_10px_30px_rgba(0,0,0,0.6)]'

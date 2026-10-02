@@ -347,6 +347,30 @@ fn parse_year_string(s: &str) -> Option<i32> {
     None
 }
 
+fn detect_image_mime(data: &[u8], fallback: &str) -> &'static str {
+    if data.len() >= 8 && data[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+        "image/png"
+    } else if data.len() >= 3 && data[0..3] == [0xFF, 0xD8, 0xFF] {
+        "image/jpeg"
+    } else if data.len() >= 6 && (&data[0..6] == b"GIF87a" || &data[0..6] == b"GIF89a") {
+        "image/gif"
+    } else if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        "image/webp"
+    } else if data.len() >= 2 && data[0..2] == [0x42, 0x4D] {
+        "image/bmp"
+    } else if fallback.is_empty() {
+        "image/jpeg"
+    } else {
+        match fallback {
+            "image/png" | "png" => "image/png",
+            "image/gif" | "gif" => "image/gif",
+            "image/webp" | "webp" => "image/webp",
+            "image/bmp" | "bmp" => "image/bmp",
+            _ => "image/jpeg",
+        }
+    }
+}
+
 fn is_mp4_file(path: &std::path::Path, ext: &str) -> bool {
     if matches!(ext, "m4a" | "mp4" | "m4b" | "m4p" | "m4r" | "alac") {
         return true;
@@ -445,12 +469,13 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
             if let Some(cmt) = tag.comment() {
                 res.comments = Some(cmt.to_string());
             }
-            if let Some(art) = tag.artwork() {
-                let mime = match art.fmt {
+            if let Some(art) = tag.artwork().or_else(|| tag.artworks().next()) {
+                let fallback = match art.fmt {
                     mp4ameta::ImgFmt::Png => "image/png",
+                    mp4ameta::ImgFmt::Bmp => "image/bmp",
                     mp4ameta::ImgFmt::Jpeg => "image/jpeg",
-                    _ => "image/jpeg",
                 };
+                let mime = detect_image_mime(art.data, fallback);
                 let b64 = encode_base64(art.data);
                 res.cover_url = Some(format!("data:{mime};base64,{b64}"));
             }
@@ -462,7 +487,7 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
     }
 
     // 2. Try ID3 tag (for MP3, FLAC with ID3, AAC, WAV)
-    if !is_mp4 || res.title.is_none() {
+    if !is_mp4 || res.title.is_none() || res.cover_url.is_none() {
         if let Ok(tag) = id3::Tag::read_from_path(&file_path) {
             if res.title.is_none() { res.title = tag.title().map(|s| s.to_string()); }
             if res.artist.is_none() { res.artist = tag.artist().map(|s| s.to_string()); }
@@ -496,9 +521,10 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                 let pic_opt = tag
                     .pictures()
                     .find(|p| p.picture_type == id3::frame::PictureType::CoverFront)
+                    .or_else(|| tag.pictures().find(|p| p.picture_type == id3::frame::PictureType::Other))
                     .or_else(|| tag.pictures().next());
                 if let Some(pic) = pic_opt {
-                    let mime = if pic.mime_type.is_empty() { "image/jpeg" } else { &pic.mime_type };
+                    let mime = detect_image_mime(&pic.data, &pic.mime_type);
                     let b64 = encode_base64(&pic.data);
                     res.cover_url = Some(format!("data:{mime};base64,{b64}"));
                 }
@@ -578,11 +604,13 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                         .pictures()
                         .iter()
                         .find(|p| p.pic_type() == lofty::picture::PictureType::CoverFront)
+                        .or_else(|| tag.pictures().iter().find(|p| p.pic_type() == lofty::picture::PictureType::Other))
                         .or_else(|| tag.pictures().first());
                     if let Some(pic) = pic_opt {
-                        let mime_str = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
+                        let fallback_mime = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
+                        let mime = detect_image_mime(pic.data(), fallback_mime);
                         let b64 = encode_base64(pic.data());
-                        res.cover_url = Some(format!("data:{mime_str};base64,{b64}"));
+                        res.cover_url = Some(format!("data:{mime};base64,{b64}"));
                     }
                 }
             }

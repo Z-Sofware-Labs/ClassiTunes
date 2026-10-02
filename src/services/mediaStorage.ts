@@ -1,4 +1,5 @@
 // IndexedDB storage service to persist imported audio files, album artwork, and track metadata across restarts
+import { readTauriMusicMetadata } from '../utils/tauriWindow';
 
 const DB_NAME = 'classitunes_media_db';
 const DB_VERSION = 2;
@@ -243,7 +244,6 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
       }
     } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauri && track.filePath) {
       try {
-        const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
         const meta = await readTauriMusicMetadata(track.filePath);
         if (meta?.coverUrl) {
           if (meta.coverUrl.startsWith('data:')) {

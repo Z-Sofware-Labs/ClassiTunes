@@ -90,6 +90,9 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
   // Track fields that the user has manually typed in this modal session
   const manuallyEditedRef = React.useRef<Set<string>>(new Set());
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<'prev' | 'next' | null>(null);
 
   // Helper to extract common string/number across multiple tracks
   const getCommonString = useCallback((getter: (t: Track) => string | undefined): string => {
@@ -109,13 +112,20 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   // Helper to mark a field as manually edited by user
   const handleFieldChange = (fieldName: string, setter: (val: string) => void, val: string) => {
     manuallyEditedRef.current.add(fieldName);
+    setIsDirty(true);
     setter(val);
   };
 
+  // Track ID of currently loaded track to prevent race conditions
+  const currentTrackIdRef = React.useRef<string | null>(null);
+
   // Populate form fields instantly from the in-memory Track object (zero I/O).
-  // This is the "instant" phase used on every track load and navigation.
-  const seedFieldsFromTrack = useCallback((targetTrack: Track, forceOverwrite = false) => {
-    if (forceOverwrite) manuallyEditedRef.current.clear();
+  // In single track navigation, we MUST overwrite cleanly so previous song tags never bleed over.
+  const seedFieldsFromTrack = useCallback((targetTrack: Track, forceOverwrite = true) => {
+    if (forceOverwrite) {
+      manuallyEditedRef.current.clear();
+      setIsDirty(false);
+    }
 
     const ow = forceOverwrite;
     const edited = manuallyEditedRef.current;
@@ -148,14 +158,21 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   }, []);
 
   // Async phase: refine fields with ID3 data read directly from the audio file.
-  // Called in the background after seedFieldsFromTrack so the UI is never blocked.
+  // Guards against cross-track pollution by verifying track ID before applying tags.
   const refineWithID3 = useCallback(async (targetTrack: Track, forceOverwrite = false) => {
+    const trackIdForThisRequest = targetTrack.id;
     setIsExtractingID3(true);
     setId3Status('extracting');
     setId3TagInfo('Verifying tags from file...');
 
     try {
       const extracted: ExtractedID3Tags = await extractID3TagsFromTrack(targetTrack, { fallbackToTrack: false });
+      
+      // If user navigated away while ID3 was extracting, DO NOT touch state!
+      if (currentTrackIdRef.current !== trackIdForThisRequest) {
+        return;
+      }
+
       const ow = forceOverwrite;
       const edited = manuallyEditedRef.current;
       let filledCount = 0;
@@ -192,23 +209,32 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
       setId3Status('success');
       setId3TagInfo(`ID3 tags verified (${filledCount} tags)`);
     } catch (err) {
-      console.warn('ID3 tag extraction error in GetInfoModal:', err);
-      setId3Status('error');
-      setId3TagInfo('Could not read ID3 tags from file');
+      if (currentTrackIdRef.current === trackIdForThisRequest) {
+        console.warn('ID3 tag extraction error in GetInfoModal:', err);
+        setId3Status('error');
+        setId3TagInfo('Could not read ID3 tags from file');
+      }
     } finally {
-      setIsExtractingID3(false);
+      if (currentTrackIdRef.current === trackIdForThisRequest) {
+        setIsExtractingID3(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     if (isOpen && activeTracks.length > 0) {
-      manuallyEditedRef.current.clear();
-      // Only reset the tab when the modal first opens; preserve it during prev/next navigation
+      const activeId = activeTracks[0]?.id || null;
+      const isDifferentTrack = activeId !== currentTrackIdRef.current;
+      currentTrackIdRef.current = activeId;
+
       if (!isNavigatingRef.current) {
         setActiveTab('info');
       }
       isNavigatingRef.current = false;
+
       if (isMulti) {
+        manuallyEditedRef.current.clear();
+        setIsDirty(false);
         setTitle(getCommonString(t => t.title));
         setArtist(getCommonString(t => t.artist));
         setAlbumArtist(getCommonString(t => t.albumArtist));
@@ -232,17 +258,18 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
         setId3Status('idle');
         setId3TagInfo('');
       } else {
-        // Phase 1: instantly populate from the cached Track object (synchronous, zero I/O)
-        seedFieldsFromTrack(activeTracks[0], false);
-        // Phase 2: refine in the background with ID3 data from the audio file
+        // If loading a new track, ALWAYS force overwrite all form state cleanly
+        seedFieldsFromTrack(activeTracks[0], true);
         setId3Status('extracting');
         setId3TagInfo('Verifying tags from file...');
         refineWithID3(activeTracks[0], false);
       }
     } else {
+      currentTrackIdRef.current = null;
       setId3Status('idle');
       setId3TagInfo('');
       manuallyEditedRef.current.clear();
+      setIsDirty(false);
     }
   }, [isOpen, activeTracks, isMulti, getCommonString, getCommonNumber, seedFieldsFromTrack, refineWithID3]);
 
@@ -362,27 +389,92 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
     }
   };
 
-  const handleSave = async () => {
+  // Apply: save current edits, reset dirty state, and keep modal open
+  const handleApply = async () => {
+    setIsSaving(true);
     try {
       await performSave();
-      onClose();
+      setIsDirty(false);
+      manuallyEditedRef.current.clear();
+      setArtworkChanged(false);
     } catch (err) {
-      console.error('GetInfoModal save error:', err);
+      console.error('GetInfoModal apply error:', err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  // Navigate to adjacent track, auto-saving current edits first
-  const handleNavigate = async (direction: 'prev' | 'next') => {
+  // OK: save changes (if dirty) and close modal
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      if (isDirty) {
+        await performSave();
+      }
+      onClose();
+    } catch (err) {
+      console.error('GetInfoModal save error:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Cancel: close modal without saving
+  const handleCancel = () => {
+    onClose();
+  };
+
+  // Navigate directly to direction ('prev' | 'next') without saving
+  const navigateTo = (direction: 'prev' | 'next') => {
     if (!navigationTracks || navIndex < 0) return;
     const newIdx = direction === 'prev' ? navIndex - 1 : navIndex + 1;
     if (newIdx < 0 || newIdx >= navigationTracks.length) return;
 
-    // Fire-and-forget the save — don't block the UI while writing to disk
-    performSave().catch(err => console.error('GetInfoModal: error saving before navigation:', err));
-
     isNavigatingRef.current = true;
     setNavIndex(newIdx);
     setInternalNavTrack(navigationTracks[newIdx]);
+    setPendingNavigation(null);
+  };
+
+  // Navigation button click: if dirty, prompt first; otherwise navigate immediately
+  const handleNavigate = (direction: 'prev' | 'next') => {
+    if (!navigationTracks || navIndex < 0) return;
+    const newIdx = direction === 'prev' ? navIndex - 1 : navIndex + 1;
+    if (newIdx < 0 || newIdx >= navigationTracks.length) return;
+
+    if (isDirty) {
+      setPendingNavigation(direction);
+    } else {
+      navigateTo(direction);
+    }
+  };
+
+  // User confirmed "Apply & Continue" from prompt
+  const handlePromptApplyAndNavigate = async () => {
+    if (!pendingNavigation) return;
+    setIsSaving(true);
+    try {
+      await performSave();
+      setIsDirty(false);
+      manuallyEditedRef.current.clear();
+      setArtworkChanged(false);
+      navigateTo(pendingNavigation);
+    } catch (err) {
+      console.error('GetInfoModal error applying before navigate:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // User chose "Don't Save" from prompt
+  const handlePromptDiscardAndNavigate = () => {
+    if (!pendingNavigation) return;
+    navigateTo(pendingNavigation);
+  };
+
+  // User cancelled navigation prompt
+  const handlePromptCancel = () => {
+    setPendingNavigation(null);
   };
 
   const handleArtworkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -402,6 +494,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
       setCustomCoverUrl(dataUrl);
       setArtworkChanged(true);
       setArtworkRemoved(false);
+      setIsDirty(true);
     } catch (error) {
       console.error('Could not read selected artwork:', error);
       window.alert('Could not read the selected image.');
@@ -418,6 +511,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
       setCustomCoverUrl(tags.coverUrl || '');
       setArtworkChanged(false);
       setArtworkRemoved(false);
+      setIsDirty(true);
     } catch (e) {
       console.warn('Failed to extract artwork:', e);
     } finally {
@@ -508,7 +602,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
             )}
 
             <button
-              onClick={() => singleTrack && loadTrackAndExtractID3(singleTrack, true)}
+              onClick={() => singleTrack && refineWithID3(singleTrack, true)}
               disabled={isExtractingID3}
               className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
                 isLight
@@ -1068,7 +1162,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
                 {customCoverUrl && (
                   <button
-                    onClick={() => { setCustomCoverUrl(''); setArtworkChanged(true); setArtworkRemoved(true); }}
+                    onClick={() => { setCustomCoverUrl(''); setArtworkChanged(true); setArtworkRemoved(true); setIsDirty(true); }}
                     className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors border shadow-sm ${
                       isLight
                         ? 'bg-red-50 border-red-200 text-red-700 hover:bg-red-100'
@@ -1141,7 +1235,8 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={onClose}
+              type="button"
+              onClick={handleCancel}
               className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors border shadow-sm ${
                 isLight
                   ? 'bg-white border-gray-300 text-gray-700 hover:bg-gray-100'
@@ -1151,14 +1246,86 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
               Cancel
             </button>
             <button
+              type="button"
+              onClick={handleApply}
+              disabled={!isDirty || isSaving}
+              className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors border shadow-sm ${
+                !isDirty || isSaving
+                  ? isLight
+                    ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
+                    : 'bg-[#202020] border-[#333] text-gray-600 cursor-not-allowed'
+                  : isLight
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
+                  : 'bg-indigo-950/60 border-indigo-700 text-indigo-300 hover:bg-indigo-900/60'
+              }`}
+              title={isDirty ? 'Save changes without closing' : 'No changes to apply'}
+            >
+              {isSaving && !pendingNavigation ? 'Applying...' : 'Apply'}
+            </button>
+            <button
+              type="button"
               onClick={handleSave}
-              className="px-5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-bold shadow-md transition-colors flex items-center gap-1.5"
+              disabled={isSaving}
+              className="px-5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-bold shadow-md transition-colors flex items-center gap-1.5 disabled:opacity-50"
             >
               OK
             </button>
           </div>
         </div>
       </div>
+
+      {/* Unsaved Changes Confirmation Prompt for Navigation */}
+      {pendingNavigation && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-100">
+          <div
+            className={`w-full max-w-sm rounded-xl border shadow-2xl p-5 ${
+              isLight ? 'bg-white border-gray-300 text-gray-900' : 'bg-[#222] border-[#3d3d3d] text-gray-100'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-full bg-amber-500/10 text-amber-500 shrink-0">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold mb-1">Unsaved Changes</h4>
+                <p className={`text-xs leading-5 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
+                  You have unsaved changes to this song. Do you want to apply them before navigating to the {pendingNavigation === 'prev' ? 'previous' : 'next'} song?
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handlePromptCancel}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                  isLight ? 'border-gray-300 hover:bg-gray-100 text-gray-700' : 'border-[#444] hover:bg-[#2c2c2c] text-gray-300'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handlePromptDiscardAndNavigate}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                  isLight ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-red-900/50 text-red-400 hover:bg-red-950/40'
+                }`}
+              >
+                Don't Save
+              </button>
+              <button
+                type="button"
+                onClick={handlePromptApplyAndNavigate}
+                disabled={isSaving}
+                className="px-3.5 py-1.5 rounded-md text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+              >
+                {isSaving ? 'Applying...' : 'Apply & Continue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

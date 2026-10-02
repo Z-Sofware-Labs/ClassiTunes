@@ -406,7 +406,7 @@ const TrackRow = React.memo<TrackRowProps>(({
         {isMenuOpen && (
           <div 
             onClick={(e) => e.stopPropagation()}
-            className={`absolute right-2 top-8 z-50 w-44 rounded-md shadow-2xl border py-1 text-left text-xs font-normal animate-in fade-in zoom-in-95 duration-100 ${
+            className={`absolute right-2 bottom-full mb-1 sm:bottom-auto sm:top-8 z-50 w-44 rounded-md shadow-2xl border py-1 text-left text-xs font-normal ${
               isLight
                 ? 'bg-white border-gray-200 text-gray-800 shadow-xl'
                 : 'bg-[#222222] border-[#3a3a3a] text-gray-200 shadow-2xl'
@@ -598,6 +598,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     };
 
     setContainerHeight(el.clientHeight || 600);
+    setScrollTop(el.scrollTop || 0);
     el.addEventListener('scroll', handleScroll, { passive: true });
 
     const observer = new ResizeObserver((entries) => {
@@ -614,7 +615,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         cancelAnimationFrame(rafScrollRef.current);
       }
     };
-  }, []);
+  }, [tracks.length > 0]); // Re-attach properly whenever switching between 0 tracks (empty state) and >0 tracks (table mounted)
 
   // Keyboard shortcut for CTRL+A (Select All) and Delete / Backspace (Clear/Delete selected tracks)
   useEffect(() => {
@@ -1193,6 +1194,12 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         ref={tableContainerRef}
         className="flex-1 overflow-auto custom-scrollbar relative"
         onMouseDown={handleContainerMouseDown}
+        onScroll={(e) => {
+          const target = e.currentTarget;
+          if (target) {
+            setScrollTop(target.scrollTop);
+          }
+        }}
         // On Linux/WebKitGTK, explicitly promoting the scroll container to its own
         // compositor layer avoids the browser having to repaint the full-page layer
         // on every scroll event. transform: translateZ(0) ensures hardware rasterization.

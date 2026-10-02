@@ -19,9 +19,9 @@ import { UpdateModal } from './components/UpdateModal';
 import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, logToFile } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
-import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork } from './services/mediaStorage';
+import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
 export default function App() {
@@ -1627,6 +1627,20 @@ export default function App() {
             const finalCoverUrl = nativeMeta?.coverUrl || '';
             const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+            if (finalCoverUrl) {
+              setCachedArtwork(trackId, finalCoverUrl);
+              const albumKey = finalAlbum.trim().toLowerCase();
+              if (albumKey && !getCachedArtwork(albumKey)) {
+                setCachedArtwork(albumKey, finalCoverUrl);
+              }
+              if (finalCoverUrl.startsWith('data:')) {
+                const blob = dataURLtoBlob(finalCoverUrl);
+                if (blob) {
+                  saveMediaFile(`cover_${trackId}`, blob).catch(() => {});
+                }
+              }
+            }
+
             let objectUrl = '';
             try {
               objectUrl = convertFileSrc ? convertFileSrc(path) : path;
@@ -1871,7 +1885,6 @@ export default function App() {
       }
     });
 
-    const { batchStatFiles, readTauriMusicMetadataBatch } = await import('./utils/tauriWindow');
     const newPathsToImport: string[] = [];
     const modifiedTracksToUpdate: { path: string; existingTrack: Track }[] = [];
 
@@ -2439,6 +2452,7 @@ export default function App() {
       <GetInfoModal
         track={editingTracks?.[0] || null}
         tracks={editingTracks}
+        navigationTracks={displayTracks}
         isOpen={!!editingTracks && editingTracks.length > 0}
         onClose={() => setEditingTracks(null)}
         onSaveTrack={handleSaveTrack}

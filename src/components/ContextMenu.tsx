@@ -73,17 +73,42 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     };
   }, [contextMenu, onClose]);
 
+  const getClampedCoords = (x: number, y: number) => {
+    const el = menuRef.current;
+    const width = el?.offsetWidth || 224;
+    const height = el?.offsetHeight || 380;
+    const padding = 12;
+    const bottomReserved = 32; // bottom status bar height
+
+    let newX = x;
+    let newY = y;
+
+    if (newX + width > window.innerWidth - padding) {
+      newX = Math.max(padding, window.innerWidth - width - padding);
+    }
+    if (newY + height > window.innerHeight - bottomReserved - padding) {
+      newY = Math.max(padding, window.innerHeight - bottomReserved - height - padding);
+    }
+
+    return { left: newX, top: newY };
+  };
+
+  const [coords, setCoords] = React.useState<{ left: number; top: number } | null>(() => {
+    if (!contextMenu) return null;
+    return getClampedCoords(contextMenu.x, contextMenu.y);
+  });
+
+  React.useLayoutEffect(() => {
+    if (!contextMenu) return;
+    setCoords(getClampedCoords(contextMenu.x, contextMenu.y));
+  }, [contextMenu]);
+
   if (!contextMenu) return null;
 
-  const { x, y, track } = contextMenu;
+  const currentCoords = coords || getClampedCoords(contextMenu.x, contextMenu.y);
+  const { track } = contextMenu;
   const isCurrentPlayingThis = currentTrack?.id === track.id && isPlaying;
   const userPlaylists = playlists.filter(p => !p.systemType || p.systemType === 'user');
-
-  // Adjust menu position to keep within screen bounds
-  const menuWidth = 220;
-  const menuHeight = 320;
-  const adjustedX = Math.min(x, window.innerWidth - menuWidth - 10);
-  const adjustedY = Math.min(y, window.innerHeight - menuHeight - 10);
 
   const handleCopyDetails = () => {
     const text = `${track.title} by ${track.artist} (${track.album})`;
@@ -94,8 +119,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   return (
     <div
       ref={menuRef}
-      style={{ left: `${adjustedX}px`, top: `${adjustedY}px` }}
-      className={`fixed z-50 w-56 rounded-lg shadow-2xl border py-1.5 text-xs select-none animate-in fade-in zoom-in-95 duration-100 ${
+      style={{ left: `${currentCoords.left}px`, top: `${currentCoords.top}px` }}
+      className={`fixed z-50 w-56 rounded-lg shadow-2xl border py-1.5 text-xs select-none ${
         isLight
           ? 'bg-white/95 backdrop-blur-md border-gray-300 text-gray-800 shadow-[0_10px_25px_rgba(0,0,0,0.15)]'
           : 'bg-[#1e1e1e]/95 backdrop-blur-md border-[#3a3a3a] text-gray-200 shadow-[0_10px_30px_rgba(0,0,0,0.6)]'

@@ -1417,7 +1417,6 @@ export async function extractID3TagsFromTrack(track: Track, options: { fallbackT
     const isTauri = typeof window !== 'undefined' && !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__);
     if (isTauri) {
       try {
-        const { readTauriMusicMetadata } = await import('../utils/tauriWindow');
         const nativeTags = await readTauriMusicMetadata(track.filePath);
         if (nativeTags && (nativeTags.title || nativeTags.artist || nativeTags.album || nativeTags.duration)) {
           return {
