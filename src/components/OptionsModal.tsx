@@ -11,7 +11,6 @@ export interface AppSettings {
   crossfadeEnabled: boolean;
   crossfadeSeconds: number;
   audioNormalization: boolean;
-  performanceDiagnostics: boolean;
   defaultTheme: ThemePreference;
 }
 
@@ -33,7 +32,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   crossfadeEnabled: false,
   crossfadeSeconds: 5,
   audioNormalization: false,
-  performanceDiagnostics: true,
   defaultTheme: 'system',
 };
 
@@ -380,25 +378,6 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
             </div>
           </section>
 
-          <section>
-            <h3 className="text-[11px] text-gray-500 font-bold uppercase tracking-wider mb-2">Diagnostics</h3>
-            <div className={`rounded-lg border p-3 ${isLight ? 'bg-white border-gray-300' : 'bg-[#202020] border-[#333]'}`}>
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={draft.performanceDiagnostics}
-                  onChange={e => update('performanceDiagnostics', e.target.checked)}
-                  className="mt-0.5 accent-blue-600"
-                />
-                <span>
-                  <span className="block font-semibold">Measure slow operations</span>
-                  <span className={`block text-[10px] mt-0.5 leading-relaxed ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
-                    Logs slow UI commits when supported and main-thread tasks taking 50 ms or longer, plus periodic JavaScript heap samples when available. Reports are grouped to limit logging overhead.
-                  </span>
-                </span>
-              </label>
-            </div>
-          </section>
         </div>
 
         <div className={`px-4 py-3 border-t flex justify-end gap-2 ${isLight ? 'bg-[#ebebeb] border-gray-300' : 'bg-[#242424] border-[#333]'

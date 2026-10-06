@@ -1,6 +1,6 @@
 [package]
 name = "classitunes"
-version = "1.7.5"
+version = "1.7.6"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
 edition = "2021"
@@ -39,4 +39,3 @@ incremental = true
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
-

@@ -1,4 +1,4 @@
-import React, { Profiler, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { Track, Album, Playlist, ViewMode } from './types';
 import { INITIAL_TRACKS, INITIAL_PLAYLISTS } from './data/demoTracks';
@@ -21,7 +21,6 @@ import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
-import { configurePerformanceDiagnostics, recordPerformanceSample, recordReactCommit } from './utils/performanceDiagnostics';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
@@ -134,7 +133,13 @@ export default function App() {
   const [appSettings, setAppSettings] = useState<AppSettings>(() => {
     try {
       const saved = localStorage.getItem('classitunes_settings');
-      if (saved) return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(saved) };
+      if (saved) {
+        const savedSettings = JSON.parse(saved);
+        if (savedSettings && typeof savedSettings === 'object') {
+          delete savedSettings.performanceDiagnostics;
+        }
+        return { ...DEFAULT_APP_SETTINGS, ...savedSettings };
+      }
       const legacyTheme = localStorage.getItem('itunes_theme'); // legacy key, kept for migration
       if (legacyTheme === 'light' || legacyTheme === 'dark') {
         return { ...DEFAULT_APP_SETTINGS, defaultTheme: legacyTheme };
@@ -150,10 +155,6 @@ export default function App() {
   useEffect(() => {
     setupWindowStatePersistence();
   }, []);
-
-  useEffect(() => {
-    configurePerformanceDiagnostics(appSettings.performanceDiagnostics);
-  }, [appSettings.performanceDiagnostics]);
 
   // Tauri Native Drag-and-Drop listener
   useEffect(() => {
@@ -720,7 +721,6 @@ export default function App() {
   // Depends on the BASE `tracks` array (not mergedTracks) so playback mutations (playCount,
   // coverUrl via playbackMeta) do NOT cause a recompute. The display layer merges playbackMeta.
   const filteredTracks = useMemo(() => {
-    const t0 = performance.now();
     let list = [...tracks];
 
     // Filter by Playlist / System Library
@@ -759,9 +759,6 @@ export default function App() {
       );
     }
 
-    const dur = performance.now() - t0;
-    recordPerformanceSample('Library filtering and search', dur, `tracks=${tracks.length}`);
-
     return list;
   }, [tracks, playlists, selectedPlaylistId, searchQuery]);
 
@@ -775,7 +772,6 @@ export default function App() {
   // Derived Albums for Album Grid View (Grouped strictly by Album Name)
   // NOTE: defined here (before refs) so albumsRef can reference it without use-before-declaration
   const albums = useMemo(() => {
-    const t0 = performance.now();
     const albumMap = new Map<string, Album>();
 
     filteredTracks.forEach(t => {
@@ -833,9 +829,7 @@ export default function App() {
       });
     });
 
-    const result = Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-    recordPerformanceSample('Album grouping and sorting', performance.now() - t0, `tracks=${filteredTracks.length}, albums=${result.length}`);
-    return result;
+    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   }, [filteredTracks]);
 
   // Determine active playback pool based on view mode and active queue
@@ -1623,10 +1617,8 @@ export default function App() {
       let completed = 0;
 
       for (let i = 0; i < pathsArray.length; i += BATCH_SIZE) {
-        const batchStartedAt = performance.now();
         const chunkPaths = pathsArray.slice(i, i + BATCH_SIZE);
         const metadataMap = await readTauriMusicMetadataBatch(chunkPaths);
-        recordPerformanceSample('Native metadata import batch', performance.now() - batchStartedAt, `files=${chunkPaths.length}`);
 
         for (const originalPath of chunkPaths) {
           try {
@@ -1736,7 +1728,6 @@ export default function App() {
       let completed = 0;
 
       for (let i = 0; i < totalToProcess; i += CONCURRENCY) {
-        const batchStartedAt = performance.now();
         const chunk = fileArray.slice(i, i + CONCURRENCY);
         const results = await Promise.all(
           chunk.map(async (item) => {
@@ -1748,9 +1739,7 @@ export default function App() {
             }
           })
         );
-
         const parsedTracks = results.filter((t): t is Track => t !== null);
-        recordPerformanceSample('Audio metadata parse batch', performance.now() - batchStartedAt, `files=${chunk.length}, parsed=${parsedTracks.length}`);
         if (parsedTracks.length > 0) {
           allNewlyParsed.push(...parsedTracks);
         }
@@ -2313,47 +2302,43 @@ export default function App() {
           theme === 'light' ? 'bg-white' : 'bg-[#121212]'
         }`}>
           {viewMode === 'list' && (
-            <Profiler id="Songs List" onRender={recordReactCommit}>
-              <ListView
-                tracks={displayTracks}
-                currentTrack={currentTrack}
-                isPlaying={isPlaying}
-                playlists={playlists}
-                onPlayTrack={playTrack}
-                onUpdateRating={handleUpdateRating}
-                onOpenGetInfo={handleOpenGetInfo}
-                onDeleteTrack={handleDeleteTrack}
-                onDeleteTracks={handleDeleteTracks}
-                onAddTrackToPlaylist={handleAddTrackToPlaylist}
-                onTrackContextMenu={handleTrackContextMenu}
-                onImportFiles={handleImportFiles}
-                onStartImporting={handleStartImporting}
-                theme={theme}
-                selectedTrackIds={selectedTrackIds}
-                onSelectionChange={handleSelectionChange}
-                searchQuery={searchQuery}
-                onClearSearch={handleClearSearch}
-              />
-            </Profiler>
+            <ListView
+              tracks={displayTracks}
+              currentTrack={currentTrack}
+              isPlaying={isPlaying}
+              playlists={playlists}
+              onPlayTrack={playTrack}
+              onUpdateRating={handleUpdateRating}
+              onOpenGetInfo={handleOpenGetInfo}
+              onDeleteTrack={handleDeleteTrack}
+              onDeleteTracks={handleDeleteTracks}
+              onAddTrackToPlaylist={handleAddTrackToPlaylist}
+              onTrackContextMenu={handleTrackContextMenu}
+              onImportFiles={handleImportFiles}
+              onStartImporting={handleStartImporting}
+              theme={theme}
+              selectedTrackIds={selectedTrackIds}
+              onSelectionChange={handleSelectionChange}
+              searchQuery={searchQuery}
+              onClearSearch={handleClearSearch}
+            />
           )}
 
           {viewMode === 'grid' && (
-            <Profiler id="Album Grid" onRender={recordReactCommit}>
-              <AlbumGridView
-                albums={albums}
-                currentTrack={currentTrack}
-                isPlaying={isPlaying}
-                onPlayTrack={playTrack}
-                onUpdateRating={handleUpdateRating}
-                onOpenGetInfo={handleOpenGetInfo}
-                onTrackContextMenu={handleTrackContextMenu}
-                onImportFiles={handleImportFiles}
-                onStartImporting={handleStartImporting}
-                theme={theme}
-                searchQuery={searchQuery}
-                onClearSearch={handleClearSearch}
-              />
-            </Profiler>
+            <AlbumGridView
+              albums={albums}
+              currentTrack={currentTrack}
+              isPlaying={isPlaying}
+              onPlayTrack={playTrack}
+              onUpdateRating={handleUpdateRating}
+              onOpenGetInfo={handleOpenGetInfo}
+              onTrackContextMenu={handleTrackContextMenu}
+              onImportFiles={handleImportFiles}
+              onStartImporting={handleStartImporting}
+              theme={theme}
+              searchQuery={searchQuery}
+              onClearSearch={handleClearSearch}
+            />
           )}
         </main>
       </div>

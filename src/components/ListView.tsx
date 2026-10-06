@@ -8,7 +8,6 @@ import {
 } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
 import { platformInfo } from '../utils/platform';
-import { recordPerformanceSample } from '../utils/performanceDiagnostics';
 
 interface ListViewProps {
   tracks: Track[];
@@ -905,7 +904,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   };
 
   const sortedTracks = useMemo(() => {
-    const t0 = performance.now();
     const sorted = [...tracks].sort((a, b) => {
       let valA = a[sortField];
       let valB = b[sortField];
@@ -927,8 +925,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
       return 0;
     });
-    const dur = performance.now() - t0;
-    recordPerformanceSample('List sorting', dur, `tracks=${tracks.length}, field=${String(sortField)}`);
     return sorted;
   }, [tracks, sortField, sortAsc]);
 
@@ -952,7 +948,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const [tableHeaderHeight, setTableHeaderHeight] = useState(0);
 
   const { visibleWindowTracks, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
-    const t0 = performance.now();
     if (!isVirtualizationActive) {
       return {
         visibleWindowTracks: sortedTracks.map((t, idx) => ({ track: t, originalIndex: idx })),
@@ -973,9 +968,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
     const topHeight = startIndex * measuredRowHeight;
     const bottomHeight = Math.max(0, (totalTrackCount - endIndex) * measuredRowHeight);
-
-    const dur = performance.now() - t0;
-    recordPerformanceSample('Virtual list window calculation', dur, `tracks=${totalTrackCount}, rendered=${slice.length}`);
 
     return {
       visibleWindowTracks: slice,
@@ -1042,7 +1034,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         const boxRight = Math.max(mouseDownPosRef.current.x, e.clientX);
         const boxBottom = Math.max(mouseDownPosRef.current.y, e.clientY);
 
-        const t0 = performance.now();
         const newlySelectedIds: string[] = [];
         const cachedRects = rowRectsRef.current;
         for (let i = 0; i < cachedRects.length; i++) {
@@ -1060,8 +1051,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
         const combined = Array.from(new Set([...initialSelectionRef.current, ...newlySelectedIds]));
         updateSelectedTrackIds(combined);
-        const dur = performance.now() - t0;
-        recordPerformanceSample('Box selection', dur, `rows=${cachedRects.length}`);
       }
     };
 

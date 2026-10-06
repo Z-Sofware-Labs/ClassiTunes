@@ -61,7 +61,6 @@ Available as a native desktop application powered by **Tauri v2** (ultra-lightwe
 - **Brushed Light & Sleek Dark Themes:** Nostalgic brushed platinum interface alongside a modern low-fatigue dark studio theme.
 - **Window State Persistence:** Automatically remembers window dimensions, positions, and maximized states across sessions.
 - **Diagnostics & Scan Logs:** Built-in logging panel to monitor directory imports, metadata extraction, and system status.
-- **Performance Diagnostics:** Options → Diagnostics records slow view commits when supported, main-thread tasks of 50 ms or more, and periodic JavaScript heap samples where available. Reports are grouped in the application log, accessible from the log-file button in the status bar.
 
 ---
 
