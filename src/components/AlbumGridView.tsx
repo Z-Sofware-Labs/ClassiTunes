@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, createContext
 import { Album, Track } from '../types';
 import { Play, Star, Disc, Music, X, Shuffle, Volume2, Info } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
-import { getMediaFile, getCachedArtwork, setCachedArtwork } from '../services/mediaStorage';
-import { isTauri, readTauriMusicMetadata } from '../utils/tauriWindow';
+import { getCachedArtwork, setCachedArtwork, getArtwork } from '../services/mediaStorage';
 
 interface AlbumGridViewProps {
   albums: Album[];
@@ -60,6 +59,7 @@ function useSharedVisibility(ref: React.RefObject<HTMLDivElement | null>, onVisi
 /** Individual Album Card with Lazy Artwork Resolution via Shared IntersectionObserver */
 const AlbumCard = React.memo<{
   album: Album;
+  currentTrack: Track | null;
   isSelected: boolean;
   isAlbumPlaying: boolean;
   isPlaying: boolean;
@@ -70,6 +70,7 @@ const AlbumCard = React.memo<{
 }>((
 {
   album,
+  currentTrack,
   isSelected,
   isAlbumPlaying,
   isPlaying,
@@ -82,9 +83,9 @@ const AlbumCard = React.memo<{
   const [isVisible, setIsVisible] = useState(false);
   const albumKey = (album.name || '').trim().toLowerCase();
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
-    if (album.coverUrl) return album.coverUrl;
-    if (artworkCache.has(album.id)) return artworkCache.get(album.id)!;
-    if (albumKey && artworkCache.has(albumKey)) return artworkCache.get(albumKey)!;
+    const cached = artworkCache.get(album.id) || (albumKey ? artworkCache.get(albumKey) : undefined);
+    if (cached) return cached;
+    if (album.coverUrl && album.coverUrl.startsWith('blob:')) return album.coverUrl;
     return null;
   });
   const [imgError, setImgError] = useState(false);
@@ -95,55 +96,34 @@ const AlbumCard = React.memo<{
   // Hydrate artwork only once visible and not yet cached
   useEffect(() => {
     if (!isVisible) return;
-    if (coverUrl && !coverUrl.startsWith('blob:')) return;
-    if (artworkCache.has(album.id)) {
-      setCoverUrl(artworkCache.get(album.id)!);
-      return;
-    }
-    if (albumKey && artworkCache.has(albumKey)) {
-      const cached = artworkCache.get(albumKey)!;
-      artworkCache.set(album.id, cached);
-      setCoverUrl(cached);
-      return;
-    }
-
     let isMounted = true;
-    // Check if ANY track in the album already has a coverUrl
-    const trackWithArt = album.tracks.find(t => !!t.coverUrl);
-    if (trackWithArt && trackWithArt.coverUrl) {
-      artworkCache.set(album.id, trackWithArt.coverUrl);
-      if (albumKey) artworkCache.set(albumKey, trackWithArt.coverUrl);
-      if (isMounted) setCoverUrl(trackWithArt.coverUrl);
+    const activeAlbumTrack = currentTrack && (currentTrack.album || '').trim().toLowerCase() === albumKey
+      ? currentTrack
+      : null;
+    const cachedAlbumArtwork = artworkCache.get(albumKey) || artworkCache.get(album.id);
+    if (cachedAlbumArtwork) {
+      setCoverUrl(cachedAlbumArtwork);
+      setImgError(false);
       return;
     }
 
-    const firstTrack = album.tracks[0];
-    if (!firstTrack) return;
+    const sourceTrack = activeAlbumTrack || album.tracks.find(t => !!t.coverUrl) || album.tracks[0];
+    const sourceKey = sourceTrack?.id || album.id;
+    const sourceCoverUrl = sourceTrack?.coverUrl || album.coverUrl;
+    const sourceFilePath = sourceTrack?.filePath;
 
-    // Lazy load from IndexedDB or native metadata
-    getMediaFile(`cover_${firstTrack.id}`).then((blob) => {
-      if (!isMounted) return;
-      if (blob) {
-        const url = URL.createObjectURL(blob);
-        artworkCache.set(album.id, url);
-        if (albumKey) artworkCache.set(albumKey, url);
-        setCoverUrl(url);
-      } else if (isTauri() && firstTrack.filePath) {
-        readTauriMusicMetadata(firstTrack.filePath).then((meta) => {
-          if (!isMounted) return;
-          if (meta?.coverUrl) {
-            artworkCache.set(album.id, meta.coverUrl);
-            if (albumKey) artworkCache.set(albumKey, meta.coverUrl);
-            setCoverUrl(meta.coverUrl);
-          }
-        }).catch(() => {});
-      }
+    void getArtwork(sourceKey, sourceCoverUrl, sourceFilePath).then((url) => {
+      if (!isMounted || !url) return;
+      artworkCache.set(album.id, url);
+      if (albumKey) artworkCache.set(albumKey, url);
+      setCoverUrl(url);
+      setImgError(false);
     }).catch(() => {});
 
     return () => {
       isMounted = false;
     };
-  }, [album.id, album.name, albumKey, album.tracks, coverUrl, isVisible]);
+  }, [album.id, album.name, albumKey, album.tracks, album.coverUrl, currentTrack, isVisible]);
 
   return (
     <div
@@ -259,17 +239,42 @@ const AlbumDrawer: React.FC<{
   onTrackContextMenu,
 }) => {
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
-    if (album.coverUrl) return album.coverUrl;
-    if (artworkCache.has(album.id)) return artworkCache.get(album.id)!;
+    const cached = artworkCache.get(album.id) || (album.name ? artworkCache.get((album.name || '').trim().toLowerCase()) : undefined);
+    if (cached) return cached;
+    if (album.coverUrl && album.coverUrl.startsWith('blob:')) return album.coverUrl;
     return null;
   });
 
   useEffect(() => {
-    if (coverUrl) return;
-    if (artworkCache.has(album.id)) {
-      setCoverUrl(artworkCache.get(album.id)!);
+    let isMounted = true;
+    const albumKey = (album.name || '').trim().toLowerCase();
+    const cachedAlbumArtwork = artworkCache.get(albumKey) || artworkCache.get(album.id);
+    if (cachedAlbumArtwork) {
+      setCoverUrl(cachedAlbumArtwork);
+      return () => {
+        isMounted = false;
+      };
     }
-  }, [album.id, coverUrl]);
+
+    const activeAlbumTrack = currentTrack && (currentTrack.album || '').trim().toLowerCase() === (album.name || '').trim().toLowerCase()
+      ? currentTrack
+      : null;
+    const sourceTrack = activeAlbumTrack || album.tracks.find(t => !!t.coverUrl) || album.tracks[0];
+    if (!sourceTrack && !album.coverUrl) return;
+    const sourceKey = sourceTrack?.id || album.id;
+    const sourceCoverUrl = sourceTrack?.coverUrl || album.coverUrl;
+
+    void getArtwork(sourceKey, sourceCoverUrl, sourceTrack?.filePath).then((url) => {
+      if (isMounted && url) {
+        setCoverUrl(url);
+        artworkCache.set(album.id, url);
+        if (albumKey) artworkCache.set(albumKey, url);
+      }
+    }).catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, [album, currentTrack]);
 
   const totalDurationSeconds = useMemo(() => {
     return album.tracks.reduce((acc, t) => acc + (t.duration || 0), 0);
@@ -766,6 +771,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
                       <AlbumCard
                         key={album.id}
                         album={album}
+                        currentTrack={currentTrack}
                         isSelected={isSelected}
                         isAlbumPlaying={isAlbumPlaying}
                         isPlaying={isPlaying}

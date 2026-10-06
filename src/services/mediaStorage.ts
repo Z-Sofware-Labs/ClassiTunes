@@ -2,9 +2,11 @@
 import { readTauriMusicMetadata } from '../utils/tauriWindow';
 
 const DB_NAME = 'classitunes_media_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'media_files';
 const METADATA_STORE = 'track_metadata';
+const PLAYBACK_METADATA_STORE = 'playback_metadata';
+const ARTWORK_CACHE_LIMIT = 48;
 
 export function dataURLtoBlob(dataurl: string): Blob | null {
   try {
@@ -43,6 +45,9 @@ function getDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(METADATA_STORE)) {
         db.createObjectStore(METADATA_STORE);
+      }
+      if (!db.objectStoreNames.contains(PLAYBACK_METADATA_STORE)) {
+        db.createObjectStore(PLAYBACK_METADATA_STORE, { keyPath: 'trackId' });
       }
     };
     request.onsuccess = () => {
@@ -116,9 +121,10 @@ export async function clearAllMediaStorage(): Promise<void> {
   try {
     const db = await getDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction([STORE_NAME, METADATA_STORE], 'readwrite');
+      const tx = db.transaction([STORE_NAME, METADATA_STORE, PLAYBACK_METADATA_STORE], 'readwrite');
       tx.objectStore(STORE_NAME).clear();
       tx.objectStore(METADATA_STORE).clear();
+      tx.objectStore(PLAYBACK_METADATA_STORE).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -168,8 +174,137 @@ export async function getTracksMetadata(): Promise<any[]> {
   }
 }
 
-// Global fast in-memory artwork cache (albumKey/trackId -> objectUrl/dataUrl)
+export async function savePlaybackMetadata(trackId: string, metadata: { playCount?: number; lastPlayed?: string | null }): Promise<void> {
+  if (!trackId) return;
+  try {
+    const db = await getDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(PLAYBACK_METADATA_STORE, 'readwrite');
+      const record = {
+        trackId,
+        playCount: metadata.playCount ?? 0,
+        lastPlayed: metadata.lastPlayed ?? null,
+      };
+      tx.objectStore(PLAYBACK_METADATA_STORE).put(record);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.warn('Failed to save playback metadata:', e);
+  }
+}
+
+export async function getPlaybackMetadata(trackId: string): Promise<{ trackId: string; playCount: number; lastPlayed: string | null } | null> {
+  if (!trackId) return null;
+  try {
+    const db = await getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(PLAYBACK_METADATA_STORE, 'readonly');
+      const req = tx.objectStore(PLAYBACK_METADATA_STORE).get(trackId);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function getAllPlaybackMetadata(): Promise<Map<string, { playCount?: number; lastPlayed?: Date }>> {
+  try {
+    const db = await getDB();
+    const records = await new Promise<any[]>((resolve, reject) => {
+      const tx = db.transaction(PLAYBACK_METADATA_STORE, 'readonly');
+      const req = tx.objectStore(PLAYBACK_METADATA_STORE).getAll();
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+      req.onerror = () => reject(req.error);
+    });
+
+    const map = new Map<string, { playCount?: number; lastPlayed?: Date }>();
+    for (const record of records) {
+      if (!record || !record.trackId) continue;
+      const lastPlayed = record.lastPlayed ? new Date(record.lastPlayed) : undefined;
+      map.set(record.trackId, {
+        playCount: typeof record.playCount === 'number' ? record.playCount : undefined,
+        lastPlayed: Number.isNaN(lastPlayed?.getTime()) ? undefined : lastPlayed,
+      });
+    }
+    return map;
+  } catch (e) {
+    return new Map();
+  }
+}
+
+export async function deletePlaybackMetadata(trackId: string): Promise<void> {
+  if (!trackId) return;
+  try {
+    const db = await getDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(PLAYBACK_METADATA_STORE, 'readwrite');
+      tx.objectStore(PLAYBACK_METADATA_STORE).delete(trackId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.warn('Failed to delete playback metadata:', e);
+  }
+}
+
+// Global fast in-memory artwork cache (albumKey/trackId -> objectUrl) plus resource-lifetime tracking.
 const globalArtworkCache = new Map<string, string>();
+const artworkResourceCache = new Map<string, { url: string; refs: Set<string>; owned: boolean }>();
+const artworkAliasMap = new Map<string, string>();
+
+function evictArtworkResourcesIfNeeded(): void {
+  while (artworkResourceCache.size > ARTWORK_CACHE_LIMIT) {
+    const oldestKey = artworkResourceCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    const entry = artworkResourceCache.get(oldestKey);
+    if (entry) {
+      for (const alias of [...entry.refs]) {
+        globalArtworkCache.delete(alias);
+        artworkAliasMap.delete(alias);
+      }
+      if (entry.owned && entry.url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(entry.url); } catch {}
+      }
+      artworkResourceCache.delete(oldestKey);
+    }
+  }
+}
+
+function registerArtworkReference(aliasKey: string, url: string, owned = false): string {
+  if (!aliasKey || !url) return aliasKey;
+
+  const existingAliasResource = artworkAliasMap.get(aliasKey);
+  if (existingAliasResource && artworkResourceCache.has(existingAliasResource)) {
+    const existingResource = artworkResourceCache.get(existingAliasResource)!;
+    if (existingResource.url === url) {
+      existingResource.refs.add(aliasKey);
+      existingResource.owned = existingResource.owned || owned;
+      globalArtworkCache.set(aliasKey, url);
+      return existingAliasResource;
+    }
+
+    existingResource.refs.delete(aliasKey);
+    if (existingResource.refs.size === 0) {
+      if (existingResource.owned && existingResource.url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(existingResource.url); } catch {}
+      }
+      artworkResourceCache.delete(existingAliasResource);
+    }
+  }
+
+  const resourceKey = url;
+  const existingResource = artworkResourceCache.get(resourceKey) || { url, refs: new Set<string>(), owned };
+  existingResource.url = url;
+  existingResource.owned = existingResource.owned || owned;
+  existingResource.refs.add(aliasKey);
+  artworkResourceCache.set(resourceKey, existingResource);
+  artworkAliasMap.set(aliasKey, resourceKey);
+  globalArtworkCache.set(aliasKey, url);
+  evictArtworkResourcesIfNeeded();
+  return resourceKey;
+}
 
 export function getCachedArtwork(albumOrTrackKey: string): string | undefined {
   return globalArtworkCache.get(albumOrTrackKey);
@@ -177,25 +312,135 @@ export function getCachedArtwork(albumOrTrackKey: string): string | undefined {
 
 export function setCachedArtwork(albumOrTrackKey: string, url: string): void {
   if (albumOrTrackKey && url) {
-    globalArtworkCache.set(albumOrTrackKey, url);
+    registerArtworkReference(albumOrTrackKey, url);
   }
+}
+
+function createCachedArtworkUrl(trackId: string, blob: Blob): string {
+  const objectUrl = URL.createObjectURL(blob);
+  registerArtworkReference(trackId, objectUrl, true);
+  return objectUrl;
 }
 
 export function clearCachedArtwork(key?: string): void {
   if (key) {
-    const url = globalArtworkCache.get(key);
-    if (url && url.startsWith('blob:')) {
-      try { URL.revokeObjectURL(url); } catch {}
-    }
+    const resourceKey = artworkAliasMap.get(key) || key;
+    const resource = artworkResourceCache.get(resourceKey);
+
     globalArtworkCache.delete(key);
-  } else {
-    for (const url of globalArtworkCache.values()) {
-      if (url && url.startsWith('blob:')) {
-        try { URL.revokeObjectURL(url); } catch {}
+    artworkAliasMap.delete(key);
+
+    if (resource) {
+      resource.refs.delete(key);
+      if (resource.refs.size === 0) {
+        if (resource.owned && resource.url.startsWith('blob:')) {
+          try { URL.revokeObjectURL(resource.url); } catch {}
+        }
+        artworkResourceCache.delete(resourceKey);
+      }
+    } else if (resourceKey.startsWith('blob:')) {
+      try { URL.revokeObjectURL(resourceKey); } catch {}
+    }
+    return;
+  }
+
+  for (const [alias, resourceKey] of [...artworkAliasMap.entries()]) {
+    globalArtworkCache.delete(alias);
+    artworkAliasMap.delete(alias);
+    const resource = artworkResourceCache.get(resourceKey);
+    if (resource) {
+      resource.refs.delete(alias);
+      if (resource.refs.size === 0) {
+        if (resource.owned && resource.url.startsWith('blob:')) {
+          try { URL.revokeObjectURL(resource.url); } catch {}
+        }
+        artworkResourceCache.delete(resourceKey);
       }
     }
-    globalArtworkCache.clear();
   }
+  artworkAliasMap.clear();
+  globalArtworkCache.clear();
+}
+
+export async function getArtwork(trackId: string, candidateUrl?: string, filePath?: string): Promise<string | undefined> {
+  if (!trackId) return undefined;
+  const cached = getCachedArtwork(trackId);
+  if (cached && !cached.startsWith('blob:')) return cached;
+  if (cached?.startsWith('blob:')) {
+    const cachedResource = artworkResourceCache.get(artworkAliasMap.get(trackId) || cached);
+    if (cachedResource?.owned) return cached;
+    try {
+      const response = await fetch(cached);
+      if (!response.ok) throw new Error(`Artwork URL returned ${response.status}`);
+      const blob = await response.blob();
+      await saveMediaFile(`cover_${trackId}`, blob);
+      return createCachedArtworkUrl(trackId, blob);
+    } catch {
+      clearCachedArtwork(trackId);
+    }
+  }
+
+  if (candidateUrl && candidateUrl.startsWith('blob:')) {
+    try {
+      const response = await fetch(candidateUrl);
+      if (!response.ok) throw new Error(`Artwork URL returned ${response.status}`);
+      const blob = await response.blob();
+      await saveMediaFile(`cover_${trackId}`, blob);
+      return createCachedArtworkUrl(trackId, blob);
+    } catch {
+      // Continue with persisted artwork and native metadata fallbacks.
+    }
+  }
+
+  if (candidateUrl && candidateUrl.startsWith('data:image/')) {
+    let blob = dataURLtoBlob(candidateUrl);
+    if (!blob) {
+      try {
+        const commaIndex = candidateUrl.indexOf(',');
+        if (commaIndex !== -1) {
+          const header = candidateUrl.slice(0, commaIndex);
+          const mime = header.slice(5).split(';')[0] || 'image/svg+xml';
+          const payload = candidateUrl.slice(commaIndex + 1);
+          const decoded = header.includes(';base64')
+            ? atob(payload)
+            : decodeURIComponent(payload);
+          const bytes = header.includes(';base64')
+            ? Uint8Array.from(decoded, char => char.charCodeAt(0))
+            : new TextEncoder().encode(decoded);
+          blob = new Blob([bytes], { type: mime });
+        }
+      } catch {
+        blob = null;
+      }
+    }
+    if (blob) {
+      await saveMediaFile(`cover_${trackId}`, blob);
+      return createCachedArtworkUrl(trackId, blob);
+    }
+  }
+
+  const coverBlob = await getMediaFile(`cover_${trackId}`);
+  if (coverBlob) {
+    return createCachedArtworkUrl(trackId, coverBlob);
+  }
+
+  if (filePath) {
+    try {
+      const metadata = await readTauriMusicMetadata(filePath);
+      if (metadata?.coverUrl) {
+        return getArtwork(trackId, metadata.coverUrl);
+      }
+    } catch (error) {
+      console.warn('Failed to load artwork from native track metadata:', error);
+    }
+  }
+
+  if (candidateUrl && (candidateUrl.startsWith('http://') || candidateUrl.startsWith('https://') || candidateUrl.startsWith('file://'))) {
+    setCachedArtwork(trackId, candidateUrl);
+    return candidateUrl;
+  }
+
+  return undefined;
 }
 
 export async function hydrateTrackMedia(track: any): Promise<any> {
@@ -262,20 +507,9 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
     }
 
     if (updatedTrack.coverUrl) {
-      // Memory optimization: cap cache size to 200 entries to prevent memory bloat
-      if (globalArtworkCache.size > 200) {
-        const firstKey = globalArtworkCache.keys().next().value;
-        if (firstKey) {
-          const oldUrl = globalArtworkCache.get(firstKey);
-          if (oldUrl && oldUrl.startsWith('blob:')) {
-            try { URL.revokeObjectURL(oldUrl); } catch {}
-          }
-          globalArtworkCache.delete(firstKey);
-        }
-      }
-      globalArtworkCache.set(track.id, updatedTrack.coverUrl);
+      setCachedArtwork(track.id, updatedTrack.coverUrl);
       if (albumKey) {
-        globalArtworkCache.set(albumKey, updatedTrack.coverUrl);
+        setCachedArtwork(albumKey, updatedTrack.coverUrl);
       }
     }
   }

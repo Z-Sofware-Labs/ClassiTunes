@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { Track, Playlist } from '../types';
 import { 
   Play, Volume2, Star, ArrowUp, ArrowDown, MoreHorizontal, 
@@ -7,8 +7,8 @@ import {
   ChevronUp, ChevronDown, GripVertical
 } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
-import { logToFile } from '../utils/tauriWindow';
 import { platformInfo } from '../utils/platform';
+import { recordPerformanceSample } from '../utils/performanceDiagnostics';
 
 interface ListViewProps {
   tracks: Track[];
@@ -588,12 +588,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       if (rafScrollRef.current !== null) return;
       rafScrollRef.current = requestAnimationFrame(() => {
         rafScrollRef.current = null;
-        const start = performance.now();
         setScrollTop(el.scrollTop);
-        const duration = performance.now() - start;
-        if (duration >= 50) {
-          logToFile(`[BOTTLENECK DETECTED: ListView Scroll Update] took ${duration.toFixed(1)}ms for scrollTop=${el.scrollTop}`);
-        }
       });
     };
 
@@ -933,9 +928,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       return 0;
     });
     const dur = performance.now() - t0;
-    if (dur >= 50) {
-      logToFile(`[BOTTLENECK DETECTED: Song Sorting] Sorting ${tracks.length} tracks by '${String(sortField)}' took ${dur.toFixed(1)}ms`);
-    }
+    recordPerformanceSample('List sorting', dur, `tracks=${tracks.length}, field=${String(sortField)}`);
     return sorted;
   }, [tracks, sortField, sortAsc]);
 
@@ -955,6 +948,8 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const OVERSCAN = isLinux ? 35 : 20;
   const totalTrackCount = sortedTracks.length;
   const isVirtualizationActive = totalTrackCount > 60;
+  const [measuredRowHeight, setMeasuredRowHeight] = useState(estimatedRowHeight);
+  const [tableHeaderHeight, setTableHeaderHeight] = useState(0);
 
   const { visibleWindowTracks, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
     const t0 = performance.now();
@@ -966,8 +961,9 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       };
     }
 
-    const startIndex = Math.max(0, Math.floor(scrollTop / estimatedRowHeight) - OVERSCAN);
-    const visibleCount = Math.ceil(containerHeight / estimatedRowHeight) + OVERSCAN * 2;
+    const contentScrollTop = Math.max(0, scrollTop - tableHeaderHeight);
+    const startIndex = Math.max(0, Math.floor(contentScrollTop / measuredRowHeight) - OVERSCAN);
+    const visibleCount = Math.ceil(containerHeight / measuredRowHeight) + OVERSCAN * 2;
     const endIndex = Math.min(totalTrackCount, startIndex + visibleCount);
 
     const slice = sortedTracks.slice(startIndex, endIndex).map((t, idx) => ({
@@ -975,20 +971,42 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       originalIndex: startIndex + idx,
     }));
 
-    const topHeight = startIndex * estimatedRowHeight;
-    const bottomHeight = Math.max(0, (totalTrackCount - endIndex) * estimatedRowHeight);
+    const topHeight = startIndex * measuredRowHeight;
+    const bottomHeight = Math.max(0, (totalTrackCount - endIndex) * measuredRowHeight);
 
     const dur = performance.now() - t0;
-    if (dur >= 50) {
-      logToFile(`[BOTTLENECK DETECTED: Virtual Slice Calculation] took ${dur.toFixed(1)}ms for ${totalTrackCount} tracks (slice size: ${slice.length})`);
-    }
+    recordPerformanceSample('Virtual list window calculation', dur, `tracks=${totalTrackCount}, rendered=${slice.length}`);
 
     return {
       visibleWindowTracks: slice,
       topSpacerHeight: topHeight,
       bottomSpacerHeight: bottomHeight,
     };
-  }, [sortedTracks, isVirtualizationActive, scrollTop, containerHeight, estimatedRowHeight, totalTrackCount]);
+  }, [sortedTracks, isVirtualizationActive, scrollTop, containerHeight, measuredRowHeight, tableHeaderHeight, totalTrackCount]);
+
+  useLayoutEffect(() => {
+    const container = tableContainerRef.current;
+    if (!container || totalTrackCount === 0) return;
+
+    const rows = container.querySelectorAll<HTMLTableRowElement>('tbody tr[id^="track-row-"]');
+    const header = container.querySelector<HTMLTableSectionElement>('thead');
+    const actualHeaderHeight = header?.getBoundingClientRect().height;
+    const containerRect = container.getBoundingClientRect();
+    let actualRowHeight = 0;
+    rows.forEach((row) => {
+      const rect = row.getBoundingClientRect();
+      if (!actualRowHeight && rect.bottom > containerRect.top + (actualHeaderHeight || 0) && rect.top < containerRect.bottom) {
+        actualRowHeight = rect.height;
+      }
+    });
+
+    if (actualRowHeight && actualRowHeight > 0) {
+      setMeasuredRowHeight(current => Math.abs(current - actualRowHeight) > 0.5 ? actualRowHeight : current);
+    }
+    if (actualHeaderHeight && actualHeaderHeight > 0) {
+      setTableHeaderHeight(current => Math.abs(current - actualHeaderHeight) > 0.5 ? actualHeaderHeight : current);
+    }
+  }, [rowHeight, totalTrackCount]);
 
   const resetDragAndBoxSelection = () => {
     isMouseDownRef.current = false;
@@ -1043,9 +1061,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         const combined = Array.from(new Set([...initialSelectionRef.current, ...newlySelectedIds]));
         updateSelectedTrackIds(combined);
         const dur = performance.now() - t0;
-        if (dur >= 50) {
-          logToFile(`[BOTTLENECK DETECTED: Box Selection] Computing selection over ${cachedRects.length} rows took ${dur.toFixed(1)}ms`);
-        }
+        recordPerformanceSample('Box selection', dur, `rows=${cachedRects.length}`);
       }
     };
 
@@ -1302,7 +1318,9 @@ const ListViewComponent: React.FC<ListViewProps> = ({
           <tbody className={isLight ? 'divide-y divide-gray-200' : 'divide-y divide-white/5'}>
             {topSpacerHeight > 0 && (
               <tr style={{ height: `${topSpacerHeight}px`, pointerEvents: 'none' }} aria-hidden="true">
-                <td colSpan={activeColumns.length + 1} style={{ padding: 0, border: 'none' }} />
+                <td colSpan={activeColumns.length + 1} style={{ height: `${topSpacerHeight}px`, padding: 0, border: 'none' }}>
+                  <div style={{ height: `${topSpacerHeight}px` }} />
+                </td>
               </tr>
             )}
 
@@ -1348,7 +1366,9 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
             {bottomSpacerHeight > 0 && (
               <tr style={{ height: `${bottomSpacerHeight}px`, pointerEvents: 'none' }} aria-hidden="true">
-                <td colSpan={activeColumns.length + 1} style={{ padding: 0, border: 'none' }} />
+                <td colSpan={activeColumns.length + 1} style={{ height: `${bottomSpacerHeight}px`, padding: 0, border: 'none' }}>
+                  <div style={{ height: `${bottomSpacerHeight}px` }} />
+                </td>
               </tr>
             )}
           </tbody>
@@ -1512,5 +1532,3 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 };
 
 export const ListView = React.memo(ListViewComponent);
-
-

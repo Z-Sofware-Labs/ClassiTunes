@@ -812,14 +812,15 @@ export async function parseAudioFile(file: File): Promise<Track> {
           const finalTitle = nativeMeta.title?.trim() || cleanFileName;
           const finalArtist = nativeMeta.artist?.trim() || 'Unknown Artist';
           const finalAlbum = nativeMeta.album?.trim() || 'Unknown Album';
-          const finalCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
+          const rawCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
           const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-          // Persist cover to IndexedDB cache in background so it rehydrates across restarts without blocking parsing
-          if (finalCoverUrl && finalCoverUrl.startsWith('data:')) {
-            const blob = dataURLtoBlob(finalCoverUrl);
+          let normalizedCoverUrl = rawCoverUrl;
+          if (rawCoverUrl && rawCoverUrl.startsWith('data:')) {
+            const blob = dataURLtoBlob(rawCoverUrl);
             if (blob) {
               saveMediaFile(`cover_${trackId}`, blob).catch(() => {});
+              normalizedCoverUrl = URL.createObjectURL(blob);
             }
           }
 
@@ -844,7 +845,7 @@ export async function parseAudioFile(file: File): Promise<Track> {
             comments: nativeMeta.comments?.trim() || undefined,
             rating: 0,
             playCount: 0,
-            coverUrl: finalCoverUrl,
+            coverUrl: normalizedCoverUrl,
             audioUrl: objectUrl,
             file: undefined, // Do not store memory Blob for local Tauri files
             format: nativeMeta.format || getReadableAudioFormat(file),
@@ -1169,12 +1170,12 @@ export async function parseAudioFile(file: File): Promise<Track> {
     }
   }
 
-  // If coverUrl is a blob or data URL, convert and save to IndexedDB as well
   if (coverUrl && coverUrl.startsWith('data:')) {
     const blob = dataURLtoBlob(coverUrl);
     if (blob) {
       try {
         await saveMediaFile(`cover_${trackId}`, blob);
+        coverUrl = URL.createObjectURL(blob);
       } catch (e) {}
     }
   } else if (coverUrl && coverUrl.startsWith('blob:')) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { Profiler, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { Track, Album, Playlist, ViewMode } from './types';
 import { INITIAL_TRACKS, INITIAL_PLAYLISTS } from './data/demoTracks';
@@ -21,7 +21,8 @@ import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
-import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile } from './services/mediaStorage';
+import { configurePerformanceDiagnostics, recordPerformanceSample, recordReactCommit } from './utils/performanceDiagnostics';
+import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
 
 export default function App() {
@@ -49,15 +50,15 @@ export default function App() {
   // Stored separately so mutations during playback do NOT invalidate filteredTracks / albums.
   const [playbackMeta, setPlaybackMeta] = useState<Map<string, Partial<Track>>>(() => new Map());
 
-  // Merge playbackMeta into tracks for display and persistence.
-  // This is the authoritative merged list; only recomputed when base tracks or playbackMeta changes.
-  const mergedTracks = useMemo(() => {
-    if (playbackMeta.size === 0) return tracks;
-    return tracks.map(t => {
-      const meta = playbackMeta.get(t.id);
-      return meta ? { ...t, ...meta } : t;
-    });
-  }, [tracks, playbackMeta]);
+  // Keep the base track list stable. Playback metadata is merged lazily only for the
+  // tracks actually rendered, so a single playCount/lastPlayed change never allocates
+  // a new Track object for the entire library.
+  const mergedTracks = useMemo(() => tracks, [tracks]);
+
+  const getDisplayTrack = useCallback((track: Track): Track => {
+    const meta = playbackMeta.get(track.id);
+    return meta ? { ...track, ...meta } : track;
+  }, [playbackMeta]);
 
   const [playlists, setPlaylists] = useState<Playlist[]>(() => {
     try {
@@ -149,6 +150,10 @@ export default function App() {
   useEffect(() => {
     setupWindowStatePersistence();
   }, []);
+
+  useEffect(() => {
+    configurePerformanceDiagnostics(appSettings.performanceDiagnostics);
+  }, [appSettings.performanceDiagnostics]);
 
   // Tauri Native Drag-and-Drop listener
   useEffect(() => {
@@ -508,15 +513,22 @@ export default function App() {
     });
   }, []);
 
-  // Save to LocalStorage & IndexedDB (Debounced for zero UI stutter)
-  // Saves the fully merged tracks (base + playbackMeta) to persist playCount, coverUrl, etc.
+  useEffect(() => {
+    let disposed = false;
+    void getAllPlaybackMetadata().then((stored) => {
+      if (!disposed) {
+        setPlaybackMeta(stored);
+      }
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
-        const sourceTracks = playbackMeta.size > 0
-          ? tracks.map(t => { const m = playbackMeta.get(t.id); return m ? { ...t, ...m } : t; })
-          : tracks;
-        const userTracksOnly = sourceTracks.filter(t => 
+        const userTracksOnly = tracks.filter(t =>
           !t.id.startsWith('demo_') && 
           !t.id.startsWith('sample_') &&
           !(t.audioUrl && t.audioUrl.startsWith('synth:'))
@@ -534,8 +546,6 @@ export default function App() {
           return { ...rest, coverUrl, audioUrl };
         });
 
-        // On macOS Tauri, avoid writing large JSON blobs into localStorage (keep IndexedDB as the primary backing store).
-        // Non-macOS platforms (Windows/Linux) continue to write to localStorage as before.
         const isMacTauri = platformInfo.isMacOS && platformInfo.isTauri;
         if (!isMacTauri || lightweightTracks.length < 100) {
           localStorage.setItem('classitunes_tracks', JSON.stringify(lightweightTracks));
@@ -546,7 +556,23 @@ export default function App() {
       }
     }, 300);
     return () => clearTimeout(timer);
-  }, [tracks, playbackMeta]);
+  }, [tracks]);
+
+  useEffect(() => {
+    if (playbackMeta.size === 0) return;
+    const timer = setTimeout(() => {
+      Array.from(playbackMeta.entries()).forEach(([trackId, meta]) => {
+        if (meta && (meta.playCount !== undefined || meta.lastPlayed !== undefined)) {
+          const playCount = typeof meta.playCount === 'number' ? meta.playCount : 0;
+          const lastPlayed = meta.lastPlayed instanceof Date
+            ? meta.lastPlayed.toISOString()
+            : (meta.lastPlayed && typeof meta.lastPlayed === 'string' ? new Date(meta.lastPlayed).toISOString() : null);
+          void savePlaybackMetadata(trackId, { playCount, lastPlayed });
+        }
+      });
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [playbackMeta]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -712,7 +738,7 @@ export default function App() {
         });
       } else if (activePlaylist.systemType === 'top_rated') {
         // Use mergedTracks so rating updates are reflected without base track mutation
-        const mergedMap: Map<string, Track> | null = playbackMeta.size > 0 ? new Map<string, Track>(mergedTracks.map(t => [t.id, t])) : null;
+        const mergedMap: Map<string, Track> | null = playbackMeta.size > 0 ? new Map<string, Track>(list.map(t => [t.id, getDisplayTrack(t)])) : null;
         list = list.filter(t => (mergedMap ? (mergedMap.get(t.id)?.rating ?? t.rating) : t.rating) >= 4);
       } else if (activePlaylist.systemType === 'party_shuffle') {
         // Keep as is
@@ -734,9 +760,7 @@ export default function App() {
     }
 
     const dur = performance.now() - t0;
-    if (dur >= 50) {
-      logToFile(`[BOTTLENECK DETECTED: Song Filtering/Search] Filtering library (${tracks.length} tracks) for playlist '${selectedPlaylistId}' query '${searchQuery}' took ${dur.toFixed(1)}ms`);
-    }
+    recordPerformanceSample('Library filtering and search', dur, `tracks=${tracks.length}`);
 
     return list;
   }, [tracks, playlists, selectedPlaylistId, searchQuery]);
@@ -745,15 +769,13 @@ export default function App() {
   // This is cheap: only touches the filtered subset, not the whole library.
   const displayTracks = useMemo(() => {
     if (playbackMeta.size === 0) return filteredTracks;
-    return filteredTracks.map(t => {
-      const meta = playbackMeta.get(t.id);
-      return meta ? { ...t, ...meta } : t;
-    });
-  }, [filteredTracks, playbackMeta]);
+    return filteredTracks.map(getDisplayTrack);
+  }, [filteredTracks, getDisplayTrack]);
 
   // Derived Albums for Album Grid View (Grouped strictly by Album Name)
   // NOTE: defined here (before refs) so albumsRef can reference it without use-before-declaration
   const albums = useMemo(() => {
+    const t0 = performance.now();
     const albumMap = new Map<string, Album>();
 
     filteredTracks.forEach(t => {
@@ -811,7 +833,9 @@ export default function App() {
       });
     });
 
-    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    const result = Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    recordPerformanceSample('Album grouping and sorting', performance.now() - t0, `tracks=${filteredTracks.length}, albums=${result.length}`);
+    return result;
   }, [filteredTracks]);
 
   // Determine active playback pool based on view mode and active queue
@@ -1354,6 +1378,7 @@ export default function App() {
     trackIds.forEach(id => {
       deleteMediaFile(`audio_${id}`);
       deleteMediaFile(`cover_${id}`);
+      deletePlaybackMetadata(id).catch(() => {});
       clearCachedArtwork(id);
     });
     setTracks(prev => prev.filter(t => !trackIds.includes(t.id)));
@@ -1598,8 +1623,10 @@ export default function App() {
       let completed = 0;
 
       for (let i = 0; i < pathsArray.length; i += BATCH_SIZE) {
+        const batchStartedAt = performance.now();
         const chunkPaths = pathsArray.slice(i, i + BATCH_SIZE);
         const metadataMap = await readTauriMusicMetadataBatch(chunkPaths);
+        recordPerformanceSample('Native metadata import batch', performance.now() - batchStartedAt, `files=${chunkPaths.length}`);
 
         for (const originalPath of chunkPaths) {
           try {
@@ -1709,6 +1736,7 @@ export default function App() {
       let completed = 0;
 
       for (let i = 0; i < totalToProcess; i += CONCURRENCY) {
+        const batchStartedAt = performance.now();
         const chunk = fileArray.slice(i, i + CONCURRENCY);
         const results = await Promise.all(
           chunk.map(async (item) => {
@@ -1722,6 +1750,7 @@ export default function App() {
         );
 
         const parsedTracks = results.filter((t): t is Track => t !== null);
+        recordPerformanceSample('Audio metadata parse batch', performance.now() - batchStartedAt, `files=${chunk.length}, parsed=${parsedTracks.length}`);
         if (parsedTracks.length > 0) {
           allNewlyParsed.push(...parsedTracks);
         }
@@ -2284,43 +2313,47 @@ export default function App() {
           theme === 'light' ? 'bg-white' : 'bg-[#121212]'
         }`}>
           {viewMode === 'list' && (
-            <ListView
-              tracks={displayTracks}
-              currentTrack={currentTrack}
-              isPlaying={isPlaying}
-              playlists={playlists}
-              onPlayTrack={playTrack}
-              onUpdateRating={handleUpdateRating}
-              onOpenGetInfo={handleOpenGetInfo}
-              onDeleteTrack={handleDeleteTrack}
-              onDeleteTracks={handleDeleteTracks}
-              onAddTrackToPlaylist={handleAddTrackToPlaylist}
-              onTrackContextMenu={handleTrackContextMenu}
-              onImportFiles={handleImportFiles}
-              onStartImporting={handleStartImporting}
-              theme={theme}
-              selectedTrackIds={selectedTrackIds}
-              onSelectionChange={handleSelectionChange}
-              searchQuery={searchQuery}
-              onClearSearch={handleClearSearch}
-            />
+            <Profiler id="Songs List" onRender={recordReactCommit}>
+              <ListView
+                tracks={displayTracks}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                playlists={playlists}
+                onPlayTrack={playTrack}
+                onUpdateRating={handleUpdateRating}
+                onOpenGetInfo={handleOpenGetInfo}
+                onDeleteTrack={handleDeleteTrack}
+                onDeleteTracks={handleDeleteTracks}
+                onAddTrackToPlaylist={handleAddTrackToPlaylist}
+                onTrackContextMenu={handleTrackContextMenu}
+                onImportFiles={handleImportFiles}
+                onStartImporting={handleStartImporting}
+                theme={theme}
+                selectedTrackIds={selectedTrackIds}
+                onSelectionChange={handleSelectionChange}
+                searchQuery={searchQuery}
+                onClearSearch={handleClearSearch}
+              />
+            </Profiler>
           )}
 
           {viewMode === 'grid' && (
-            <AlbumGridView
-              albums={albums}
-              currentTrack={currentTrack}
-              isPlaying={isPlaying}
-              onPlayTrack={playTrack}
-              onUpdateRating={handleUpdateRating}
-              onOpenGetInfo={handleOpenGetInfo}
-              onTrackContextMenu={handleTrackContextMenu}
-              onImportFiles={handleImportFiles}
-              onStartImporting={handleStartImporting}
-              theme={theme}
-              searchQuery={searchQuery}
-              onClearSearch={handleClearSearch}
-            />
+            <Profiler id="Album Grid" onRender={recordReactCommit}>
+              <AlbumGridView
+                albums={albums}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                onPlayTrack={playTrack}
+                onUpdateRating={handleUpdateRating}
+                onOpenGetInfo={handleOpenGetInfo}
+                onTrackContextMenu={handleTrackContextMenu}
+                onImportFiles={handleImportFiles}
+                onStartImporting={handleStartImporting}
+                theme={theme}
+                searchQuery={searchQuery}
+                onClearSearch={handleClearSearch}
+              />
+            </Profiler>
           )}
         </main>
       </div>
