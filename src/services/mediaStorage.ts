@@ -1,5 +1,14 @@
 // IndexedDB storage service to persist imported audio files, album artwork, and track metadata across restarts
-import { readTauriMusicMetadata } from '../utils/tauriWindow';
+import {
+  readTauriMusicMetadata,
+  isTauri,
+  resolveNativeCoverUrl,
+  dbGetAllTracks,
+  dbSaveTracksBatch,
+  dbUpdateTrackPlayback,
+  dbDeleteTracks,
+  dbClearAll,
+} from '../utils/tauriWindow';
 
 const DB_NAME = 'classitunes_media_db';
 const DB_VERSION = 3;
@@ -118,6 +127,9 @@ export async function deleteMediaFile(key: string): Promise<void> {
 }
 
 export async function clearAllMediaStorage(): Promise<void> {
+  if (isTauri()) {
+    await dbClearAll();
+  }
   try {
     const db = await getDB();
     return new Promise((resolve, reject) => {
@@ -134,21 +146,37 @@ export async function clearAllMediaStorage(): Promise<void> {
 }
 
 export async function saveTracksMetadata(tracks: any[]): Promise<void> {
+  const lightweightTracks = tracks.map((t) => {
+    const { file, ...rest } = t;
+    let coverUrl = rest.coverUrl;
+    if (coverUrl && (coverUrl.startsWith('data:') || coverUrl.startsWith('blob:'))) {
+      coverUrl = undefined;
+    }
+    let audioUrl = rest.audioUrl;
+    if (audioUrl && audioUrl.startsWith('blob:')) {
+      audioUrl = '';
+    }
+    const lastPlayed =
+      rest.lastPlayed instanceof Date
+        ? rest.lastPlayed.toISOString()
+        : typeof rest.lastPlayed === 'string'
+        ? rest.lastPlayed
+        : undefined;
+    const dateAdded =
+      rest.dateAdded instanceof Date
+        ? rest.dateAdded.toISOString()
+        : typeof rest.dateAdded === 'number'
+        ? new Date(rest.dateAdded).toISOString()
+        : rest.dateAdded;
+    return { ...rest, coverUrl, audioUrl, lastPlayed, dateAdded };
+  });
+
+  if (isTauri()) {
+    const ok = await dbSaveTracksBatch(lightweightTracks);
+    if (ok) return;
+  }
   try {
     const db = await getDB();
-    const lightweightTracks = tracks.map((t) => {
-      const { file, ...rest } = t;
-      let coverUrl = rest.coverUrl;
-      if (coverUrl && (coverUrl.startsWith('data:') || coverUrl.startsWith('blob:'))) {
-        coverUrl = undefined;
-      }
-      let audioUrl = rest.audioUrl;
-      if (audioUrl && audioUrl.startsWith('blob:')) {
-        audioUrl = '';
-      }
-      return { ...rest, coverUrl, audioUrl };
-    });
-
     return new Promise((resolve, reject) => {
       const tx = db.transaction(METADATA_STORE, 'readwrite');
       tx.objectStore(METADATA_STORE).put(lightweightTracks, 'user_tracks');
@@ -161,14 +189,24 @@ export async function saveTracksMetadata(tracks: any[]): Promise<void> {
 }
 
 export async function getTracksMetadata(): Promise<any[]> {
+  if (isTauri()) {
+    const nativeTracks = await dbGetAllTracks();
+    if (Array.isArray(nativeTracks) && nativeTracks.length > 0) {
+      return nativeTracks;
+    }
+  }
   try {
     const db = await getDB();
-    return new Promise((resolve, reject) => {
+    const idbTracks = await new Promise<any[]>((resolve, reject) => {
       const tx = db.transaction(METADATA_STORE, 'readonly');
       const req = tx.objectStore(METADATA_STORE).get('user_tracks');
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     });
+    if (isTauri() && Array.isArray(idbTracks) && idbTracks.length > 0) {
+      void dbSaveTracksBatch(idbTracks);
+    }
+    return idbTracks;
   } catch (e) {
     return [];
   }
@@ -176,6 +214,14 @@ export async function getTracksMetadata(): Promise<any[]> {
 
 export async function savePlaybackMetadata(trackId: string, metadata: { playCount?: number; lastPlayed?: string | null }): Promise<void> {
   if (!trackId) return;
+  if (isTauri()) {
+    const updated = await dbUpdateTrackPlayback(
+      trackId,
+      metadata.playCount ?? 0,
+      metadata.lastPlayed ?? null
+    );
+    if (updated) return;
+  }
   try {
     const db = await getDB();
     await new Promise<void>((resolve, reject) => {
@@ -210,6 +256,23 @@ export async function getPlaybackMetadata(trackId: string): Promise<{ trackId: s
 }
 
 export async function getAllPlaybackMetadata(): Promise<Map<string, { playCount?: number; lastPlayed?: Date }>> {
+  if (isTauri()) {
+    const nativeTracks = await dbGetAllTracks();
+    if (Array.isArray(nativeTracks) && nativeTracks.length > 0) {
+      const map = new Map<string, { playCount?: number; lastPlayed?: Date }>();
+      for (const t of nativeTracks) {
+        if (!t || !t.id) continue;
+        const lastPlayed = t.lastPlayed ? new Date(t.lastPlayed) : undefined;
+        if ((typeof t.playCount === 'number' && t.playCount > 0) || (lastPlayed && !Number.isNaN(lastPlayed.getTime()))) {
+          map.set(t.id, {
+            playCount: typeof t.playCount === 'number' ? t.playCount : undefined,
+            lastPlayed: Number.isNaN(lastPlayed?.getTime()) ? undefined : lastPlayed,
+          });
+        }
+      }
+      if (map.size > 0) return map;
+    }
+  }
   try {
     const db = await getDB();
     const records = await new Promise<any[]>((resolve, reject) => {
@@ -236,6 +299,9 @@ export async function getAllPlaybackMetadata(): Promise<Map<string, { playCount?
 
 export async function deletePlaybackMetadata(trackId: string): Promise<void> {
   if (!trackId) return;
+  if (isTauri()) {
+    await dbDeleteTracks([trackId]);
+  }
   try {
     const db = await getDB();
     await new Promise<void>((resolve, reject) => {
@@ -435,9 +501,12 @@ export async function getArtwork(trackId: string, candidateUrl?: string, filePat
     }
   }
 
-  if (candidateUrl && (candidateUrl.startsWith('http://') || candidateUrl.startsWith('https://') || candidateUrl.startsWith('file://'))) {
-    setCachedArtwork(trackId, candidateUrl);
-    return candidateUrl;
+  if (candidateUrl) {
+    const resolved = await resolveNativeCoverUrl(candidateUrl);
+    if (resolved && (resolved.startsWith('asset:') || resolved.startsWith('http://') || resolved.startsWith('https://') || resolved.startsWith('file://'))) {
+      setCachedArtwork(trackId, resolved);
+      return resolved;
+    }
   }
 
   return undefined;
@@ -450,9 +519,9 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
   }
 
   const updatedTrack = { ...track };
-  const isTauri = typeof window !== 'undefined' && !!((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__);
+  const isTauriEnv = isTauri();
 
-  if (isTauri && track.filePath) {
+  if (isTauriEnv && track.filePath) {
     try {
       const { convertFileSrc } = await import('@tauri-apps/api/core');
       updatedTrack.audioUrl = convertFileSrc(track.filePath);
@@ -487,7 +556,9 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
         saveMediaFile(`cover_${track.id}`, b);
         updatedTrack.coverUrl = URL.createObjectURL(b);
       }
-    } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauri && track.filePath) {
+    } else if (updatedTrack.coverUrl && isTauriEnv && !updatedTrack.coverUrl.startsWith('blob:') && !updatedTrack.coverUrl.startsWith('asset:')) {
+      updatedTrack.coverUrl = await resolveNativeCoverUrl(updatedTrack.coverUrl);
+    } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauriEnv && track.filePath) {
       try {
         const meta = await readTauriMusicMetadata(track.filePath);
         if (meta?.coverUrl) {
@@ -497,10 +568,10 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
               saveMediaFile(`cover_${track.id}`, b);
               updatedTrack.coverUrl = URL.createObjectURL(b);
             } else {
-              updatedTrack.coverUrl = meta.coverUrl;
+              updatedTrack.coverUrl = await resolveNativeCoverUrl(meta.coverUrl);
             }
           } else {
-            updatedTrack.coverUrl = meta.coverUrl;
+            updatedTrack.coverUrl = await resolveNativeCoverUrl(meta.coverUrl);
           }
         }
       } catch (e) {}

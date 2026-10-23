@@ -19,7 +19,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, dbUpdateTrackRating, dbDeleteTracks } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
@@ -547,8 +547,9 @@ export default function App() {
           return { ...rest, coverUrl, audioUrl };
         });
 
-        const isMacTauri = platformInfo.isMacOS && platformInfo.isTauri;
-        if (!isMacTauri || lightweightTracks.length < 100) {
+
+
+        if (!isTauri()) {
           localStorage.setItem('classitunes_tracks', JSON.stringify(lightweightTracks));
         }
         saveTracksMetadata(userTracksOnly);
@@ -1237,6 +1238,7 @@ export default function App() {
   // Track Rating Update
   const handleUpdateRating = (trackId: string, rating: number) => {
     setTracks(prev => prev.map(t => t.id === trackId ? { ...t, rating } : t));
+    void dbUpdateTrackRating(trackId, rating);
   };
 
   // Track Metadata Edit (Single or Batch Multi-Track / Album)
@@ -1369,6 +1371,7 @@ export default function App() {
   const [deleteRequest, setDeleteRequest] = useState<{ ids: string[]; tracks: Track[] } | null>(null);
 
   const removeTracksFromLibrary = useCallback((trackIds: string[]) => {
+    void dbDeleteTracks(trackIds);
     trackIds.forEach(id => {
       deleteMediaFile(`audio_${id}`);
       deleteMediaFile(`cover_${id}`);
@@ -1643,7 +1646,12 @@ export default function App() {
             const finalTitle = nativeMeta?.title?.trim() || cleanFileName;
             const finalArtist = nativeMeta?.artist?.trim() || 'Unknown Artist';
             const finalAlbum = nativeMeta?.album?.trim() || 'Unknown Album';
-            const finalCoverUrl = nativeMeta?.coverUrl || '';
+            let finalCoverUrl = nativeMeta?.coverUrl || '';
+            if (finalCoverUrl && !finalCoverUrl.startsWith('data:') && !finalCoverUrl.startsWith('blob:') && !finalCoverUrl.startsWith('asset:') && !finalCoverUrl.startsWith('http:') && !finalCoverUrl.startsWith('https:') && convertFileSrc) {
+              try {
+                finalCoverUrl = convertFileSrc(finalCoverUrl);
+              } catch {}
+            }
             const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
             if (finalCoverUrl) {
@@ -1703,6 +1711,7 @@ export default function App() {
               sizeBytes: nativeMeta?.sizeBytes || 0,
               dateAdded: new Date().toISOString(),
               filePath: path,
+              replayGainDb: nativeMeta?.replayGainDb,
             });
           } catch (err) {
             console.error('Failed to parse item:', originalPath, err);
@@ -1943,7 +1952,7 @@ export default function App() {
           let isModified = false;
           if (prevSize && currentSize && Math.abs(currentSize - prevSize) > 0) {
             isModified = true;
-          } else if (isMac && currentMtime && prevDateAdded && currentMtime > prevDateAdded + 2000) {
+          } else if (currentMtime && prevDateAdded && currentMtime > prevDateAdded + 2000) {
             isModified = true;
           }
 
@@ -1975,8 +1984,8 @@ export default function App() {
     let completed = 0;
 
     // On macOS / Tauri, process via native Rust metadata reader to avoid giant fetch->Blob->File->JS parser conversions
-    if (isMac && isTauri()) {
-      const MAC_BATCH_SIZE = 4; // Bounded concurrency for macOS filesystem & WKWebView responsiveness
+    if (isTauri()) {
+      const MAC_BATCH_SIZE = isMac ? 8 : 50;
       const allPaths = [...newPathsToImport, ...modifiedTracksToUpdate.map(m => m.path)];
 
       for (let i = 0; i < allPaths.length; i += MAC_BATCH_SIZE) {
@@ -1991,7 +2000,12 @@ export default function App() {
           const finalTitle = nativeMeta?.title?.trim() || cleanFileName;
           const finalArtist = nativeMeta?.artist?.trim() || 'Unknown Artist';
           const finalAlbum = nativeMeta?.album?.trim() || 'Unknown Album';
-          const finalCoverUrl = nativeMeta?.coverUrl || '';
+          let finalCoverUrl = nativeMeta?.coverUrl || '';
+          if (finalCoverUrl && !finalCoverUrl.startsWith('data:') && !finalCoverUrl.startsWith('blob:') && !finalCoverUrl.startsWith('asset:') && !finalCoverUrl.startsWith('http:') && !finalCoverUrl.startsWith('https:')) {
+            try {
+              finalCoverUrl = convertFileSrc(finalCoverUrl);
+            } catch {}
+          }
 
           let audioUrl = p;
           try {
@@ -2031,6 +2045,7 @@ export default function App() {
               sizeBytes: nativeMeta?.sizeBytes || 0,
               dateAdded: new Date().toISOString(),
               filePath: p,
+              replayGainDb: nativeMeta?.replayGainDb,
             });
           } else {
             const existingMatch = modifiedTracksToUpdate.find(m => m.path === p);
@@ -2059,6 +2074,7 @@ export default function App() {
                 bitrate: nativeMeta?.bitrate || existingTrack.bitrate,
                 sampleRate: nativeMeta?.sampleRate || existingTrack.sampleRate,
                 sizeBytes: nativeMeta?.sizeBytes || existingTrack.sizeBytes,
+                replayGainDb: nativeMeta?.replayGainDb ?? existingTrack.replayGainDb,
               });
             }
           }

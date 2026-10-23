@@ -1,5 +1,9 @@
 use serde::Deserialize;
 
+pub mod audio_engine;
+pub mod db;
+
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Id3TagPayload {
@@ -284,6 +288,7 @@ pub struct ReadMetadataResult {
     pub composer: Option<String>,
     pub publisher: Option<String>,
     pub lyrics: Option<String>,
+    pub replay_gain_db: Option<f64>,
     pub genre: Option<String>,
     pub year: Option<i32>,
     pub track_number: Option<i32>,
@@ -299,6 +304,25 @@ pub struct ReadMetadataResult {
     pub sample_rate: Option<u32>,
     pub format: Option<String>,
     pub size_bytes: Option<u64>,
+}
+
+fn parse_replay_gain_string(s: &str) -> Option<f64> {
+    let cleaned = s
+        .trim()
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c.is_whitespace())
+        .trim();
+    cleaned.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+fn cache_or_encode_artwork(bytes: &[u8], mime: &str) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if let Some(cached_path) = db::cache_artwork_bytes(bytes, mime) {
+        return Some(cached_path);
+    }
+    let b64 = encode_base64(bytes);
+    Some(format!("data:{mime};base64,{b64}"))
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -408,6 +432,7 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
         composer: None,
         publisher: None,
         lyrics: None,
+        replay_gain_db: None,
         genre: None,
         year: None,
         track_number: None,
@@ -476,8 +501,8 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                     mp4ameta::ImgFmt::Jpeg => "image/jpeg",
                 };
                 let mime = detect_image_mime(art.data, fallback);
-                let b64 = encode_base64(art.data);
-                res.cover_url = Some(format!("data:{mime};base64,{b64}"));
+                res.cover_url = cache_or_encode_artwork(art.data, mime);
+
             }
             let dur = tag.duration();
             if dur.as_secs_f64() > 0.0 {
@@ -516,6 +541,12 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
             if res.disc_total.is_none() { res.disc_total = tag.total_discs().map(|d| d as i32); }
             if res.comments.is_none() {
                 res.comments = tag.comments().next().map(|c| c.text.clone());
+                if res.replay_gain_db.is_none() {
+                    res.replay_gain_db = tag
+                        .extended_texts()
+                        .find(|et| et.description.eq_ignore_ascii_case("REPLAYGAIN_TRACK_GAIN"))
+                        .and_then(|et| parse_replay_gain_string(&et.value));
+                }
             }
             if res.cover_url.is_none() {
                 let pic_opt = tag
@@ -525,8 +556,8 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                     .or_else(|| tag.pictures().next());
                 if let Some(pic) = pic_opt {
                     let mime = detect_image_mime(&pic.data, &pic.mime_type);
-                    let b64 = encode_base64(&pic.data);
-                    res.cover_url = Some(format!("data:{mime};base64,{b64}"));
+                    res.cover_url = cache_or_encode_artwork(&pic.data, mime);
+    
                 }
             }
             // ID3 TLEN tag for duration
@@ -598,6 +629,11 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                 if res.disc_total.is_none() { res.disc_total = tag.disk_total().map(|d| d as i32); }
                 if res.comments.is_none() {
                     res.comments = tag.comment().as_deref().map(|s| s.to_string());
+                    if res.replay_gain_db.is_none() {
+                        res.replay_gain_db = tag
+                            .get_string(ItemKey::ReplayGainTrackGain)
+                            .and_then(parse_replay_gain_string);
+                    }
                 }
                 if res.cover_url.is_none() {
                     let pic_opt = tag
@@ -609,8 +645,8 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                     if let Some(pic) = pic_opt {
                         let fallback_mime = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
                         let mime = detect_image_mime(pic.data(), fallback_mime);
-                        let b64 = encode_base64(pic.data());
-                        res.cover_url = Some(format!("data:{mime};base64,{b64}"));
+                        res.cover_url = cache_or_encode_artwork(pic.data(), mime);
+        
                     }
                 }
             }
@@ -668,11 +704,12 @@ struct BatchFileStat {
 
 #[tauri::command]
 fn batch_stat_files(paths: Vec<String>) -> Vec<BatchFileStat> {
+    use rayon::prelude::*;
     use std::fs;
     use std::time::UNIX_EPOCH;
 
     paths
-        .into_iter()
+        .into_par_iter()
         .map(|path_str| {
             let p = std::path::Path::new(&path_str);
             match fs::metadata(p) {
@@ -1571,7 +1608,24 @@ pub fn run() {
             write_music_metadata,
             organize_music_file,
             relocate_organized_music_file,
-            install_linux_package_elevated
+            install_linux_package_elevated,
+            db::db_get_all_tracks,
+            db::db_save_tracks_batch,
+            db::db_update_track_playback,
+            db::db_update_track_rating,
+            db::db_delete_tracks,
+            db::db_clear_all,
+            audio_engine::native_audio_play,
+            audio_engine::native_audio_crossfade,
+            audio_engine::native_audio_pause,
+            audio_engine::native_audio_resume,
+            audio_engine::native_audio_stop,
+            audio_engine::native_audio_seek,
+            audio_engine::native_audio_set_volume,
+            audio_engine::native_audio_set_normalization,
+            audio_engine::native_audio_set_eq,
+            audio_engine::native_audio_get_state,
+            audio_engine::native_audio_get_visualizer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Track, ViewMode } from '../types';
 import { audioEngine } from '../services/audioEngine';
-import { tauriMinimize, tauriMaximize, tauriClose } from '../utils/tauriWindow';
+import { tauriMinimize, tauriMaximize, tauriClose, tauriIsMaximized, tauriOnWindowMaximizedChange } from '../utils/tauriWindow';
 import { MarqueeText } from './MarqueeText';
 import { platformInfo } from '../utils/platform';
 
@@ -57,6 +57,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isDraggingSeek, setIsDraggingSeek] = useState(false);
   const [seekVal, setSeekVal] = useState(0);
+  const [isMaximized, setIsMaximized] = useState(false);
 
   const isLight = theme === 'light';
 
@@ -183,6 +184,27 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const isLinux = platformInfo.isLinux;
   const isAppWindow = platformInfo.isTauri || platformInfo.isElectron;
 
+  useEffect(() => {
+    if (isMac || !isAppWindow) return;
+    let cleanup: (() => void) | null = null;
+    let active = true;
+
+    tauriOnWindowMaximizedChange((max) => {
+      if (active) setIsMaximized(max);
+    }).then((unsub) => {
+      if (active) {
+        cleanup = unsub;
+      } else {
+        unsub();
+      }
+    });
+
+    return () => {
+      active = false;
+      if (cleanup) cleanup();
+    };
+  }, [isMac, isAppWindow]);
+
   const handleMinimize = async () => {
     await tauriMinimize();
   };
@@ -191,11 +213,13 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     const handled = await tauriMaximize();
     if (!handled) {
       if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => { });
+        await document.documentElement.requestFullscreen().catch(() => { });
       } else {
-        document.exitFullscreen().catch(() => { });
+        await document.exitFullscreen().catch(() => { });
       }
     }
+    const max = await tauriIsMaximized();
+    setIsMaximized(max);
   };
 
   const handleClose = async () => {
@@ -280,9 +304,17 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                   type="button"
                   onClick={handleMaximize}
                   className={`p-1 rounded hover:bg-white/10 dark:hover:bg-white/10 ${isLight ? 'text-white font-bold' : 'text-gray-400'}`}
-                  title="Maximize"
+                  title={isMaximized ? 'Restore Down' : 'Maximize'}
+                  id="titlebar-maximize-btn-win"
                 >
-                  <Square className="w-2.5 h-2.5" />
+                  {isMaximized ? (
+                    <svg className="w-2.5 h-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
+                      <path d="M3 3V1H9V7H7" />
+                      <rect x="1" y="3" width="6" height="6" />
+                    </svg>
+                  ) : (
+                    <Square className="w-2.5 h-2.5" />
+                  )}
                 </button>
                 <button
                   type="button"
@@ -546,4 +578,3 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     </header>
   );
 };
-

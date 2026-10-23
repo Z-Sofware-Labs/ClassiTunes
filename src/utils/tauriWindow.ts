@@ -26,6 +26,76 @@ export async function tauriMinimize(): Promise<boolean> {
   return false;
 }
 
+export async function tauriIsMaximized(): Promise<boolean> {
+  if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
+    try {
+      let winObj: any = null;
+      if ((window as any).__TAURI__?.window?.getCurrentWindow) {
+        winObj = (window as any).__TAURI__.window.getCurrentWindow();
+      } else {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        winObj = getCurrentWindow();
+      }
+      if (winObj && typeof winObj.isMaximized === 'function') {
+        return await winObj.isMaximized();
+      }
+    } catch {}
+  }
+
+  if (typeof window !== 'undefined' && typeof (window as any).electronAPI?.isMaximized === 'function') {
+    try {
+      return !!(await (window as any).electronAPI.isMaximized());
+    } catch {}
+  }
+
+  return typeof document !== 'undefined' && !!document.fullscreenElement;
+}
+
+export async function tauriOnWindowMaximizedChange(callback: (isMaximized: boolean) => void): Promise<() => void> {
+  let unlistenTauri: (() => void) | null = null;
+
+  const checkAndNotify = async () => {
+    const maximized = await tauriIsMaximized();
+    callback(maximized);
+  };
+
+  if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
+    try {
+      let winObj: any = null;
+      if ((window as any).__TAURI__?.window?.getCurrentWindow) {
+        winObj = (window as any).__TAURI__.window.getCurrentWindow();
+      } else {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        winObj = getCurrentWindow();
+      }
+      if (winObj && typeof winObj.onResized === 'function') {
+        unlistenTauri = await winObj.onResized(() => {
+          void checkAndNotify();
+        });
+      }
+    } catch {}
+  }
+
+  const onResizeOrFullscreen = () => {
+    void checkAndNotify();
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', onResizeOrFullscreen);
+    document.addEventListener('fullscreenchange', onResizeOrFullscreen);
+  }
+
+  void checkAndNotify();
+
+  return () => {
+    if (unlistenTauri) unlistenTauri();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('resize', onResizeOrFullscreen);
+      document.removeEventListener('fullscreenchange', onResizeOrFullscreen);
+    }
+  };
+}
+
 export async function tauriMaximize(): Promise<boolean> {
   if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
     try {
@@ -1009,3 +1079,108 @@ export async function readTauriMusicMetadataBatch(filePaths: string[]): Promise<
 
 // Backwards-compatible alias for callers that only handle ID3 files.
 export const writeTauriId3Tags = writeTauriMusicMetadata;
+
+/**
+ * Convert a local filesystem path returned by Rust (e.g. cached artwork path) into a Tauri asset:// URL.
+ * Leaves existing data:, blob:, http:, https:, and asset: URLs untouched.
+ */
+export async function resolveNativeCoverUrl(coverUrl?: string | null): Promise<string | undefined> {
+  if (!coverUrl) return undefined;
+  const trimmed = coverUrl.trim();
+  if (!trimmed) return undefined;
+  if (
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('http:') ||
+    trimmed.startsWith('https:') ||
+    trimmed.startsWith('asset:') ||
+    trimmed.startsWith('file:') ||
+    (trimmed.startsWith('/') && !isTauri())
+  ) {
+    return trimmed;
+  }
+  if (isTauri()) {
+    try {
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      return convertFileSrc(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
+}
+
+export async function dbGetAllTracks(): Promise<any[] | null> {
+  if (!isTauri()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<any[]>('db_get_all_tracks');
+  } catch (e) {
+    console.warn('db_get_all_tracks failed:', e);
+    return null;
+  }
+}
+
+export async function dbSaveTracksBatch(tracks: any[]): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_save_tracks_batch', { tracks });
+  } catch (e) {
+    console.warn('db_save_tracks_batch failed:', e);
+    return false;
+  }
+}
+
+export async function dbUpdateTrackPlayback(
+  trackId: string,
+  playCount: number,
+  lastPlayed?: string | null
+): Promise<boolean> {
+  if (!isTauri() || !trackId) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_update_track_playback', {
+      trackId,
+      playCount,
+      lastPlayed: lastPlayed ?? null,
+    });
+  } catch (e) {
+    console.warn('db_update_track_playback failed:', e);
+    return false;
+  }
+}
+
+export async function dbUpdateTrackRating(trackId: string, rating: number): Promise<boolean> {
+  if (!isTauri() || !trackId) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_update_track_rating', { trackId, rating });
+  } catch (e) {
+    console.warn('db_update_track_rating failed:', e);
+    return false;
+  }
+}
+
+export async function dbDeleteTracks(trackIds: string[]): Promise<boolean> {
+  if (!isTauri() || trackIds.length === 0) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_delete_tracks', { trackIds });
+  } catch (e) {
+    console.warn('db_delete_tracks failed:', e);
+    return false;
+  }
+}
+
+export async function dbClearAll(): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_clear_all');
+  } catch (e) {
+    console.warn('db_clear_all failed:', e);
+    return false;
+  }
+}
+

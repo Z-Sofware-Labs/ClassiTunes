@@ -31,6 +31,18 @@ type Deck = {
   fadeGain: number;
 };
 
+interface NativePlaybackState {
+  currentTime: number;
+  duration: number;
+  paused: boolean;
+  ended: boolean;
+}
+
+interface NativeVisualizerData {
+  frequencyBins: number[];
+  waveformBins: number[];
+}
+
 export class AudioEngine {
   private audioCtx: AudioContext | null = null;
   private decks: [Deck | null, Deck | null] = [null, null];
@@ -50,11 +62,78 @@ export class AudioEngine {
   // Tracks blob: URLs we created so we can revoke them after track changes (memory management).
   private activeBlobUrls = new Set<string>();
 
+  // ── Native Rust Audio Engine State ──────────────────────────────────────────
+  private usingNativeBackend = false;
+  private nativeState: NativePlaybackState = { currentTime: 0, duration: 0, paused: true, ended: false };
+  private nativePollTimer: number | null = null;
+  private nativeFreqCache = new Uint8Array(128);
+  private nativeWaveCache = new Uint8Array(128).fill(128);
+  private lastVisualizerFetchMs = 0;
+  private visualizerFetchInFlight = false;
+
   private get activeDeck(): Deck | null { return this.decks[this.activeIndex]; }
   private get activeAudio(): HTMLAudioElement | null { return this.activeDeck?.audio || null; }
 
   constructor() {
     // Decks are created lazily after a user gesture so AudioContext creation remains autoplay-safe.
+  }
+
+  // ── Native Rust Audio Polling & Helpers ─────────────────────────────────────
+
+  private startNativePolling(): void {
+    if (this.nativePollTimer !== null) return;
+    this.nativePollTimer = window.setInterval(async () => {
+      if (!this.usingNativeBackend || !this.isTauriEnv()) return;
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const state = await invoke<NativePlaybackState>('native_audio_get_state');
+        const prevTime = this.nativeState.currentTime;
+        this.nativeState = state;
+        if (Math.abs(state.currentTime - prevTime) > 0.01 || !state.paused) {
+          this.timeUpdateCallbacks.forEach(cb => cb());
+        }
+        if (state.ended) {
+          this.stopNativePolling();
+          this.endedCallbacks.forEach(cb => cb());
+        }
+      } catch {
+        // Ignore transient IPC error during poll
+      }
+    }, 100);
+  }
+
+  private stopNativePolling(): void {
+    if (this.nativePollTimer !== null) {
+      window.clearInterval(this.nativePollTimer);
+      this.nativePollTimer = null;
+    }
+  }
+
+  private refreshNativeVisualizer(): void {
+    if (!this.usingNativeBackend || !this.isTauriEnv() || this.nativeState.paused) return;
+    const now = performance.now();
+    if (this.visualizerFetchInFlight || now - this.lastVisualizerFetchMs < 28) return;
+    this.visualizerFetchInFlight = true;
+    this.lastVisualizerFetchMs = now;
+
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<NativeVisualizerData>('native_audio_get_visualizer'))
+      .then(data => {
+        if (data?.frequencyBins) {
+          for (let i = 0; i < Math.min(this.nativeFreqCache.length, data.frequencyBins.length); i++) {
+            this.nativeFreqCache[i] = data.frequencyBins[i];
+          }
+        }
+        if (data?.waveformBins) {
+          for (let i = 0; i < Math.min(this.nativeWaveCache.length, data.waveformBins.length); i++) {
+            this.nativeWaveCache[i] = data.waveformBins[i];
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.visualizerFetchInFlight = false;
+      });
   }
 
   // ── Blob URL helpers ─────────────────────────────────────────────────────────
@@ -307,13 +386,13 @@ export class AudioEngine {
     }
 
     audio.addEventListener('ended', () => {
-      if (this.activeDeck === deck && !this.crossfadeActive) this.endedCallbacks.forEach(cb => cb());
+      if (!this.usingNativeBackend && this.activeDeck === deck && !this.crossfadeActive) this.endedCallbacks.forEach(cb => cb());
     });
     audio.addEventListener('timeupdate', () => {
-      if (this.activeDeck === deck) this.timeUpdateCallbacks.forEach(cb => cb());
+      if (!this.usingNativeBackend && this.activeDeck === deck) this.timeUpdateCallbacks.forEach(cb => cb());
     });
     audio.addEventListener('loadedmetadata', () => {
-      if (this.activeDeck === deck) this.loadedMetadataCallbacks.forEach(cb => cb());
+      if (!this.usingNativeBackend && this.activeDeck === deck) this.loadedMetadataCallbacks.forEach(cb => cb());
     });
     // Detect codec-level failures on the media element.
     // MEDIA_ERR_DECODE (3) = codec cannot decode the stream.
@@ -354,6 +433,11 @@ export class AudioEngine {
         this.applyDeckGain(deck);
       }
     });
+    if (this.isTauriEnv()) {
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('native_audio_set_normalization', { enabled }))
+        .catch(() => {});
+    }
   }
 
   // Informs Linux/Fedora users about missing audio codecs.
@@ -432,6 +516,43 @@ export class AudioEngine {
   }
 
   public async playTrack(url: string, replayGainDb?: number, filePathHint?: string, trackInfo?: { sizeBytes?: number }): Promise<void> {
+    const fsPath = filePathHint || this.extractFsPathFromUrl(url);
+
+    // ── Try Pure-Rust Native Audio Engine First on Tauri Desktop ──────────────
+    if (this.isTauriEnv() && fsPath) {
+      try {
+        // Pause any active HTML5 decks first
+        this.decks.forEach(d => d?.audio.pause());
+
+        const { invoke } = await import('@tauri-apps/api/core');
+        const state = await invoke<NativePlaybackState>('native_audio_play', {
+          filePath: fsPath,
+          replayGainDb: replayGainDb ?? null,
+        });
+        this.usingNativeBackend = true;
+        this.nativeState = state;
+        this.loadedMetadataCallbacks.forEach(cb => cb());
+        this.timeUpdateCallbacks.forEach(cb => cb());
+        this.startNativePolling();
+        return;
+      } catch (nativeErr) {
+        // Symphonia may not support proprietary AAC/ALAC if offline crates lacked symphonia-codec-aac;
+        // fall back seamlessly to WebAudio / HTML5 <audio>.
+        this.usingNativeBackend = false;
+        this.stopNativePolling();
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('native_audio_stop');
+        } catch {}
+      }
+    } else if (this.usingNativeBackend) {
+      this.usingNativeBackend = false;
+      this.stopNativePolling();
+      if (this.isTauriEnv()) {
+        import('@tauri-apps/api/core').then(({ invoke }) => invoke('native_audio_stop')).catch(() => {});
+      }
+    }
+
     this.initWebAudio();
     if (!this.activeDeck || !this.audioCtx) return;
     if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
@@ -559,6 +680,32 @@ export class AudioEngine {
   }
 
   public async crossfadeTo(url: string, seconds: number, replayGainDb?: number, filePathHint?: string): Promise<void> {
+    const fsPath = filePathHint || this.extractFsPathFromUrl(url);
+
+    // ── Try Pure-Rust Native Dual-Deck Crossfade First ────────────────────────
+    if (this.usingNativeBackend && this.isTauriEnv() && fsPath) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const state = await invoke<NativePlaybackState>('native_audio_crossfade', {
+          filePath: fsPath,
+          durationSecs: Math.max(0.25, seconds || 1),
+          replayGainDb: replayGainDb ?? null,
+        });
+        this.nativeState = state;
+        this.loadedMetadataCallbacks.forEach(cb => cb());
+        this.startNativePolling();
+        return;
+      } catch {
+        // Fall back to WebAudio if target track codec is unsupported by Symphonia
+        this.usingNativeBackend = false;
+        this.stopNativePolling();
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('native_audio_stop');
+        } catch {}
+      }
+    }
+
     this.initWebAudio();
     if (!this.audioCtx || !this.activeDeck || !url) return;
     if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
@@ -635,34 +782,100 @@ export class AudioEngine {
     }, duration * 1000 + 100);
   }
 
-  public pause(): void { this.activeAudio?.pause(); }
+  public pause(): void {
+    if (this.usingNativeBackend && this.isTauriEnv()) {
+      this.nativeState.paused = true;
+      import('@tauri-apps/api/core').then(({ invoke }) => invoke('native_audio_pause')).catch(() => {});
+      return;
+    }
+    this.activeAudio?.pause();
+  }
 
   public resume(): void {
+    if (this.usingNativeBackend && this.isTauriEnv()) {
+      this.nativeState.paused = false;
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('native_audio_resume'))
+        .then(() => this.startNativePolling())
+        .catch(() => {});
+      return;
+    }
     this.initWebAudio();
     if (!this.activeAudio) return;
     if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
     this.activeAudio.play().catch(console.warn);
   }
 
-  public seek(seconds: number): void { if (this.activeAudio) this.activeAudio.currentTime = seconds; }
+  public seek(seconds: number): void {
+    if (this.usingNativeBackend && this.isTauriEnv()) {
+      this.nativeState.currentTime = Math.max(0, seconds);
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('native_audio_seek', { seconds: Math.max(0, seconds) }))
+        .catch(() => {});
+      return;
+    }
+    if (this.activeAudio) this.activeAudio.currentTime = seconds;
+  }
+
   public setVolume(val: number): void {
     this.currentVolume = Math.max(0, Math.min(1, val));
     this.decks.forEach(deck => deck && this.applyDeckGain(deck));
+    if (this.isTauriEnv()) {
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('native_audio_set_volume', { volume: this.currentVolume }))
+        .catch(() => {});
+    }
   }
+
   public getVolume(): number { return this.currentVolume; }
-  public getCurrentTime(): number { return this.activeAudio?.currentTime || 0; }
-  public getDuration(): number { return this.activeAudio?.duration || 0; }
-  public isPaused(): boolean { return this.activeAudio?.paused ?? true; }
+  public getCurrentTime(): number {
+    if (this.usingNativeBackend) return this.nativeState.currentTime;
+    return this.activeAudio?.currentTime || 0;
+  }
+  public getDuration(): number {
+    if (this.usingNativeBackend) return this.nativeState.duration;
+    return this.activeAudio?.duration || 0;
+  }
+  public isPaused(): boolean {
+    if (this.usingNativeBackend) return this.nativeState.paused;
+    return this.activeAudio?.paused ?? true;
+  }
 
   public setEQPreset(bands: EqualizerBands): void {
     const values = [bands.b32, bands.b64, bands.b125, bands.b250, bands.b500, bands.b1k, bands.b2k, bands.b4k, bands.b8k, bands.b16k];
     this.decks.forEach(deck => deck?.filters.forEach((filter, i) => {
       filter.gain.setValueAtTime(values[i], this.audioCtx?.currentTime || 0);
     }));
+    if (this.isTauriEnv()) {
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('native_audio_set_eq', { gains: values }))
+        .catch(() => {});
+    }
   }
 
-  public getAnalyserData(dataArray: Uint8Array<ArrayBuffer>): void { this.activeDeck?.analyser.getByteFrequencyData(dataArray); }
-  public getWaveformData(dataArray: Uint8Array<ArrayBuffer>): void { this.activeDeck?.analyser.getByteTimeDomainData(dataArray); }
+  public getAnalyserData(dataArray: Uint8Array<ArrayBuffer>): void {
+    if (this.usingNativeBackend) {
+      this.refreshNativeVisualizer();
+      const len = Math.min(dataArray.length, this.nativeFreqCache.length);
+      for (let i = 0; i < len; i++) {
+        dataArray[i] = this.nativeFreqCache[i];
+      }
+      return;
+    }
+    this.activeDeck?.analyser.getByteFrequencyData(dataArray);
+  }
+
+  public getWaveformData(dataArray: Uint8Array<ArrayBuffer>): void {
+    if (this.usingNativeBackend) {
+      this.refreshNativeVisualizer();
+      const len = Math.min(dataArray.length, this.nativeWaveCache.length);
+      for (let i = 0; i < len; i++) {
+        dataArray[i] = this.nativeWaveCache[i];
+      }
+      return;
+    }
+    this.activeDeck?.analyser.getByteTimeDomainData(dataArray);
+  }
 
   public onEnded(callback: () => void): () => void {
     this.endedCallbacks.add(callback);
@@ -693,6 +906,11 @@ export class AudioEngine {
    * Ensures no dangling AudioContext or unreleased memory during reset or track unmount.
    */
   public releaseResources(): void {
+    this.stopNativePolling();
+    if (this.usingNativeBackend && this.isTauriEnv()) {
+      this.usingNativeBackend = false;
+      import('@tauri-apps/api/core').then(({ invoke }) => invoke('native_audio_stop')).catch(() => {});
+    }
     this.decks.forEach(deck => {
       if (deck?.audio) {
         deck.audio.pause();

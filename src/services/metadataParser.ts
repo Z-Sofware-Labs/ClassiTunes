@@ -4,7 +4,7 @@ import jsmediatags from 'jsmediatags/dist/jsmediatags.min.js';
 import { Track } from '../types';
 import { generateAlbumArtwork } from '../utils/artworkGenerator';
 import { saveMediaFile, getMediaFile, dataURLtoBlob } from './mediaStorage';
-import { readTauriMusicMetadata } from '../utils/tauriWindow';
+import { readTauriMusicMetadata, resolveNativeCoverUrl } from '../utils/tauriWindow';
 
 function bufferToBase64(buffer: ArrayBuffer | Uint8Array | number[], mimeType: string): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -815,7 +815,7 @@ export async function parseAudioFile(file: File): Promise<Track> {
           const rawCoverUrl = nativeMeta.coverUrl || generateAlbumArtwork(finalAlbum, finalArtist);
           const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-          let normalizedCoverUrl = rawCoverUrl;
+          let normalizedCoverUrl = (await resolveNativeCoverUrl(rawCoverUrl)) || rawCoverUrl;
           if (rawCoverUrl && rawCoverUrl.startsWith('data:')) {
             const blob = dataURLtoBlob(rawCoverUrl);
             if (blob) {
@@ -833,6 +833,7 @@ export async function parseAudioFile(file: File): Promise<Track> {
             composer: nativeMeta.composer?.trim() || undefined,
             publisher: nativeMeta.publisher?.trim() || undefined,
             lyrics: nativeMeta.lyrics?.trim() || undefined,
+            replayGainDb: nativeMeta.replayGainDb,
             genre: nativeMeta.genre?.trim() || 'Uncategorized',
             duration: Math.round(nativeMeta.duration * 100) / 100,
             year: nativeMeta.year,
@@ -1420,6 +1421,9 @@ export async function extractID3TagsFromTrack(track: Track, options: { fallbackT
       try {
         const nativeTags = await readTauriMusicMetadata(track.filePath);
         if (nativeTags && (nativeTags.title || nativeTags.artist || nativeTags.album || nativeTags.duration)) {
+          const resolvedNativeCover = nativeTags.coverUrl
+            ? await resolveNativeCoverUrl(nativeTags.coverUrl)
+            : undefined;
           return {
             title: nativeTags.title || (fallbackToTrack ? track.title : undefined),
             artist: nativeTags.artist || (fallbackToTrack ? track.artist : undefined),
@@ -1442,7 +1446,7 @@ export async function extractID3TagsFromTrack(track: Track, options: { fallbackT
             sampleRate: nativeTags.sampleRate || (fallbackToTrack ? track.sampleRate : undefined),
             duration: nativeTags.duration || (fallbackToTrack ? track.duration : undefined),
             sizeBytes: nativeTags.sizeBytes || (fallbackToTrack ? track.sizeBytes : undefined),
-            coverUrl: nativeTags.coverUrl || (fallbackToTrack ? track.coverUrl : undefined),
+            coverUrl: resolvedNativeCover || (fallbackToTrack ? track.coverUrl : undefined),
             comments: nativeTags.comments || (fallbackToTrack ? track.comments : undefined),
           };
         }

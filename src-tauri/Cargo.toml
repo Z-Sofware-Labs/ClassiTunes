@@ -1,6 +1,6 @@
 [package]
 name = "classitunes"
-version = "1.7.6"
+version = "1.8.0"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
 edition = "2021"
@@ -26,6 +26,10 @@ tauri-plugin-process = "2"
 tiny_http = "0.12"
 lofty = "0.25.3"
 rayon = "1.10"
+symphonia = { version = "0.6.1", default-features = false, features = ["opt-simd", "all-meta", "adpcm", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav", "aiff"] }
+cpal = "0.15.3"
+rustfft = "6.4.1"
+bincode = { version = "2.0.1", features = ["serde"] }
 
 [profile.release]
 codegen-units = 1
