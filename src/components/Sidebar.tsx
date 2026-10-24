@@ -5,8 +5,8 @@ import {
   Play, Pause, Maximize2, Info, Image as ImageIcon, X, Sparkles, Sliders, Edit2
 } from 'lucide-react';
 import { Playlist, Track } from '../types';
-import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory, readTauriMusicMetadata } from '../utils/tauriWindow';
-import { getCachedArtwork, getMediaFile, setCachedArtwork } from '../services/mediaStorage';
+import { isTauri, pickTauriFiles, pickTauriDirectory, scanTauriDirectory, readTauriMusicMetadata, resolveNativeCoverUrlSync } from '../utils/tauriWindow';
+import { getArtwork, getCachedArtwork, getMediaFile, setCachedArtwork } from '../services/mediaStorage';
 
 interface SidebarProps {
   playlists: Playlist[];
@@ -141,7 +141,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const albumKey = (displayTrack?.album || '').trim().toLowerCase();
   
   // Resolve artwork instantly from track, ID cache, or album cache
-  const resolvedCoverUrl = displayTrack?.coverUrl || (displayTrack ? getCachedArtwork(displayTrack.id) || (albumKey ? getCachedArtwork(albumKey) : undefined) : undefined);
+  const rawCoverUrl = displayTrack?.coverUrl || (displayTrack ? getCachedArtwork(displayTrack.id) || (albumKey ? getCachedArtwork(albumKey) : undefined) : undefined);
+  const resolvedCoverUrl = rawCoverUrl ? (resolveNativeCoverUrlSync(rawCoverUrl) || rawCoverUrl) : undefined;
 
   // Maintain active cover to eliminate blank flash while next track's artwork is resolving
   const [activeCoverUrl, setActiveCoverUrl] = useState<string | undefined>(resolvedCoverUrl);
@@ -178,9 +179,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           readTauriMusicMetadata(displayTrack.filePath).then((meta) => {
             if (!isMounted) return;
             if (meta?.coverUrl) {
-              setCachedArtwork(displayTrack.id, meta.coverUrl);
-              if (albumKey) setCachedArtwork(albumKey, meta.coverUrl);
-              setActiveCoverUrl(meta.coverUrl);
+              const converted = resolveNativeCoverUrlSync(meta.coverUrl) || meta.coverUrl;
+              setCachedArtwork(displayTrack.id, converted);
+              if (albumKey) setCachedArtwork(albumKey, converted);
+              setActiveCoverUrl(converted);
+              if (albumKey) setCachedArtwork(albumKey, converted);
+              setActiveCoverUrl(converted);
             }
           }).catch(() => {});
         }

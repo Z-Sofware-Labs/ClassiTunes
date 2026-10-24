@@ -1658,6 +1658,7 @@ pub fn run() {
             db::db_save_tracks_batch,
             db::db_update_track_playback,
             db::db_update_track_rating,
+            db::db_update_track_cover,
             db::db_delete_tracks,
             db::db_clear_all,
             audio_engine::native_audio_play,

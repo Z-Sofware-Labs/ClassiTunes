@@ -229,6 +229,34 @@ impl LibraryDb {
         Ok(false)
     }
 
+    pub fn update_track_cover(&mut self, id: &str, cover_url: String) -> Result<bool, String> {
+        if cover_url.is_empty() {
+            return Ok(false);
+        }
+        let mut target_album = None;
+        if let Some(track) = self.tracks_by_id.get_mut(id) {
+            track.cover_url = Some(cover_url.clone());
+            let alb = track.album.trim().to_ascii_lowercase();
+            if !alb.is_empty() && alb != "unknown album" {
+                target_album = Some(alb);
+            }
+        } else {
+            return Ok(false);
+        }
+
+        if let Some(alb) = target_album {
+            for t in self.tracks_by_id.values_mut() {
+                if t.cover_url.as_deref().unwrap_or("").is_empty()
+                    && t.album.trim().to_ascii_lowercase() == alb
+                {
+                    t.cover_url = Some(cover_url.clone());
+                }
+            }
+        }
+        self.flush_to_disk()?;
+        Ok(true)
+    }
+
     pub fn delete_tracks(&mut self, ids: &[String]) -> Result<usize, String> {
         let mut removed = 0;
         for id in ids {
@@ -323,6 +351,11 @@ pub fn db_update_track_playback(
 #[tauri::command]
 pub fn db_update_track_rating(track_id: String, rating: u8) -> Result<bool, String> {
     with_db(|db| db.update_track_rating(&track_id, rating))
+}
+
+#[tauri::command]
+pub fn db_update_track_cover(track_id: String, cover_url: String) -> Result<bool, String> {
+    with_db(|db| db.update_track_cover(&track_id, cover_url))
 }
 
 #[tauri::command]

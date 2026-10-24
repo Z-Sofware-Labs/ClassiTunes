@@ -7,6 +7,7 @@ import {
   dbGetAllTracks,
   dbSaveTracksBatch,
   dbUpdateTrackPlayback,
+  dbUpdateTrackCover,
   dbDeleteTracks,
   dbClearAll,
 } from '../utils/tauriWindow';
@@ -524,16 +525,23 @@ export async function getArtwork(trackId: string, candidateUrl?: string, filePat
     }
   }
 
-  const coverBlob = await getMediaFile(`cover_${trackId}`);
-  if (coverBlob) {
-    return createCachedArtworkUrl(trackId, coverBlob);
+  // In Tauri, skip IndexedDB lookup if we have a native filePath, since covers are stored in artwork_cache on disk
+  if (!isTauri() || !filePath) {
+    const coverBlob = await getMediaFile(`cover_${trackId}`);
+    if (coverBlob) {
+      return createCachedArtworkUrl(trackId, coverBlob);
+    }
   }
 
   if (filePath) {
     try {
       const metadata = await readTauriMusicMetadata(filePath);
       if (metadata?.coverUrl) {
-        return getArtwork(trackId, metadata.coverUrl);
+        const resolved = await getArtwork(trackId, metadata.coverUrl);
+        if (resolved && !resolved.startsWith('blob:') && !resolved.startsWith('data:')) {
+          void dbUpdateTrackCover(trackId, resolved);
+        }
+        return resolved;
       }
     } catch (error) {
       console.warn('Failed to load artwork from native track metadata:', error);
@@ -554,8 +562,13 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
 
   if (isTauriEnv && track.filePath) {
     try {
-      const { convertFileSrc } = await import('@tauri-apps/api/core');
-      updatedTrack.audioUrl = convertFileSrc(track.filePath);
+      const syncAudio = resolveNativeCoverUrlSync(track.filePath);
+      if (syncAudio && (syncAudio.startsWith('asset:') || syncAudio.startsWith('http://') || syncAudio.startsWith('https://'))) {
+        updatedTrack.audioUrl = syncAudio;
+      } else {
+        const { convertFileSrc } = await import('@tauri-apps/api/core');
+        updatedTrack.audioUrl = convertFileSrc(track.filePath);
+      }
     } catch (e) {
       console.error('Failed to convert file path in hydrateTrackMedia:', e);
     }
@@ -577,8 +590,17 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
     updatedTrack.coverUrl = globalArtworkCache.get(track.id);
   } else if (albumKey && globalArtworkCache.has(albumKey)) {
     updatedTrack.coverUrl = globalArtworkCache.get(albumKey);
+  } else if (updatedTrack.coverUrl && (updatedTrack.coverUrl.startsWith('asset:') || updatedTrack.coverUrl.startsWith('http://') || updatedTrack.coverUrl.startsWith('https://'))) {
+    setCachedArtwork(track.id, updatedTrack.coverUrl);
+    if (albumKey) setCachedArtwork(albumKey, updatedTrack.coverUrl);
+  } else if (updatedTrack.coverUrl && isTauriEnv && !updatedTrack.coverUrl.startsWith('blob:') && !updatedTrack.coverUrl.startsWith('data:')) {
+    updatedTrack.coverUrl = await resolveNativeCoverUrl(updatedTrack.coverUrl);
+    if (updatedTrack.coverUrl) {
+      setCachedArtwork(track.id, updatedTrack.coverUrl);
+      if (albumKey) setCachedArtwork(albumKey, updatedTrack.coverUrl);
+    }
   } else {
-    const coverBlob = await getMediaFile(`cover_${track.id}`);
+    const coverBlob = (!isTauriEnv || !track.filePath) ? await getMediaFile(`cover_${track.id}`) : null;
     if (coverBlob) {
       updatedTrack.coverUrl = URL.createObjectURL(coverBlob);
     } else if (updatedTrack.coverUrl && updatedTrack.coverUrl.startsWith('data:')) {
@@ -587,9 +609,7 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
         saveMediaFile(`cover_${track.id}`, b);
         updatedTrack.coverUrl = URL.createObjectURL(b);
       }
-    } else if (updatedTrack.coverUrl && isTauriEnv && !updatedTrack.coverUrl.startsWith('blob:') && !updatedTrack.coverUrl.startsWith('asset:')) {
-      updatedTrack.coverUrl = await resolveNativeCoverUrl(updatedTrack.coverUrl);
-    } else if ((!updatedTrack.coverUrl || !updatedTrack.coverUrl.startsWith('blob:')) && isTauriEnv && track.filePath) {
+    } else if (isTauriEnv && track.filePath) {
       try {
         const meta = await readTauriMusicMetadata(track.filePath);
         if (meta?.coverUrl) {
@@ -603,6 +623,9 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
             }
           } else {
             updatedTrack.coverUrl = await resolveNativeCoverUrl(meta.coverUrl);
+          }
+          if (updatedTrack.coverUrl && !updatedTrack.coverUrl.startsWith('blob:') && !updatedTrack.coverUrl.startsWith('data:')) {
+            void dbUpdateTrackCover(track.id, updatedTrack.coverUrl);
           }
         }
       } catch (e) {}

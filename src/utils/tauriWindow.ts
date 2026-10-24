@@ -1195,6 +1195,17 @@ export async function dbUpdateTrackRating(trackId: string, rating: number): Prom
   }
 }
 
+export async function dbUpdateTrackCover(trackId: string, coverUrl: string): Promise<boolean> {
+  if (!isTauri() || !trackId || !coverUrl) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_update_track_cover', { trackId, coverUrl });
+  } catch (e) {
+    console.warn('db_update_track_cover failed:', e);
+    return false;
+  }
+}
+
 export async function dbDeleteTracks(trackIds: string[]): Promise<boolean> {
   if (!isTauri() || trackIds.length === 0) return false;
   try {

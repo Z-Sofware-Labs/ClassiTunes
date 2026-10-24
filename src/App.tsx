@@ -19,7 +19,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, dbUpdateTrackRating, dbDeleteTracks } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata } from './services/mediaStorage';
 import { Upload, Music, Disc } from 'lucide-react';
@@ -229,14 +229,78 @@ export default function App() {
   useEffect(() => {
     async function restoreTracks() {
       const dbTracks = await getTracksMetadata();
+      const restoredTracks: Track[] = Array.isArray(dbTracks) ? dbTracks : [];
+      if (isTauri() && restoredTracks.length > 0) {
+        const albumsWithCover = new Set<string>();
+        for (const t of restoredTracks) {
+          if (t.coverUrl) {
+            albumsWithCover.add((t.album || '').trim().toLowerCase());
+          }
+        }
+        const repTracksByAlbum = new Map<string, Track>();
+        for (const t of restoredTracks) {
+          if (!t.coverUrl && t.filePath && !t.id.startsWith('demo_') && !t.id.startsWith('sample_')) {
+            const key = (t.album || '').trim().toLowerCase() || t.id;
+            if (!albumsWithCover.has(key) && !repTracksByAlbum.has(key)) {
+              repTracksByAlbum.set(key, t);
+            }
+          }
+        }
+        if (repTracksByAlbum.size > 0) {
+          void (async () => {
+            const repPaths = Array.from(repTracksByAlbum.values()).map(t => t.filePath!);
+            const BATCH = 32;
+            const albumCoverMap = new Map<string, string>();
+            for (let i = 0; i < repPaths.length; i += BATCH) {
+              const slice = repPaths.slice(i, i + BATCH);
+              const metaMap = await readTauriMusicMetadataBatch(slice);
+              for (const [albumKey, repTrack] of repTracksByAlbum.entries()) {
+                const meta = repTrack.filePath ? metaMap[repTrack.filePath] : null;
+                if (meta?.coverUrl) {
+                  const resolved = resolveNativeCoverUrlSync(meta.coverUrl) || (await resolveNativeCoverUrl(meta.coverUrl)) || meta.coverUrl;
+                  if (resolved) {
+                    albumCoverMap.set(albumKey, resolved);
+                    setCachedArtwork(repTrack.id, resolved);
+                    setCachedArtwork(albumKey, resolved);
+                  }
+                }
+              }
+            }
+            if (albumCoverMap.size > 0) {
+              setTracks(prev => prev.map(t => {
+                if (t.coverUrl) return t;
+                const key = (t.album || '').trim().toLowerCase() || t.id;
+                const backfilled = albumCoverMap.get(key);
+                if (backfilled) {
+                  setCachedArtwork(t.id, backfilled);
+                  return { ...t, coverUrl: backfilled };
+                }
+                return t;
+              }));
+            }
+          })();
+        }
+      }
 
       setTracks(prev => {
         const map = new Map<string, Track>();
         prev.forEach(t => map.set(t.id, t));
         if (Array.isArray(dbTracks)) {
           dbTracks.forEach((t: Track) => {
-            if (!map.has(t.id)) {
-              map.set(t.id, t);
+            if (true) {
+            const resolvedCover = t.coverUrl ? (resolveNativeCoverUrlSync(t.coverUrl) || t.coverUrl) : t.coverUrl;
+            const hydratedTrack = resolvedCover && resolvedCover !== t.coverUrl ? { ...t, coverUrl: resolvedCover } : t;
+            if (resolvedCover) {
+              setCachedArtwork(t.id, resolvedCover);
+              const albumKey = (t.album || '').trim().toLowerCase();
+              if (albumKey && !getCachedArtwork(albumKey)) {
+                setCachedArtwork(albumKey, resolvedCover);
+              }
+            }
+            const existing = map.get(t.id);
+            if (!existing || (!existing.coverUrl && hydratedTrack.coverUrl)) {
+              map.set(t.id, hydratedTrack);
+            }
             }
           });
         }
