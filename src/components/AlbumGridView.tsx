@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react';
 import { Album, Track } from '../types';
-import { Play, Star, Disc, Music, X, Shuffle, Volume2, Info } from 'lucide-react';
+import { Play, Star, Disc, X, Shuffle, Volume2, Info } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
 import { getCachedArtwork, setCachedArtwork, getArtwork } from '../services/mediaStorage';
 
@@ -34,6 +34,18 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+/** Helper to check if a coverUrl can be rendered directly without async hydration */
+function isDirectCoverUrl(url?: string | null): url is string {
+  if (!url) return false;
+  return (
+    url.startsWith('blob:') ||
+    url.startsWith('asset:') ||
+    url.startsWith('http://') ||
+    url.startsWith('https://') ||
+    url.startsWith('data:')
+  );
+}
+
 // ─── Shared IntersectionObserver context (#10) ───────────────────────────────
 // A single observer for the entire grid — each AlbumCard registers a callback
 // instead of creating its own observer instance.
@@ -59,25 +71,25 @@ function useSharedVisibility(ref: React.RefObject<HTMLDivElement | null>, onVisi
 /** Individual Album Card with Lazy Artwork Resolution via Shared IntersectionObserver */
 const AlbumCard = React.memo<{
   album: Album;
-  currentTrack: Track | null;
+  activeAlbumTrack: Track | null;
   isSelected: boolean;
   isAlbumPlaying: boolean;
   isPlaying: boolean;
   isLight: boolean;
-  onSelect: () => void;
-  onPlayAlbum: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  onSelectAlbum: (albumId: string) => void;
+  onPlayAlbumCard: (album: Album) => void;
+  onAlbumContextMenu?: (album: Album, e: React.MouseEvent) => void;
 }>((
 {
   album,
-  currentTrack,
+  activeAlbumTrack,
   isSelected,
   isAlbumPlaying,
   isPlaying,
   isLight,
-  onSelect,
-  onPlayAlbum,
-  onContextMenu,
+  onSelectAlbum,
+  onPlayAlbumCard,
+  onAlbumContextMenu,
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
@@ -85,7 +97,9 @@ const AlbumCard = React.memo<{
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
     const cached = artworkCache.get(album.id) || (albumKey ? artworkCache.get(albumKey) : undefined);
     if (cached) return cached;
-    if (album.coverUrl && album.coverUrl.startsWith('blob:')) return album.coverUrl;
+    if (isDirectCoverUrl(album.coverUrl)) return album.coverUrl;
+    const directTrackCover = album.tracks.find(t => isDirectCoverUrl(t.coverUrl))?.coverUrl;
+    if (directTrackCover) return directTrackCover;
     return null;
   });
   const [imgError, setImgError] = useState(false);
@@ -97,9 +111,6 @@ const AlbumCard = React.memo<{
   useEffect(() => {
     if (!isVisible) return;
     let isMounted = true;
-    const activeAlbumTrack = currentTrack && (currentTrack.album || '').trim().toLowerCase() === albumKey
-      ? currentTrack
-      : null;
     const cachedAlbumArtwork = artworkCache.get(albumKey) || artworkCache.get(album.id);
     if (cachedAlbumArtwork) {
       setCoverUrl(cachedAlbumArtwork);
@@ -123,17 +134,27 @@ const AlbumCard = React.memo<{
     return () => {
       isMounted = false;
     };
-  }, [album.id, album.name, albumKey, album.tracks, album.coverUrl, currentTrack, isVisible]);
+  }, [album.id, album.name, albumKey, album.tracks, album.coverUrl, activeAlbumTrack, isVisible]);
+
+  const handleCardSelect = useCallback(() => {
+    onSelectAlbum(album.id);
+  }, [onSelectAlbum, album.id]);
+
+  const handleCardContextMenu = useCallback((e: React.MouseEvent) => {
+    if (onAlbumContextMenu) {
+      onAlbumContextMenu(album, e);
+    }
+  }, [onAlbumContextMenu, album]);
 
   return (
     <div
       ref={cardRef}
-      onContextMenu={onContextMenu}
-      className={`group relative flex flex-col p-2.5 rounded-xl transition-all duration-150 select-none ${
+      onContextMenu={handleCardContextMenu}
+      className={`group relative flex flex-col p-2.5 rounded-xl transition-colors duration-150 select-none ${
         isSelected
           ? isLight
-            ? 'bg-blue-50/90 ring-2 ring-blue-500 shadow-md scale-[1.01]'
-            : 'bg-white/10 ring-2 ring-blue-400 shadow-xl scale-[1.01]'
+            ? 'bg-blue-50/90 ring-2 ring-blue-500 shadow-md'
+            : 'bg-white/10 ring-2 ring-blue-400 shadow-xl'
           : isLight
             ? 'hover:bg-slate-200/60 hover:shadow-sm'
             : 'hover:bg-white/5 hover:shadow-md'
@@ -142,7 +163,7 @@ const AlbumCard = React.memo<{
     >
       {/* Square Album Art Thumbnail: Clicking thumbnail toggles song drawer or plays via hover button */}
       <div 
-        onClick={onSelect}
+        onClick={handleCardSelect}
         className="relative aspect-square w-full rounded-lg overflow-hidden bg-[#181818] shadow-md border border-black/10 cursor-pointer"
       >
         {coverUrl && !imgError ? (
@@ -150,13 +171,13 @@ const AlbumCard = React.memo<{
             src={coverUrl}
             alt={album.name}
             onError={() => setImgError(true)}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            className="w-full h-full object-cover"
             loading="lazy"
             decoding="async"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#2a2e36] to-[#15171a] text-slate-400">
-            <Disc className="w-12 h-12 stroke-[1.2] opacity-60 group-hover:rotate-45 transition-transform duration-500" />
+            <Disc className="w-12 h-12 stroke-[1.2] opacity-60" />
             <span className="text-[10px] mt-1.5 font-semibold opacity-40 uppercase tracking-widest px-2 text-center truncate w-full">
               {album.name}
             </span>
@@ -174,7 +195,7 @@ const AlbumCard = React.memo<{
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onPlayAlbum();
+              onPlayAlbumCard(album);
             }}
             className={`pointer-events-auto w-12 h-12 rounded-full text-white flex items-center justify-center shadow-2xl hover:scale-110 active:scale-95 transition-transform cursor-pointer ${
               isLight ? 'bg-blue-600 hover:bg-blue-500' : 'bg-blue-500 hover:bg-blue-400'
@@ -196,7 +217,7 @@ const AlbumCard = React.memo<{
 
       {/* Album Text Info: Also clickable to expand */}
       <div 
-        onClick={onSelect}
+        onClick={handleCardSelect}
         className="mt-2.5 flex flex-col cursor-pointer"
       >
         <h4 className={`text-xs font-bold truncate leading-snug ${isLight ? 'text-gray-900' : 'text-gray-100'}`} title={album.name}>
@@ -241,7 +262,9 @@ const AlbumDrawer: React.FC<{
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
     const cached = artworkCache.get(album.id) || (album.name ? artworkCache.get((album.name || '').trim().toLowerCase()) : undefined);
     if (cached) return cached;
-    if (album.coverUrl && album.coverUrl.startsWith('blob:')) return album.coverUrl;
+    if (isDirectCoverUrl(album.coverUrl)) return album.coverUrl;
+    const directTrackCover = album.tracks.find(t => isDirectCoverUrl(t.coverUrl))?.coverUrl;
+    if (directTrackCover) return directTrackCover;
     return null;
   });
 
@@ -521,17 +544,17 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   onClearSearch,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const firstRowRef = useRef<HTMLDivElement>(null);
   const [columnsCount, setColumnsCount] = useState<number>(5);
   const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
 
   // ── Row Virtualization state (#7) ────────────────────────────────────────
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(600);
-  // Estimated card height (art + text + gap). Recalibrated on first render.
-  const CARD_HEIGHT_ESTIMATE = 220; // px
   const ROW_GAP = 24; // gap-6 = 24px
-  const ROW_HEIGHT = CARD_HEIGHT_ESTIMATE + ROW_GAP;
-  const OVERSCAN_ROWS = 3;
+  const [measuredRowHeight, setMeasuredRowHeight] = useState<number>(280);
+  const ROW_HEIGHT = measuredRowHeight + ROW_GAP;
+  const OVERSCAN_ROWS = 4;
 
   // ── Shared IntersectionObserver (#10) ───────────────────────────────────
   const cbMapRef = useRef<Map<Element, VisibilityCallback>>(new Map());
@@ -569,25 +592,56 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
 
   const isLight = theme === 'light';
 
-  // Measure container width to determine exact columns count for perfect row chunking
+  // Measure container width to determine exact columns count and exact card row height
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    const updateColumns = () => {
+    const updateDimensions = () => {
       const width = el.clientWidth;
-      if (width < 600) setColumnsCount(2);
-      else if (width < 800) setColumnsCount(3);
-      else if (width < 1050) setColumnsCount(4);
-      else if (width < 1300) setColumnsCount(5);
-      else setColumnsCount(6);
+      let cols = 6;
+      if (width < 600) cols = 2;
+      else if (width < 800) cols = 3;
+      else if (width < 1050) cols = 4;
+      else if (width < 1300) cols = 5;
+      setColumnsCount(cols);
+
+      if (firstRowRef.current) {
+        const rectHeight = firstRowRef.current.getBoundingClientRect().height;
+        if (rectHeight > 100) {
+          setMeasuredRowHeight(Math.round(rectHeight));
+          return;
+        }
+      }
+
+      // Fallback formula matching max-w-7xl (1280px), p-6 (48px total), gap-5 (20px), card p-2.5 (20px) + 64px text block
+      const innerWidth = Math.min(Math.max(width - 48, 300), 1280);
+      const colWidth = (innerWidth - (cols - 1) * 20) / cols;
+      const cardHeight = Math.round(colWidth + 64);
+      setMeasuredRowHeight(cardHeight);
     };
 
-    updateColumns();
-    const ro = new ResizeObserver(updateColumns);
+    updateDimensions();
+    const ro = new ResizeObserver(updateDimensions);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [albums.length]);
+
+  // Also observe the first rendered row's exact height whenever it mounts/resizes
+  useEffect(() => {
+    const rowEl = firstRowRef.current;
+    if (!rowEl) return;
+    const measure = () => {
+      const h = rowEl.getBoundingClientRect().height;
+      if (h > 100) {
+        setMeasuredRowHeight((prev) => (Math.abs(prev - h) >= 1 ? Math.round(h) : prev));
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(rowEl);
+    return () => ro.disconnect();
+  });
 
   // Track scroll position for virtualization (RAF-throttled)
   const rafRef = useRef<number | null>(null);
@@ -637,9 +691,6 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   }, [albums, currentTrack]);
 
   // Row virtualization: which rows are visible (#7)
-  // We need to account for the drawer inserted after the expanded row
-  // Approximate each row's height as ROW_HEIGHT, plus drawer height when open.
-  // We use a simple flat-index approach: if the expanded row is above, add ~300px offset.
   const { visibleRowStart, visibleRowEnd } = useMemo(() => {
     const totalRows = rows.length;
     if (totalRows <= 20) {
@@ -652,8 +703,8 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
     return { visibleRowStart: start, visibleRowEnd: end };
   }, [rows.length, scrollTop, containerHeight, ROW_HEIGHT, OVERSCAN_ROWS]);
 
-  const topSpacerHeight = visibleRowStart * ROW_HEIGHT;
-  const bottomSpacerHeight = Math.max(0, (rows.length - visibleRowEnd) * ROW_HEIGHT);
+  const topSpacerHeight = Math.max(0, visibleRowStart * ROW_HEIGHT - (visibleRowStart > 0 ? ROW_GAP : 0));
+  const bottomSpacerHeight = Math.max(0, (rows.length - visibleRowEnd) * ROW_HEIGHT - (visibleRowEnd < rows.length ? ROW_GAP : 0));
 
   const handleSelectAlbum = useCallback((albumId: string) => {
     setExpandedAlbumId(prev => (prev === albumId ? null : albumId));
@@ -666,6 +717,17 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
       : album.tracks;
     onPlayTrack(tracksToPlay[0], tracksToPlay);
   }, [onPlayTrack]);
+
+  const handlePlayAlbumCard = useCallback((album: Album) => {
+    setExpandedAlbumId(album.id);
+    handlePlayAlbum(album, false);
+  }, [handlePlayAlbum]);
+
+  const handleAlbumContextMenu = useCallback((album: Album, e: React.MouseEvent) => {
+    if (album.tracks.length > 0 && onTrackContextMenu) {
+      onTrackContextMenu(album.tracks[0], e);
+    }
+  }, [onTrackContextMenu]);
 
   // Smoothly scroll the drawer into view when an album is selected
   useEffect(() => {
@@ -757,6 +819,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
               <div key={`row-${rowIndex}`} className="flex flex-col">
                 {/* Row Grid: Full columnsCount across */}
                 <div
+                  ref={relIdx === 0 ? firstRowRef : undefined}
                   className="grid gap-5"
                   style={{
                     gridTemplateColumns: `repeat(${columnsCount}, minmax(0, 1fr))`,
@@ -766,26 +829,20 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
                     const isSelected = expandedAlbumId === album.id;
                     // Use pre-computed currentAlbumId instead of Array.some() per card (#6)
                     const isAlbumPlaying = album.id === currentAlbumId;
+                    const activeAlbumTrack = isAlbumPlaying ? currentTrack : null;
 
                     return (
                       <AlbumCard
                         key={album.id}
                         album={album}
-                        currentTrack={currentTrack}
+                        activeAlbumTrack={activeAlbumTrack}
                         isSelected={isSelected}
                         isAlbumPlaying={isAlbumPlaying}
                         isPlaying={isPlaying}
                         isLight={isLight}
-                        onSelect={() => handleSelectAlbum(album.id)}
-                        onPlayAlbum={() => {
-                          setExpandedAlbumId(album.id);
-                          handlePlayAlbum(album, false);
-                        }}
-                        onContextMenu={(e) => {
-                          if (album.tracks.length > 0 && onTrackContextMenu) {
-                            onTrackContextMenu(album.tracks[0], e);
-                          }
-                        }}
+                        onSelectAlbum={handleSelectAlbum}
+                        onPlayAlbumCard={handlePlayAlbumCard}
+                        onAlbumContextMenu={handleAlbumContextMenu}
                       />
                     );
                   })}
