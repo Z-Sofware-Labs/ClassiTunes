@@ -1372,12 +1372,57 @@ fn organize_music_file(
         .unwrap_or_default();
     let base = format!("{safe_title} - {safe_artist}{extension}");
     let mut destination = album_dir.join(&base);
-    if destination != source {
-        let mut n = 1u32;
-        while destination.exists() {
-            destination = album_dir.join(format!("{safe_title} - {safe_artist} ({n}){extension}"));
-            n += 1;
+    let source_canonical = fs::canonicalize(source).ok();
+    let root_canonical = fs::canonicalize(&root).ok();
+    let is_same_physical_file = destination == source
+        || (destination.exists()
+            && source_canonical.is_some()
+            && fs::canonicalize(&destination).ok() == source_canonical);
+    if is_same_physical_file {
+        return Ok(source_path);
+    }
+    let source_inside_library = match (&source_canonical, &root_canonical) {
+        (Some(src_can), Some(rt_can)) => src_can.starts_with(rt_can),
+        _ => false,
+    };
+    let source_len = fs::metadata(source).map(|m| m.len()).ok();
+    if destination.exists() {
+        let dest_len = fs::metadata(&destination).map(|m| m.len()).ok();
+        if source_len.is_some() && source_len == dest_len {
+            if source_inside_library {
+                let _ = fs::remove_file(source);
+            }
+            return Ok(destination.to_string_lossy().into_owned());
         }
+    }
+    let mut n = 1u32;
+    while destination.exists() {
+        let candidate = album_dir.join(format!("{safe_title} - {safe_artist} ({n}){extension}"));
+        if candidate == source
+            || (candidate.exists()
+                && source_canonical.is_some()
+                && fs::canonicalize(&candidate).ok() == source_canonical)
+        {
+            return Ok(source_path);
+        }
+        if candidate.exists() {
+            let cand_len = fs::metadata(&candidate).map(|m| m.len()).ok();
+            if source_len.is_some() && source_len == cand_len {
+                return Ok(candidate.to_string_lossy().into_owned());
+            }
+        }
+        destination = candidate;
+        n += 1;
+    }
+    if source_inside_library {
+        fs::rename(source, &destination)
+            .or_else(|_| {
+                fs::copy(source, &destination).map(|_| {
+                    let _ = fs::remove_file(source);
+                })
+            })
+            .map_err(|e| format!("Could not organize music file in library: {e}"))?;
+    } else {
         fs::copy(source, &destination).map_err(|e| format!("Could not copy music file: {e}"))?;
     }
     Ok(destination.to_string_lossy().into_owned())

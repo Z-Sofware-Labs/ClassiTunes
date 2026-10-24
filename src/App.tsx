@@ -1617,6 +1617,15 @@ export default function App() {
     // High-speed branch: If importing paths on Tauri, use parallel Rust batch metadata extraction
     if (pathsArray.length > 0 && isTauri()) {
       const BATCH_SIZE = 50;
+      const isMac = platformInfo.isMacOS;
+      const normalizeFsKey = (p: string) =>
+        isMac ? p.replace(/\\/g, '/') : p.replace(/\\/g, '/').toLowerCase();
+      const existingByPath = new Map<string, Track>();
+      tracks.forEach(t => {
+        if (t.filePath) {
+          existingByPath.set(normalizeFsKey(t.filePath), t);
+        }
+      });
       let completed = 0;
 
       for (let i = 0; i < pathsArray.length; i += BATCH_SIZE) {
@@ -1631,7 +1640,8 @@ export default function App() {
             const shouldOrganize = appSettings.organizeMusicFolders && !!appSettings.defaultMusicPath;
             const nativeMeta = metadataMap[originalPath];
 
-            if (shouldOrganize && nativeMeta) {
+            const alreadyTrackedOrig = existingByPath.get(normalizeFsKey(originalPath));
+            if (shouldOrganize && nativeMeta && !alreadyTrackedOrig) {
               path = await organizeTauriMusicFile(
                 originalPath,
                 appSettings.defaultMusicPath,
@@ -1642,6 +1652,8 @@ export default function App() {
               );
             }
 
+            const existingTrackForPath =
+              existingByPath.get(normalizeFsKey(path)) || alreadyTrackedOrig;
             const cleanFileName = filename.replace(/\.[^/.]+$/, '').trim();
             const finalTitle = nativeMeta?.title?.trim() || cleanFileName;
             const finalArtist = nativeMeta?.artist?.trim() || 'Unknown Artist';
@@ -1652,8 +1664,7 @@ export default function App() {
                 finalCoverUrl = convertFileSrc(finalCoverUrl);
               } catch {}
             }
-            const trackId = `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
+            const trackId = existingTrackForPath?.id || `track_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             if (finalCoverUrl) {
               setCachedArtwork(trackId, finalCoverUrl);
               const albumKey = finalAlbum.trim().toLowerCase();
@@ -1681,7 +1692,7 @@ export default function App() {
               if (est > 0 && isFinite(est)) finalDuration = Math.round(est * 100) / 100;
             }
 
-            allNewlyParsed.push({
+            const newTrackEntry: Track = {
               id: trackId,
               title: finalTitle,
               artist: finalArtist,
@@ -1700,19 +1711,22 @@ export default function App() {
               bpm: nativeMeta?.bpm,
               mediaKind: nativeMeta?.mediaKind || 'Music',
               comments: nativeMeta?.comments?.trim() || undefined,
-              rating: 0,
-              playCount: 0,
-              coverUrl: finalCoverUrl,
+              rating: existingTrackForPath?.rating ?? 0,
+              playCount: existingTrackForPath?.playCount ?? 0,
+              lastPlayed: existingTrackForPath?.lastPlayed,
+              coverUrl: finalCoverUrl || existingTrackForPath?.coverUrl || '',
               audioUrl: objectUrl,
               file: undefined,
               format: nativeMeta?.format || 'Audio file',
               bitrate: nativeMeta?.bitrate || 320,
               sampleRate: nativeMeta?.sampleRate || 44100,
               sizeBytes: nativeMeta?.sizeBytes || 0,
-              dateAdded: new Date().toISOString(),
+              dateAdded: existingTrackForPath?.dateAdded || new Date().toISOString(),
               filePath: path,
-              replayGainDb: nativeMeta?.replayGainDb,
-            });
+              replayGainDb: nativeMeta?.replayGainDb ?? existingTrackForPath?.replayGainDb,
+            };
+            existingByPath.set(normalizeFsKey(path), newTrackEntry);
+            allNewlyParsed.push(newTrackEntry);
           } catch (err) {
             console.error('Failed to parse item:', originalPath, err);
           }

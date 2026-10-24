@@ -550,14 +550,14 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const initialSelectionRef = useRef<string[]>([]);
   const rowRectsRef = useRef<{ id: string; rect: DOMRect }[]>([]);
 
-  const [sortField, setSortField] = useState<keyof Track>('name');
+  const [sortField, setSortField] = useState<keyof Track>('title');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [contextMenuTrackId, setContextMenuTrackId] = useState<string | null>(null);
   const [showColumnPicker, setShowColumnPicker] = useState<boolean>(false);
 
   const [rowHeight, setRowHeight] = useState<'compact' | 'normal' | 'relaxed'>(() => {
     try {
-      return (localStorage.getItem('classitunes_row_height') || localStorage.getItem('itunes_row_height') as 'compact' | 'normal' | 'relaxed') || 'normal';
+      return ((localStorage.getItem('classitunes_row_height') || localStorage.getItem('itunes_row_height')) as 'compact' | 'normal' | 'relaxed') || 'normal';
     } catch (e) {
       return 'normal';
     }

@@ -106,10 +106,6 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
         onSave(draft);
         onClose();
         onScanMusic?.(path);
-      } else if (draft.defaultMusicPath) {
-        onSave(draft);
-        onClose();
-        onScanMusic?.(draft.defaultMusicPath);
       }
       return;
     }

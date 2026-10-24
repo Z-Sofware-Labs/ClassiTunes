@@ -908,7 +908,7 @@ export async function batchStatFiles(paths: string[]): Promise<BatchFileStat[]> 
           isFile: false,
           isDirectory: false,
           size: 0,
-          mtimeMs: null,
+          mtimeMs: null as number | null,
         });
       }
     }
@@ -921,7 +921,7 @@ export async function batchStatFiles(paths: string[]): Promise<BatchFileStat[]> 
       isFile: false,
       isDirectory: false,
       size: 0,
-      mtimeMs: null,
+      mtimeMs: null as number | null,
     }));
   }
 }

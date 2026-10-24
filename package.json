@@ -1,7 +1,7 @@
 {
   "name": "classitunes",
   "private": true,
-  "version": "1.8.0",
+  "version": "1.8.1",
   "author": "Z Software Labs",
   "type": "module",
   "main": "electron/main.cjs",
@@ -94,6 +94,8 @@
     "@types/express": "^4.17.21",
     "@types/jsmediatags": "^3.9.6",
     "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "concurrently": "^10.0.4",
