@@ -1081,10 +1081,10 @@ export async function readTauriMusicMetadataBatch(filePaths: string[]): Promise<
 export const writeTauriId3Tags = writeTauriMusicMetadata;
 
 /**
- * Convert a local filesystem path returned by Rust (e.g. cached artwork path) into a Tauri asset:// URL.
+ * Synchronously convert a local filesystem path returned by Rust (e.g. cached artwork path) into a Tauri asset:// URL.
  * Leaves existing data:, blob:, http:, https:, and asset: URLs untouched.
  */
-export async function resolveNativeCoverUrl(coverUrl?: string | null): Promise<string | undefined> {
+export function resolveNativeCoverUrlSync(coverUrl?: string | null): string | undefined {
   if (!coverUrl) return undefined;
   const trimmed = coverUrl.trim();
   if (!trimmed) return undefined;
@@ -1099,6 +1099,39 @@ export async function resolveNativeCoverUrl(coverUrl?: string | null): Promise<s
   ) {
     return trimmed;
   }
+  if (isTauri()) {
+    try {
+      const fn = (window as any).__TAURI_INTERNALS__?.convertFileSrc || (window as any).__TAURI__?.core?.convertFileSrc;
+      if (typeof fn === 'function') {
+        return fn(trimmed);
+      }
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Convert a local filesystem path returned by Rust (e.g. cached artwork path) into a Tauri asset:// URL.
+ * Leaves existing data:, blob:, http:, https:, and asset: URLs untouched.
+ */
+export async function resolveNativeCoverUrl(coverUrl?: string | null): Promise<string | undefined> {
+  if (!coverUrl) return undefined;
+  const syncResolved = resolveNativeCoverUrlSync(coverUrl);
+  if (
+    syncResolved &&
+    (syncResolved.startsWith('data:') ||
+      syncResolved.startsWith('blob:') ||
+      syncResolved.startsWith('http:') ||
+      syncResolved.startsWith('https:') ||
+      syncResolved.startsWith('asset:') ||
+      syncResolved.startsWith('file:') ||
+      (syncResolved.startsWith('/') && !isTauri()))
+  ) {
+    return syncResolved;
+  }
+  const trimmed = coverUrl.trim();
   if (isTauri()) {
     try {
       const { convertFileSrc } = await import('@tauri-apps/api/core');

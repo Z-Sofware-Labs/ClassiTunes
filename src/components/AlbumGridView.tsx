@@ -3,6 +3,7 @@ import { Album, Track } from '../types';
 import { Play, Star, Disc, X, Shuffle, Volume2, Info } from 'lucide-react';
 import { ImportMusicButton } from './ImportMusicButton';
 import { getCachedArtwork, setCachedArtwork, getArtwork } from '../services/mediaStorage';
+import { resolveNativeCoverUrlSync } from '../utils/tauriWindow';
 
 interface AlbumGridViewProps {
   albums: Album[];
@@ -44,6 +45,15 @@ function isDirectCoverUrl(url?: string | null): url is string {
     url.startsWith('https://') ||
     url.startsWith('data:')
   );
+}
+
+/** Helper to resolve a coverUrl synchronously (including raw native disk cache paths) */
+function getImmediateCoverUrl(url?: string | null): string | null {
+  if (!url) return null;
+  if (isDirectCoverUrl(url)) return url;
+  const resolved = resolveNativeCoverUrlSync(url);
+  if (resolved && isDirectCoverUrl(resolved)) return resolved;
+  return null;
 }
 
 // ─── Shared IntersectionObserver context (#10) ───────────────────────────────
@@ -97,9 +107,20 @@ const AlbumCard = React.memo<{
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
     const cached = artworkCache.get(album.id) || (albumKey ? artworkCache.get(albumKey) : undefined);
     if (cached) return cached;
-    if (isDirectCoverUrl(album.coverUrl)) return album.coverUrl;
-    const directTrackCover = album.tracks.find(t => isDirectCoverUrl(t.coverUrl))?.coverUrl;
-    if (directTrackCover) return directTrackCover;
+    const directAlbum = getImmediateCoverUrl(album.coverUrl);
+    if (directAlbum) {
+      artworkCache.set(album.id, directAlbum);
+      if (albumKey) artworkCache.set(albumKey, directAlbum);
+      return directAlbum;
+    }
+    for (const t of album.tracks) {
+      const directTrack = getImmediateCoverUrl(t.coverUrl);
+      if (directTrack) {
+        artworkCache.set(album.id, directTrack);
+        if (albumKey) artworkCache.set(albumKey, directTrack);
+        return directTrack;
+      }
+    }
     return null;
   });
   const [imgError, setImgError] = useState(false);
@@ -262,9 +283,12 @@ const AlbumDrawer: React.FC<{
   const [coverUrl, setCoverUrl] = useState<string | null>(() => {
     const cached = artworkCache.get(album.id) || (album.name ? artworkCache.get((album.name || '').trim().toLowerCase()) : undefined);
     if (cached) return cached;
-    if (isDirectCoverUrl(album.coverUrl)) return album.coverUrl;
-    const directTrackCover = album.tracks.find(t => isDirectCoverUrl(t.coverUrl))?.coverUrl;
-    if (directTrackCover) return directTrackCover;
+    const directAlbum = getImmediateCoverUrl(album.coverUrl);
+    if (directAlbum) return directAlbum;
+    for (const t of album.tracks) {
+      const directTrack = getImmediateCoverUrl(t.coverUrl);
+      if (directTrack) return directTrack;
+    }
     return null;
   });
 

@@ -3,6 +3,7 @@ import {
   readTauriMusicMetadata,
   isTauri,
   resolveNativeCoverUrl,
+  resolveNativeCoverUrlSync,
   dbGetAllTracks,
   dbSaveTracksBatch,
   dbUpdateTrackPlayback,
@@ -15,7 +16,8 @@ const DB_VERSION = 3;
 const STORE_NAME = 'media_files';
 const METADATA_STORE = 'track_metadata';
 const PLAYBACK_METADATA_STORE = 'playback_metadata';
-const ARTWORK_CACHE_LIMIT = 48;
+const ARTWORK_CACHE_LIMIT = 2000;
+const ARTWORK_BLOB_LIMIT = 64;
 
 export function dataURLtoBlob(dataurl: string): Blob | null {
   try {
@@ -321,6 +323,28 @@ const artworkResourceCache = new Map<string, { url: string; refs: Set<string>; o
 const artworkAliasMap = new Map<string, string>();
 
 function evictArtworkResourcesIfNeeded(): void {
+  // Evict owned blob: URLs more aggressively to keep memory bounded
+  let ownedBlobCount = 0;
+  for (const entry of artworkResourceCache.values()) {
+    if (entry.owned && entry.url.startsWith('blob:')) {
+      ownedBlobCount++;
+    }
+  }
+  if (ownedBlobCount > ARTWORK_BLOB_LIMIT) {
+    for (const [key, entry] of artworkResourceCache.entries()) {
+      if (ownedBlobCount <= ARTWORK_BLOB_LIMIT) break;
+      if (entry.owned && entry.url.startsWith('blob:')) {
+        for (const alias of [...entry.refs]) {
+          globalArtworkCache.delete(alias);
+          artworkAliasMap.delete(alias);
+        }
+        try { URL.revokeObjectURL(entry.url); } catch {}
+        artworkResourceCache.delete(key);
+        ownedBlobCount--;
+      }
+    }
+  }
+
   while (artworkResourceCache.size > ARTWORK_CACHE_LIMIT) {
     const oldestKey = artworkResourceCache.keys().next().value as string | undefined;
     if (!oldestKey) break;
@@ -446,6 +470,21 @@ export async function getArtwork(trackId: string, candidateUrl?: string, filePat
     }
   }
 
+  // Fast path: if candidateUrl is a native cached path or direct asset/http URL, resolve immediately
+  // without opening IndexedDB or re-parsing the audio file on disk!
+  if (candidateUrl && !candidateUrl.startsWith('blob:') && !candidateUrl.startsWith('data:')) {
+    const syncResolved = resolveNativeCoverUrlSync(candidateUrl);
+    if (syncResolved && (syncResolved.startsWith('asset:') || syncResolved.startsWith('http://') || syncResolved.startsWith('https://') || syncResolved.startsWith('file://'))) {
+      setCachedArtwork(trackId, syncResolved);
+      return syncResolved;
+    }
+    const resolved = await resolveNativeCoverUrl(candidateUrl);
+    if (resolved && (resolved.startsWith('asset:') || resolved.startsWith('http://') || resolved.startsWith('https://') || resolved.startsWith('file://'))) {
+      setCachedArtwork(trackId, resolved);
+      return resolved;
+    }
+  }
+
   if (candidateUrl && candidateUrl.startsWith('blob:')) {
     try {
       const response = await fetch(candidateUrl);
@@ -498,14 +537,6 @@ export async function getArtwork(trackId: string, candidateUrl?: string, filePat
       }
     } catch (error) {
       console.warn('Failed to load artwork from native track metadata:', error);
-    }
-  }
-
-  if (candidateUrl) {
-    const resolved = await resolveNativeCoverUrl(candidateUrl);
-    if (resolved && (resolved.startsWith('asset:') || resolved.startsWith('http://') || resolved.startsWith('https://') || resolved.startsWith('file://'))) {
-      setCachedArtwork(trackId, resolved);
-      return resolved;
     }
   }
 

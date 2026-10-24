@@ -1,6 +1,6 @@
 [package]
 name = "classitunes"
-version = "1.8.1"
+version = "1.8.2"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
 edition = "2021"
@@ -32,11 +32,11 @@ rustfft = "6.4.1"
 bincode = { version = "2.0.1", features = ["serde"] }
 
 [profile.release]
-codegen-units = 1
-lto = true
+codegen-units = 16
+lto = "thin"
 opt-level = 3
-panic = "abort"
-strip = true
+panic = "unwind"
+strip = false
 
 [profile.dev]
 incremental = true
