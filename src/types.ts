@@ -97,16 +97,3 @@ export type EQPreset =
 
 export type VisualizerMode = 'classic_bars' | 'laser_wave' | 'frequency_ring' | 'cosmic_particles';
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      platform: string;
-      isElectron: boolean;
-      minimize: () => void;
-      maximize: () => void;
-      close: () => void;
-      isMaximized: () => Promise<boolean>;
-      showItemInFolder?: (filePath: string) => void;
-    };
-  }
-}

@@ -57,7 +57,7 @@ Available as a native desktop application powered by **Tauri v2** (ultra-lightwe
 - **Drag & Drop Import:** Drag music files or entire folder trees directly into the library window.
 
 ### 🖥️ Native Desktop Experience & Theming
-- **Dual Runtimes:** First-class support for both **Tauri v2** (low memory footprint, fast startup) and **Electron**.
+- **Native Performance:** Engineered with **Tauri v2** (Rust backend) for ultra-low memory footprint, fast startup, and native PipeWire/ALSA/PulseAudio audio pipelines.
 - **Brushed Light & Sleek Dark Themes:** Nostalgic brushed platinum interface alongside a modern low-fatigue dark studio theme.
 - **Window State Persistence:** Automatically remembers window dimensions, positions, and maximized states across sessions.
 - **Diagnostics & Scan Logs:** Built-in logging panel to monitor directory imports, metadata extraction, and system status.
@@ -170,21 +170,15 @@ GEMINI_API_KEY="your-gemini-api-key-here"
 | :--- | :--- |
 | `npm run dev` | Starts the Vite web development server (`http://localhost:3000`) |
 | `npm run tauri:dev` | Launches the Tauri native desktop app in dev mode |
-| `npm run electron:dev` | Launches the Electron desktop app concurrently with Vite |
 | `npm run lint` | Runs TypeScript compilation checks (`tsc --noEmit`) |
 
 ### 4. Production Packaging
 
 ```bash
-# Build Tauri desktop bundle (Windows NSIS/MSI, macOS DMG, Linux RPM/deb)
+# Build Tauri desktop bundle (Windows NSIS/MSI, macOS DMG, Linux RPM/deb/AppImage)
 npm run tauri:build
-
-# Build Electron production package
-npm run electron:build
 ```
-Build artifacts will be located in:
-- Tauri: `src-tauri/target/release/bundle/`
-- Electron: `dist-electron/`
+Build artifacts will be located in: `src-tauri/target/release/bundle/`
 
 ---
 

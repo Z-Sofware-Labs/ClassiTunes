@@ -182,7 +182,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
   const isMac = platformInfo.isMacOS;
   const isLinux = platformInfo.isLinux;
-  const isAppWindow = platformInfo.isTauri || platformInfo.isElectron;
+  const isAppWindow = platformInfo.isTauri;
 
   useEffect(() => {
     if (isMac || !isAppWindow) return;

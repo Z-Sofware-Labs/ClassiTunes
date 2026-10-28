@@ -171,10 +171,6 @@ const TrackRow = React.memo<TrackRowProps>(({
         if (onTrackContextMenu) onTrackContextMenu(track, e);
       }}
       className={`group cursor-pointer ${
-        // Skip transition-colors on Linux/WebKitGTK: it forces a full style recalculation
-        // across every visible row on each scroll frame, causing measurable jank.
-        isLinux ? '' : 'transition-colors'
-      } ${
         isSelected
           ? isLight ? 'bg-gradient-to-b from-[#3b82f6] to-[#1d4ed8] text-white font-medium' : 'bg-[#3a3a3a] text-white font-medium'
           : isCurrentPlaying
@@ -184,7 +180,7 @@ const TrackRow = React.memo<TrackRowProps>(({
           : isLight ? 'bg-white hover:bg-blue-100/70 text-gray-900' : 'bg-[#131315] hover:bg-[#282932] text-gray-100'
       }`}
       id={`track-row-${track.id}`}
-      style={isLinux ? { contentVisibility: 'auto', containIntrinsicSize: 'auto 36px' } : undefined}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 36px' }}
     >
       {/* Dynamic Ordered Columns */}
       {visibleColumns.map((colId) => {
@@ -928,20 +924,22 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     return sorted;
   }, [tracks, sortField, sortAsc]);
 
-  // Pre-compute formatted dateAdded strings to avoid allocating Date objects per row per render (#2)
+  // Only compute formatted dateAdded strings if the column is currently visible, avoiding thousands of Date allocations
+  const isDateAddedVisible = visibleColumns.includes('dateAdded');
   const dateAddedFormatted = useMemo(() => {
     const map = new Map<string, string>();
+    if (!isDateAddedVisible) return map;
     for (const t of sortedTracks) {
       if (t.dateAdded) {
         map.set(t.id, new Date(t.dateAdded).toLocaleDateString());
       }
     }
     return map;
-  }, [sortedTracks]);
+  }, [sortedTracks, isDateAddedVisible]);
 
   // Windowed Virtualization Calculation: on Linux/WebKitGTK use 35 rows overscan buffer
   // to ensure zero blank frame stutter during high-speed momentum mousewheel/touchpad scrolling
-  const OVERSCAN = isLinux ? 35 : 20;
+  const OVERSCAN = 30;
   const totalTrackCount = sortedTracks.length;
   const isVirtualizationActive = totalTrackCount > 60;
   const [measuredRowHeight, setMeasuredRowHeight] = useState(estimatedRowHeight);
@@ -977,28 +975,14 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   }, [sortedTracks, isVirtualizationActive, scrollTop, containerHeight, measuredRowHeight, tableHeaderHeight, totalTrackCount]);
 
   useLayoutEffect(() => {
-    const container = tableContainerRef.current;
-    if (!container || totalTrackCount === 0) return;
-
-    const rows = container.querySelectorAll<HTMLTableRowElement>('tbody tr[id^="track-row-"]');
-    const header = container.querySelector<HTMLTableSectionElement>('thead');
-    const actualHeaderHeight = header?.getBoundingClientRect().height;
-    const containerRect = container.getBoundingClientRect();
-    let actualRowHeight = 0;
-    rows.forEach((row) => {
-      const rect = row.getBoundingClientRect();
-      if (!actualRowHeight && rect.bottom > containerRect.top + (actualHeaderHeight || 0) && rect.top < containerRect.bottom) {
-        actualRowHeight = rect.height;
-      }
-    });
-
-    if (actualRowHeight && actualRowHeight > 0) {
-      setMeasuredRowHeight(current => Math.abs(current - actualRowHeight) > 0.5 ? actualRowHeight : current);
+    // Set deterministic exact row height immediately without triggering DOM layout thrashing
+    setMeasuredRowHeight(estimatedRowHeight);
+    const header = tableContainerRef.current?.querySelector<HTMLTableSectionElement>('thead');
+    if (header) {
+      const h = header.offsetHeight;
+      if (h > 0) setTableHeaderHeight(h);
     }
-    if (actualHeaderHeight && actualHeaderHeight > 0) {
-      setTableHeaderHeight(current => Math.abs(current - actualHeaderHeight) > 0.5 ? actualHeaderHeight : current);
-    }
-  }, [rowHeight, totalTrackCount]);
+  }, [estimatedRowHeight]);
 
   const resetDragAndBoxSelection = () => {
     isMouseDownRef.current = false;
@@ -1199,16 +1183,10 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         ref={tableContainerRef}
         className="flex-1 overflow-auto custom-scrollbar relative"
         onMouseDown={handleContainerMouseDown}
-        onScroll={(e) => {
-          const target = e.currentTarget;
-          if (target) {
-            setScrollTop(target.scrollTop);
-          }
-        }}
         // On Linux/WebKitGTK, explicitly promoting the scroll container to its own
         // compositor layer avoids the browser having to repaint the full-page layer
         // on every scroll event. transform: translateZ(0) ensures hardware rasterization.
-        style={isLinux ? { willChange: 'transform', transform: 'translateZ(0)', contain: 'paint' } : undefined}
+        style={{ willChange: 'transform, scroll-position', transform: 'translateZ(0)' }}
       >
         {/* Rubberband / Box Selection Overlay */}
         {selectionBox && (

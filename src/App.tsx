@@ -330,20 +330,7 @@ export default function App() {
       }
     };
 
-    // 1. Check Electron nativeTheme if running under Electron
-    if ((window as any).electronAPI?.getSystemTheme) {
-      (window as any).electronAPI.getSystemTheme().then((t: 'dark' | 'light') => {
-        applySystemTheme(t);
-      }).catch(() => {});
-    }
-    let electronUnsub: (() => void) | null = null;
-    if (typeof (window as any).electronAPI?.onSystemThemeChanged === 'function') {
-      electronUnsub = (window as any).electronAPI.onSystemThemeChanged((t: 'dark' | 'light') => {
-        applySystemTheme(t);
-      });
-    }
-
-    // 2. Standard and legacy media query listeners (works across modern Chromium, WebKitGTK, Safari)
+    // 1. Standard and legacy media query listeners (works across modern Chromium, WebKitGTK, Safari)
     let removeMediaListener: (() => void) | null = null;
     if (window.matchMedia) {
       const darkMedia = window.matchMedia('(prefers-color-scheme: dark)');
@@ -409,9 +396,6 @@ export default function App() {
       isCancelled = true;
       if (tauriUnlisten) {
         tauriUnlisten();
-      }
-      if (electronUnsub) {
-        electronUnsub();
       }
       if (removeMediaListener) {
         removeMediaListener();

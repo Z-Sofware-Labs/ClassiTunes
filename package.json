@@ -1,10 +1,9 @@
 {
   "name": "classitunes",
   "private": true,
-  "version": "1.8.5",
+  "version": "1.8.6",
   "author": "Z Software Labs",
   "type": "module",
-  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
@@ -12,59 +11,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "electron:dev": "concurrently \"vite --port=3000\" \"wait-on http://localhost:3000 && cross-env VITE_DEV_SERVER_URL=http://localhost:3000 NODE_ENV=development electron .\"",
-    "electron:build": "vite build && electron-builder",
-    "clean": "rm -rf dist dist-electron server.js",
+    "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
-  },
-  "build": {
-    "appId": "com.classitunes.app",
-    "productName": "ClassiTunes",
-    "copyright": "Copyright © 2026 Z Software Labs",
-    "executableName": "ClassiTunes",
-    "directories": {
-      "output": "dist-electron"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "public/**/*"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ],
-      "executableName": "ClassiTunes",
-      "icon": "public/icon.ico"
-    },
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.music",
-      "icon": "public/icon.png"
-    },
-    "linux": {
-      "target": [
-        "rpm",
-        "deb"
-      ],
-      "category": "Audio;AudioVideo;",
-      "icon": "public/icon.png"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowElevation": true,
-      "allowToChangeInstallationDirectory": true,
-      "shortcutName": "ClassiTunes",
-      "uninstallDisplayName": "ClassiTunes",
-      "createStartMenuShortcut": true,
-      "createDesktopShortcut": "always",
-      "menuCategory": "ClassiTunes"
-    }
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -98,16 +46,10 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
-    "concurrently": "^10.0.4",
-    "cross-env": "^10.1.0",
-    "electron": "^43.2.0",
-    "electron-builder": "^26.15.3",
     "esbuild": "^0.25.0",
-    "png-to-ico": "^3.0.2",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3",
-    "wait-on": "^9.1.0"
+    "vite": "^6.2.3"
   }
 }

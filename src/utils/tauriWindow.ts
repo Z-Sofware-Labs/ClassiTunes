@@ -16,12 +16,6 @@ export async function tauriMinimize(): Promise<boolean> {
     }
   }
 
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.minimize) {
-    try {
-      (window as any).electronAPI.minimize();
-      return true;
-    } catch (e) {}
-  }
 
   return false;
 }
@@ -39,12 +33,6 @@ export async function tauriIsMaximized(): Promise<boolean> {
       if (winObj && typeof winObj.isMaximized === 'function') {
         return await winObj.isMaximized();
       }
-    } catch {}
-  }
-
-  if (typeof window !== 'undefined' && typeof (window as any).electronAPI?.isMaximized === 'function') {
-    try {
-      return !!(await (window as any).electronAPI.isMaximized());
     } catch {}
   }
 
@@ -125,12 +113,6 @@ export async function tauriMaximize(): Promise<boolean> {
     }
   }
 
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.maximize) {
-    try {
-      (window as any).electronAPI.maximize();
-      return true;
-    } catch (e) {}
-  }
 
   return false;
 }
@@ -150,12 +132,6 @@ export async function tauriClose(): Promise<boolean> {
     }
   }
 
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.close) {
-    try {
-      (window as any).electronAPI.close();
-      return true;
-    } catch (e) {}
-  }
 
   return false;
 }
@@ -175,12 +151,6 @@ export async function tauriSetAlwaysOnTop(onTop: boolean): Promise<boolean> {
     }
   }
 
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.setAlwaysOnTop) {
-    try {
-      (window as any).electronAPI.setAlwaysOnTop(onTop);
-      return true;
-    } catch (e) {}
-  }
 
   return false;
 }
@@ -289,15 +259,6 @@ export async function setupWindowStatePersistence(): Promise<void> {
 export async function openFileLocation(filePath: string): Promise<boolean> {
   if (!filePath) return false;
 
-  // 1. Try Electron if running in Electron
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.showItemInFolder) {
-    try {
-      (window as any).electronAPI.showItemInFolder(filePath);
-      return true;
-    } catch (e) {
-      console.warn('Electron showItemInFolder failed:', e);
-    }
-  }
 
   // 2. Try Tauri v2 if running in Tauri
   if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
@@ -655,8 +616,7 @@ export async function scanTauriDirectory(
         if (typeof tauriSep === 'function') {
           sep = await tauriSep();
         }
-      } else if (typeof window !== 'undefined' && (window as any).electronAPI?.platform) {
-        sep = (window as any).electronAPI.platform === 'win32' ? '\\' : '/';
+
       } else if (typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('win')) {
         sep = '\\';
       }

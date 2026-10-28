@@ -17,8 +17,8 @@ const DB_VERSION = 3;
 const STORE_NAME = 'media_files';
 const METADATA_STORE = 'track_metadata';
 const PLAYBACK_METADATA_STORE = 'playback_metadata';
-const ARTWORK_CACHE_LIMIT = 2000;
-const ARTWORK_BLOB_LIMIT = 64;
+const ARTWORK_CACHE_LIMIT = 350;
+const ARTWORK_BLOB_LIMIT = 48;
 
 export function dataURLtoBlob(dataurl: string): Blob | null {
   try {

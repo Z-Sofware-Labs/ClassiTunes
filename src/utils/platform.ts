@@ -2,7 +2,7 @@
 // Distinguishes OS, runtime host, and rendering engine safely without assuming specific desktop environments or distributions.
 
 export type PlatformOS = 'linux' | 'windows' | 'macos' | 'other';
-export type AppRuntime = 'tauri' | 'electron' | 'browser';
+export type AppRuntime = 'tauri' | 'browser';
 
 export interface PlatformCapabilities {
   os: PlatformOS;
@@ -11,19 +11,11 @@ export interface PlatformCapabilities {
   isWindows: boolean;
   isMacOS: boolean;
   isTauri: boolean;
-  isElectron: boolean;
   isBrowser: boolean;
   isWebKitGTK: boolean;
 }
 
 function detectOS(): PlatformOS {
-  if (typeof window !== 'undefined' && (window as any).electronAPI?.platform) {
-    const ep = (window as any).electronAPI.platform;
-    if (ep === 'win32') return 'windows';
-    if (ep === 'darwin') return 'macos';
-    if (ep === 'linux') return 'linux';
-  }
-
   if (typeof navigator === 'undefined') return 'other';
 
   const ua = (navigator.userAgent || '').toLowerCase();
@@ -51,9 +43,6 @@ function detectRuntime(): AppRuntime {
   if (typeof window !== 'undefined') {
     if ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__) {
       return 'tauri';
-    }
-    if ((window as any).electronAPI) {
-      return 'electron';
     }
   }
   return 'browser';
@@ -83,7 +72,6 @@ export const platformInfo: PlatformCapabilities = {
   isWindows: detectedOS === 'windows',
   isMacOS: detectedOS === 'macos',
   isTauri: detectedRuntime === 'tauri',
-  isElectron: detectedRuntime === 'electron',
   isBrowser: detectedRuntime === 'browser',
   isWebKitGTK: detectedWebKitGTK,
 };
