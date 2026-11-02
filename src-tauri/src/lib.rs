@@ -1731,6 +1731,12 @@ async fn sync_tracks_to_device(
 }
 
 #[tauri::command]
+fn cancel_device_sync() -> Result<bool, String> {
+    mp3_device::abort_device_sync();
+    Ok(true)
+}
+
+#[tauri::command]
 fn eject_device(mount_point: String) -> Result<bool, String> {
     mp3_device::eject_device_native(&mount_point)
 }
@@ -1833,6 +1839,7 @@ pub fn run() {
             update_taskbar_thumbnail_toolbar,
             list_connected_devices,
             sync_tracks_to_device,
+            cancel_device_sync,
             eject_device,
             list_device_contents,
             delete_device_file

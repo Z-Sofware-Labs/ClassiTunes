@@ -11,7 +11,7 @@ import { AlbumGridView, sortAlbumsList } from './components/AlbumGridView';
 import { StatusBar } from './components/StatusBar';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, SyncProgressEvent } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata, trimArtworkBlobs, internTrackStrings } from './services/mediaStorage';
 import { Upload, Music, Disc, X } from 'lucide-react';
@@ -315,8 +315,17 @@ export default function App() {
   }, [refreshDevices]);
 
   const handleEjectDevice = async (mountPoint: string) => {
+    setSelectedDevice(prev => (prev && prev.mountPoint === mountPoint ? null : prev));
+    setConnectedDevices(prev => prev.filter(d => d.mountPoint !== mountPoint));
     await ejectDevice(mountPoint);
-    await refreshDevices();
+    setTimeout(() => {
+      void refreshDevices();
+    }, 1200);
+  };
+
+  const handleStopDeviceSync = async () => {
+    await cancelDeviceSync();
+    setDeviceSyncProgress(prev => prev ? { ...prev, isComplete: true, title: 'Sync stopped' } : null);
   };
 
   const handleDropTracksToDevice = async (trackIds: string[], dev: Mp3Device) => {
@@ -3017,6 +3026,7 @@ function hashString(str: string): string {
         deviceSyncProgress={deviceSyncProgress}
         importProgress={importProgress}
         isImporting={isImportingFiles}
+        onStopDeviceSync={handleStopDeviceSync}
       />
 
       {/* Main Content Area: Sidebar + Active View */}

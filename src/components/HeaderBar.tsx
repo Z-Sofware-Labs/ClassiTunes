@@ -48,6 +48,7 @@ interface HeaderBarProps {
   deviceSyncProgress?: DeviceSyncProgressInfo | null;
   importProgress?: LibraryImportProgressInfo | null;
   isImporting?: boolean;
+  onStopDeviceSync?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -72,6 +73,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   deviceSyncProgress,
   importProgress,
   isImporting,
+  onStopDeviceSync,
 }) => {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -455,6 +457,19 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                           <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
                             — {deviceSyncProgress.title}
                           </span>
+                        )}
+                        {!deviceSyncProgress.isComplete && onStopDeviceSync && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onStopDeviceSync();
+                            }}
+                            className="ml-1 p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                            title="Stop sync"
+                          >
+                            <Square className="w-2.5 h-2.5 fill-current" />
+                          </button>
                         )}
                       </>
                     ) : importProgress ? (

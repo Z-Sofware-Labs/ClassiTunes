@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  HardDrive, Smartphone, Disc, Check, AlertCircle, RefreshCw, 
+  HardDrive, Smartphone, Disc, Check, AlertCircle, RefreshCw, Square, 
   Folder, Music, ListMusic, ArrowRight, ShieldCheck, Trash2,
   Search, Play, Pause, FileAudio, Info, Settings, Sliders,
   HelpCircle, ChevronRight
 } from 'lucide-react';
 import { 
   Mp3Device, DeviceSyncPayload, DeviceSyncResult, SyncProgressEvent, 
-  DeviceTrackItem, syncTracksToDevice, ejectDevice, listDeviceContents, deleteDeviceFile,
+  DeviceTrackItem, syncTracksToDevice, cancelDeviceSync, ejectDevice, listDeviceContents, deleteDeviceFile,
   resolveNativeCoverUrlSync, isTauri
 } from '../utils/tauriWindow';
 import { Track, Playlist } from '../types';
@@ -117,6 +117,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
 
   // Sync status
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [isStopping, setIsStopping] = useState<boolean>(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgressEvent | null>(null);
   const [syncResult, setSyncResult] = useState<DeviceSyncResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -454,11 +455,11 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       setErrorMessage(err?.message || String(err));
     } finally {
       setIsSyncing(false);
+      setIsStopping(false);
     }
   };
 
-  const handleEject = async () => {
-    await ejectDevice(device.mountPoint);
+  const handleEject = () => {
     onEjectDevice(device.mountPoint);
   };
 
@@ -719,16 +720,28 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                 {/* Classic Action Buttons */}
                 <div className="pt-2 flex flex-wrap items-center gap-3">
                   <button
-                    onClick={handleStartSync}
-                    disabled={isSyncing || syncMode === 'manual' || tracksToSync.length === 0}
+                    onClick={isSyncing ? handleStopSync : handleStartSync}
+                    disabled={(!isSyncing && (syncMode === 'manual' || tracksToSync.length === 0)) || isStopping}
                     className={`px-4 py-1.5 rounded-md text-xs font-semibold shadow transition-all flex items-center gap-2 active:scale-95 ${
-                      isSyncing || syncMode === 'manual' || tracksToSync.length === 0
+                      isSyncing
+                        ? 'bg-gradient-to-b from-red-500 to-red-700 hover:from-red-600 hover:to-red-800 text-white border border-red-800 shadow-red-500/20'
+                        : syncMode === 'manual' || tracksToSync.length === 0
                         ? 'opacity-50 cursor-not-allowed bg-gray-500 text-white'
                         : 'bg-gradient-to-b from-blue-500 to-blue-700 hover:from-blue-400 hover:to-blue-600 text-white border border-blue-800'
                     }`}
+                    title={isSyncing ? 'Stop current transfer' : 'Synchronize music to device'}
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                    <span>{isSyncing ? 'Syncing...' : 'Sync Music'}</span>
+                    {isSyncing ? (
+                      <>
+                        <Square className="w-3.5 h-3.5 fill-current" />
+                        <span>{isStopping ? 'Stopping...' : 'Stop'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Sync Music</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1100,16 +1113,28 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
 
         {/* Right: Aqua / Metal Sync Action Button */}
         <button
-          onClick={handleStartSync}
-          disabled={isSyncing || syncMode === 'manual' || tracksToSync.length === 0}
+          onClick={isSyncing ? handleStopSync : handleStartSync}
+          disabled={(!isSyncing && (syncMode === 'manual' || tracksToSync.length === 0)) || isStopping}
           className={`px-6 py-1.5 rounded-md font-bold text-xs transition-all shadow-md flex items-center gap-2 border active:scale-95 shrink-0 ${
-            isSyncing || syncMode === 'manual' || tracksToSync.length === 0
+            isSyncing
+              ? 'bg-gradient-to-b from-red-500 via-red-600 to-red-700 hover:from-red-600 hover:to-red-800 text-white border-red-800 shadow-red-500/20'
+              : syncMode === 'manual' || tracksToSync.length === 0
               ? 'opacity-50 cursor-not-allowed bg-gray-500 text-white border-gray-600'
               : 'bg-gradient-to-b from-blue-500 via-blue-600 to-blue-700 hover:from-blue-400 hover:to-blue-600 text-white border-blue-800 shadow-blue-500/20'
           }`}
+          title={isSyncing ? 'Stop current transfer' : 'Synchronize music to device'}
         >
-          <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
-          <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
+          {isSyncing ? (
+            <>
+              <Square className="w-3 h-3 fill-current" />
+              <span>{isStopping ? 'Stopping...' : 'Stop'}</span>
+            </>
+          ) : (
+            <>
+              <RefreshCw className="w-3 h-3" />
+              <span>Sync</span>
+            </>
+          )}
         </button>
       </div>
 

@@ -1297,6 +1297,17 @@ export async function syncTracksToDevice(payload: DeviceSyncPayload): Promise<De
   }
 }
 
+export async function cancelDeviceSync(): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('cancel_device_sync');
+  } catch (e) {
+    console.error('cancel_device_sync failed:', e);
+    return false;
+  }
+}
+
 export async function ejectDevice(mountPoint: string): Promise<boolean> {
   if (!isTauri()) return false;
   try {

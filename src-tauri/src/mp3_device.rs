@@ -1,7 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
+
+static SYNC_ABORT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn abort_device_sync() {
+    SYNC_ABORT_REQUESTED.store(true, Ordering::SeqCst);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -636,27 +643,35 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
 #[cfg(target_os = "windows")]
 pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows::Win32::System::Ioctl::{
-        FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME, FSCTL_UNLOCK_VOLUME, IOCTL_STORAGE_EJECT_MEDIA,
+        FSCTL_DISMOUNT_VOLUME, IOCTL_STORAGE_EJECT_MEDIA,
     };
     use windows::Win32::System::IO::DeviceIoControl;
 
-    let clean_drive = mount_point.trim_end_matches(['\\', '/']);
+    let clean = mount_point.trim_end_matches(['\\', '/']);
+    let clean_drive = if clean.len() == 1 && clean.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+        format!("{clean}:")
+    } else {
+        clean.to_string()
+    };
     let volume_path = format!("\\\\.\\{}", clean_drive);
     let volume_wide: Vec<u16> = std::ffi::OsStr::new(&volume_path)
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
 
+    // 1. Try low-level Win32 DeviceIoControl (using GENERIC_READ which does not require admin elevation for removable drives)
+    let mut win32_ejected = false;
     unsafe {
         let handle = CreateFileW(
             PCWSTR(volume_wide.as_ptr()),
-            GENERIC_READ.0 | GENERIC_WRITE.0,
+            GENERIC_READ.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             OPEN_EXISTING,
@@ -664,63 +679,56 @@ pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
             None,
         );
 
-        let Ok(handle) = handle else {
-            return Err(format!("Could not open device volume at {volume_path}"));
-        };
+        if let Ok(handle) = handle {
+            let mut bytes_returned = 0u32;
+            let _ = DeviceIoControl(
+                handle,
+                FSCTL_DISMOUNT_VOLUME,
+                None,
+                0,
+                None,
+                0,
+                Some(&mut bytes_returned),
+                None,
+            );
 
-        let mut bytes_returned = 0u32;
+            let eject_res = DeviceIoControl(
+                handle,
+                IOCTL_STORAGE_EJECT_MEDIA,
+                None,
+                0,
+                None,
+                0,
+                Some(&mut bytes_returned),
+                None,
+            );
 
-        let _ = DeviceIoControl(
-            handle,
-            FSCTL_LOCK_VOLUME,
-            None,
-            0,
-            None,
-            0,
-            Some(&mut bytes_returned),
-            None,
-        );
-
-        let _ = DeviceIoControl(
-            handle,
-            FSCTL_DISMOUNT_VOLUME,
-            None,
-            0,
-            None,
-            0,
-            Some(&mut bytes_returned),
-            None,
-        );
-
-        let eject_res = DeviceIoControl(
-            handle,
-            IOCTL_STORAGE_EJECT_MEDIA,
-            None,
-            0,
-            None,
-            0,
-            Some(&mut bytes_returned),
-            None,
-        );
-
-        let _ = DeviceIoControl(
-            handle,
-            FSCTL_UNLOCK_VOLUME,
-            None,
-            0,
-            None,
-            0,
-            Some(&mut bytes_returned),
-            None,
-        );
-
-        let _ = CloseHandle(handle);
-
-        if eject_res.is_ok() {
-            Ok(true)
-        } else {
-            Ok(true)
+            let _ = CloseHandle(handle);
+            if eject_res.is_ok() {
+                win32_ejected = true;
+            }
         }
+    }
+
+    if win32_ejected {
+        return Ok(true);
+    }
+
+    // 2. Shell.Application Eject via background PowerShell (native Windows Explorer eject mechanism,
+    // safe for all standard non-elevated user accounts, flushes write buffers and dismounts cleanly)
+    let ps_script = format!(
+        r#"$sh = New-Object -ComObject Shell.Application; $d = $sh.Namespace(17).ParseName('{clean_drive}'); if ($d) {{ $v = $d.Verbs() | Where-Object {{ ($_.Name -replace '&', '').Trim().ToLower() -match '^(eject|auswerfen|éjecter|ejectar|expulsar|espelli|wysuń|uitwerpen|odpojit|извлечь|拿出|弹出|꺼내기|取り出し)' }}; if ($v) {{ $v.DoIt() }} else {{ $d.InvokeVerb('Eject') }} }}"#
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_script])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => Ok(true),
+        Ok(_) => Ok(true),
+        Err(e) => Err(format!("Could not eject {clean_drive}: {e}")),
     }
 }
 
@@ -967,6 +975,7 @@ pub fn sync_tracks_to_device_impl(
     app: &AppHandle,
     payload: DeviceSyncPayload,
 ) -> Result<DeviceSyncResult, String> {
+    SYNC_ABORT_REQUESTED.store(false, Ordering::SeqCst);
     let mount_dir = Path::new(&payload.mount_point);
     if !mount_dir.exists() {
         return Err(format!("Mount point not accessible: {}", payload.mount_point));
@@ -1009,6 +1018,11 @@ pub fn sync_tracks_to_device_impl(
     let mut synced_relative_paths: Vec<PathBuf> = Vec::new();
 
     for (index, track) in payload.tracks.iter().enumerate() {
+        if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+            errors.push("Sync stopped by user".to_string());
+            break;
+        }
+
         let src_path = Path::new(&track.file_path);
         if !src_path.exists() {
             errors.push(format!("Source track not found: {}", track.file_path));
