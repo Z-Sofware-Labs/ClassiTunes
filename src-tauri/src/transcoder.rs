@@ -102,6 +102,21 @@ fn windows_transcode(
 }
 
 #[cfg(target_os = "windows")]
+fn has_windows_ffmpeg() -> bool {
+    use std::os::windows::process::CommandExt;
+    use std::sync::OnceLock;
+    static HAS_FFMPEG: OnceLock<bool> = OnceLock::new();
+    *HAS_FFMPEG.get_or_init(|| {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(target_os = "windows")]
 fn windows_mf_transcode(
     src: &Path,
@@ -110,6 +125,26 @@ fn windows_mf_transcode(
 ) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    // Fast path: if ffmpeg is available on PATH, use native C/ASM encoding without PowerShell startup overhead
+    if has_windows_ffmpeg() {
+        let mut cmd = std::process::Command::new("ffmpeg");
+        cmd.args(["-y", "-v", "error", "-i"])
+            .arg(src)
+            .args(["-vn", "-b:a", &format!("{}k", options.bitrate_kbps)]);
+        if options.downsample_44k {
+            cmd.args(["-ar", "44100"]);
+        }
+        if options.downmix_mono {
+            cmd.args(["-ac", "1"]);
+        }
+        cmd.arg(dest).creation_flags(CREATE_NO_WINDOW);
+        if let Ok(out) = cmd.output() {
+            if out.status.success() && dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                return Ok(());
+            }
+        }
+    }
 
     let target_bps = options.bitrate_kbps * 1000;
     let src_str = src.to_string_lossy().to_string();

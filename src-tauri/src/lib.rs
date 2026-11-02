@@ -920,8 +920,10 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
 }
 
 #[tauri::command]
-fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> {
-    read_music_metadata_internal(&file_path)
+async fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> {
+    tauri::async_runtime::spawn_blocking(move || read_music_metadata_internal(&file_path))
+        .await
+        .map_err(|e| format!("Metadata task failed: {e}"))?
 }
 
 #[derive(serde::Serialize)]
@@ -931,19 +933,23 @@ struct BatchMetadataItem {
 }
 
 #[tauri::command]
-fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadataItem> {
-    use rayon::prelude::*;
+async fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadataItem> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use rayon::prelude::*;
 
-    file_paths
-        .into_par_iter()
-        .map(|path| {
-            let meta = read_music_metadata_internal(&path).ok();
-            BatchMetadataItem {
-                path,
-                metadata: meta,
-            }
-        })
-        .collect()
+        file_paths
+            .into_par_iter()
+            .map(|path| {
+                let meta = read_music_metadata_internal(&path).ok();
+                BatchMetadataItem {
+                    path,
+                    metadata: meta,
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[derive(serde::Serialize)]
@@ -1584,13 +1590,17 @@ pub(crate) fn write_music_metadata_internal(file_path: &str, tags: Id3TagPayload
 }
 
 #[tauri::command]
-fn write_music_metadata(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
-    write_music_metadata_internal(&file_path, tags)
+async fn write_music_metadata(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || write_music_metadata_internal(&file_path, tags))
+        .await
+        .map_err(|e| format!("Metadata write task failed: {e}"))?
 }
 
 #[tauri::command]
-fn write_id3_tags(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
-    write_id3_tags_impl(&file_path, tags)
+async fn write_id3_tags(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || write_id3_tags_impl(&file_path, tags))
+        .await
+        .map_err(|e| format!("ID3 write task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1877,8 +1887,10 @@ fn update_taskbar_thumbnail_toolbar(is_playing: bool) {
 }
 
 #[tauri::command]
-fn list_connected_devices() -> Vec<mp3_device::Mp3Device> {
-    mp3_device::list_connected_devices_native()
+async fn list_connected_devices() -> Vec<mp3_device::Mp3Device> {
+    tauri::async_runtime::spawn_blocking(mp3_device::list_connected_devices_native)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -1900,18 +1912,24 @@ fn cancel_device_sync() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn eject_device(mount_point: String) -> Result<bool, String> {
-    mp3_device::eject_device_native(&mount_point)
+async fn eject_device(mount_point: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || mp3_device::eject_device_native(&mount_point))
+        .await
+        .map_err(|e| format!("Device eject task failed: {e}"))?
 }
 
 #[tauri::command]
-fn list_device_contents(mount_point: String) -> Vec<mp3_device::DeviceTrackItem> {
-    mp3_device::list_device_contents_native(&mount_point)
+async fn list_device_contents(mount_point: String) -> Vec<mp3_device::DeviceTrackItem> {
+    tauri::async_runtime::spawn_blocking(move || mp3_device::list_device_contents_native(&mount_point))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn delete_device_file(file_path: String) -> Result<bool, String> {
-    mp3_device::delete_device_file_native(&file_path)
+async fn delete_device_file(file_path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || mp3_device::delete_device_file_native(&file_path))
+        .await
+        .map_err(|e| format!("Device delete task failed: {e}"))?
 }
 
 

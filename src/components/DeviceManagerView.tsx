@@ -342,55 +342,74 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let rafId: number | null = null;
+    let latestPayload: SyncProgressEvent | null = null;
+    const pendingTracks: DeviceTrackItem[] = [];
+
+    const flushProgress = () => {
+      rafId = null;
+      const payload = latestPayload;
+      if (!payload) return;
+
+      setSyncProgress(payload);
+      if (!payload.isComplete) {
+        setIsSyncing(true);
+      }
+
+      if (pendingTracks.length > 0) {
+        const batch = pendingTracks.splice(0, pendingTracks.length);
+        setDeviceContents(prev => {
+          const updated = [...prev];
+          const pathIndexMap = new Map<string, number>();
+          updated.forEach((item, idx) => {
+            pathIndexMap.set(item.fullPath, idx);
+          });
+
+          for (const trackItem of batch) {
+            const existingIdx = pathIndexMap.get(trackItem.fullPath);
+            if (existingIdx !== undefined) {
+              updated[existingIdx] = trackItem;
+            } else {
+              pathIndexMap.set(trackItem.fullPath, updated.length);
+              updated.push(trackItem);
+            }
+          }
+          return updated;
+        });
+      }
+
+      if (payload.isComplete) {
+        setIsSyncing(false);
+        setIsStopping(false);
+        fetchContents(false);
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', { detail: null }));
+        }, 2500);
+      }
+    };
+
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<SyncProgressEvent>('device-sync-progress', (event) => {
         const payload = event.payload;
-        setSyncProgress(payload);
-        if (!payload.isComplete) {
-          setIsSyncing(true);
-        }
-
-        // Live real-time addition to Contents tab as each track finishes syncing!
+        latestPayload = payload;
         if (payload.syncedTrack) {
-          const trackItem = payload.syncedTrack;
-          setDeviceContents(prev => {
-            const existingIdx = prev.findIndex(item => 
-              item.fullPath === trackItem.fullPath ||
-              (item.fileName.toLowerCase() === trackItem.fileName.toLowerCase() &&
-               (item.title || '').trim().toLowerCase() === (trackItem.title || '').trim().toLowerCase())
-            );
-            if (existingIdx >= 0) {
-              const updated = [...prev];
-              updated[existingIdx] = trackItem;
-              return updated;
-            }
-            return [...prev, trackItem];
-          });
+          pendingTracks.push(payload.syncedTrack);
         }
-
-        window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', {
-          detail: {
-            active: true,
-            current: payload.currentIndex,
-            total: payload.totalTracks,
-            title: payload.currentTitle,
-            deviceName: device.name,
-            isComplete: payload.isComplete,
-          }
-        }));
 
         if (payload.isComplete) {
-          setIsSyncing(false);
-          setIsStopping(false);
-          fetchContents(false);
-          setTimeout(() => {
-            window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', { detail: null }));
-          }, 2500);
+          if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+          flushProgress();
+        } else if (rafId === null) {
+          rafId = requestAnimationFrame(flushProgress);
         }
       }).then(un => { unlisten = un; });
     });
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       if (unlisten) unlisten();
     };
   }, [device.mountPoint, device.name]);
@@ -440,13 +459,18 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       }
     } catch (e) {}
 
+    const scaledCoverCache = new Map<string, Promise<string>>();
     const preparedTracks = await Promise.all(
       tracksToSync.map(async (t) => {
         let cover = t.coverUrl || getCachedArtwork(t.id) || (t.album ? getCachedArtwork(t.album.trim().toLowerCase()) : undefined);
-        if (scaleArtwork500 && cover) {
-          try {
-            cover = await scaleCoverTo500(cover);
-          } catch {}
+        // Only scale in browser canvas if it's a blob: or oversized data: URL; Rust natively scales file/asset paths!
+        if (scaleArtwork500 && cover && (cover.startsWith('blob:') || (cover.startsWith('data:') && cover.length > 180_000))) {
+          let pending = scaledCoverCache.get(cover);
+          if (!pending) {
+            pending = scaleCoverTo500(cover).catch(() => cover!);
+            scaledCoverCache.set(cover, pending);
+          }
+          cover = await pending;
         }
         return {
           id: t.id,

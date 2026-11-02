@@ -262,29 +262,48 @@ export default function App() {
     window.addEventListener('classitunes:device-sync-progress', handleCustomSync);
 
     let unlisten: (() => void) | null = null;
+    let rafId: number | null = null;
+    let latestEvent: SyncProgressEvent | null = null;
+
     if (isTauri()) {
       import('@tauri-apps/api/event').then(({ listen }) => {
         listen<SyncProgressEvent>('device-sync-progress', (event) => {
-          const p = event.payload;
-          setDeviceSyncProgress({
-            active: true,
-            current: p.currentIndex,
-            total: p.totalTracks,
-            title: p.currentTitle,
-            deviceName: activeSyncDeviceRef.current?.name || selectedDeviceRef.current?.name || 'Device',
-            isComplete: p.isComplete,
-          });
+          latestEvent = event.payload;
+          const flush = () => {
+            rafId = null;
+            const p = latestEvent;
+            if (!p) return;
+            setDeviceSyncProgress({
+              active: true,
+              current: p.currentIndex,
+              total: p.totalTracks,
+              title: p.currentTitle,
+              deviceName: activeSyncDeviceRef.current?.name || selectedDeviceRef.current?.name || 'Device',
+              isComplete: p.isComplete,
+            });
 
-          if (p.isComplete) {
-            setTimeout(() => {
-              setDeviceSyncProgress(null);
-            }, 2500);
+            if (p.isComplete) {
+              setTimeout(() => {
+                setDeviceSyncProgress(null);
+              }, 2500);
+            }
+          };
+
+          if (event.payload.isComplete) {
+            if (rafId !== null) {
+              cancelAnimationFrame(rafId);
+              rafId = null;
+            }
+            flush();
+          } else if (rafId === null) {
+            rafId = requestAnimationFrame(flush);
           }
         }).then(un => { unlisten = un; });
       }).catch(() => {});
     }
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener('classitunes:device-sync-progress', handleCustomSync);
       if (unlisten) unlisten();
     };
