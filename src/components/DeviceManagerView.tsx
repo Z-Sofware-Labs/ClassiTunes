@@ -466,6 +466,15 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     }
   };
 
+  const handleStopSync = async () => {
+    setIsStopping(true);
+    try {
+      await cancelDeviceSync();
+    } catch (err: any) {
+      console.error('Failed to cancel device sync:', err);
+    }
+  };
+
   const handleEject = () => {
     onEjectDevice(device.mountPoint);
   };
