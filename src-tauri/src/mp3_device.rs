@@ -1198,9 +1198,14 @@ pub fn sync_tracks_to_device_impl(
                     do_process = false;
                     tracks_skipped += 1;
                 } else if should_transcode && dest_meta.len() > 0 {
-                    // Already transcoded at destination
-                    do_process = false;
-                    tracks_skipped += 1;
+                    // If destination size equals raw source size, it was previously only copied, not transcoded.
+                    // Also for manual transfers (drag-and-drop or context menu), always transcode as requested.
+                    if dest_meta.len() == src_size || !payload.sync_playlists {
+                        do_process = true;
+                    } else {
+                        do_process = false;
+                        tracks_skipped += 1;
+                    }
                 }
             }
         }

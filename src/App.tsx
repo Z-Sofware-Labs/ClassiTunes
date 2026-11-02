@@ -345,17 +345,17 @@ export default function App() {
     // Load device's configured naming template from localStorage
     const savedTemplate = localStorage.getItem(`classitunes_device_template_${dev.mountPoint}`) || '{Artist}/{Album}/{TrackNumber} - {Title}';
 
-    // Read transcoding preferences
-    let transcodeEnabled = false;
-    let transcodeFormat = 'MP3';
-    let transcodeBitrate = 256;
-    let transcodeDownmixMono = false;
-    let transcodeDownsample44k = true;
+    // Read transcoding preferences from active settings
+    let transcodeEnabled = Boolean(appSettings.transcodeOnSync);
+    let transcodeFormat = appSettings.transcodeFormat || 'MP3';
+    let transcodeBitrate = parseInt(String(appSettings.transcodeBitrate), 10) || 256;
+    let transcodeDownmixMono = Boolean(appSettings.transcodeDownmixMono);
+    let transcodeDownsample44k = appSettings.transcodeDownsample44k !== undefined ? Boolean(appSettings.transcodeDownsample44k) : true;
     try {
-      const stored = localStorage.getItem('classitunes_transcode_settings');
+      const stored = localStorage.getItem('classitunes_settings');
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (parsed.transcodeEnabled !== undefined) transcodeEnabled = Boolean(parsed.transcodeEnabled);
+        if (parsed.transcodeOnSync !== undefined) transcodeEnabled = Boolean(parsed.transcodeOnSync);
         if (parsed.transcodeFormat) transcodeFormat = parsed.transcodeFormat;
         if (parsed.transcodeBitrate) transcodeBitrate = parseInt(parsed.transcodeBitrate, 10) || 256;
         if (parsed.transcodeDownmixMono !== undefined) transcodeDownmixMono = Boolean(parsed.transcodeDownmixMono);

@@ -102,37 +102,80 @@ fn windows_transcode(
 }
 
 #[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
 fn windows_mf_transcode(
     src: &Path,
     dest: &Path,
     options: &TranscodeOptions,
 ) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let target_bps = options.bitrate_kbps * 1000;
     let src_str = src.to_string_lossy().to_string();
     let dest_str = dest.to_string_lossy().to_string();
 
     let ps_script = format!(
-        r#"[void][Windows.Media.Transcoding.MediaTranscoder, Windows.Media, ContentType = WindowsRuntime]
-$source = [Windows.Storage.StorageFile]::GetFileFromPathAsync('{src}').GetAwaiter().GetResult()
-$dest = [Windows.Storage.StorageFile]::CreateFileAsync('{dest}', [Windows.Storage.CreationCollisionOption]::ReplaceExisting).GetAwaiter().GetResult()
-$transcoder = New-Object Windows.Media.Transcoding.MediaTranscoder
-$profile = if ('{ext}' -eq 'm4a') {{ [Windows.Media.MediaProperties.MediaEncodingProfile]::CreateM4a([Windows.Media.MediaProperties.AudioEncodingQuality]::High) }} else {{ [Windows.Media.MediaProperties.MediaEncodingProfile]::CreateMp3([Windows.Media.MediaProperties.AudioEncodingQuality]::High) }}
-$profile.Audio.Bitrate = {bps}
-$prepared = $transcoder.PrepareFileTranscodeAsync($source, $dest, $profile).GetAwaiter().GetResult()
-if ($prepared.CanTranscode) {{
-    $prepared.TranscodeAsync().GetAwaiter().GetResult()
+        r#"Add-Type -AssemblyName System.Runtime.WindowsRuntime
+[void][Windows.Media.Transcoding.MediaTranscoder, Windows.Media, ContentType = WindowsRuntime]
+[void][Windows.Media.MediaProperties.MediaEncodingProfile, Windows.Media, ContentType = WindowsRuntime]
+
+$t = New-Object Windows.Media.Transcoding.MediaTranscoder
+$p = if ('{ext}' -eq 'm4a') {{
+    [Windows.Media.MediaProperties.MediaEncodingProfile]::CreateM4a([Windows.Media.MediaProperties.AudioEncodingQuality]::High)
 }} else {{
+    [Windows.Media.MediaProperties.MediaEncodingProfile]::CreateMp3([Windows.Media.MediaProperties.AudioEncodingQuality]::High)
+}}
+$p.Audio.Bitrate = {bps}
+
+$srcFile = [System.IO.File]::OpenRead('{src}')
+$destFile = [System.IO.File]::Create('{dest}')
+$src = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($srcFile)
+$dest = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($destFile)
+
+$prepOp = $t.PrepareStreamTranscodeAsync($src, $dest, $p)
+$asTaskOp = $null
+$asTaskProg = $null
+foreach ($m in [System.WindowsRuntimeSystemExtensions].GetMethods()) {{
+    if ($m.Name -eq 'AsTask' -and $m.IsGenericMethodDefinition -and $m.GetGenericArguments().Length -eq 1) {{
+        $params = $m.GetParameters()
+        if ($params.Length -eq 1) {{
+            if ($params[0].ParameterType.Name.StartsWith('IAsyncOperation')) {{ $asTaskOp = $m }}
+            elseif ($params[0].ParameterType.Name.StartsWith('IAsyncActionWithProgress')) {{ $asTaskProg = $m }}
+        }}
+    }}
+}}
+
+$task = $asTaskOp.MakeGenericMethod([Windows.Media.Transcoding.PrepareTranscodeResult]).Invoke($null, @($prepOp))
+$task.Wait()
+$res = $task.Result
+
+if ($res.CanTranscode) {{
+    $transOp = $res.TranscodeAsync()
+    $taskAction = $asTaskProg.MakeGenericMethod([double]).Invoke($null, @($transOp))
+    $taskAction.Wait()
+}} else {{
+    $src.Dispose()
+    $dest.Dispose()
+    $srcFile.Close()
+    $destFile.Close()
     exit 2
 }}
+
+$src.Dispose()
+$dest.Dispose()
+$srcFile.Close()
+$destFile.Close()
 "#,
-        src = src_str.replace("'", "''"),
-        dest = dest_str.replace("'", "''"),
+        src = src_str.replace('\'', "''"),
+        dest = dest_str.replace('\'', "''"),
         ext = options.format.extension(),
         bps = target_bps
     );
 
     let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
 
     match output {
@@ -140,7 +183,7 @@ if ($prepared.CanTranscode) {{
             Ok(())
         }
         _ => {
-            // Fallback: transcode to WAV or copy if PowerShell execution is restricted
+            // Fallback: transcode to WAV or copy if transcoding encountered an issue
             if src.extension() == dest.extension() {
                 std::fs::copy(src, dest).map(|_| ()).map_err(|e| e.to_string())
             } else {
