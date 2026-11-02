@@ -13,6 +13,7 @@ import {
 import { Track, Playlist } from '../types';
 import { audioEngine } from '../services/audioEngine';
 import { getCachedArtwork } from '../services/mediaStorage';
+import { evaluateSmartPlaylist } from '../utils/smartPlaylist';
 import { ListView, ColumnId } from './ListView';
 import { ContextMenu, ContextMenuState } from './ContextMenu';
 
@@ -112,21 +113,20 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   // Active top tab: 'summary' | 'contents'
   const [activeTab, setActiveTab] = useState<'summary' | 'contents'>('summary');
 
-  // Sync mode: 'all' | 'playlists' | 'manual'
-  const [syncMode, setSyncMode] = useState<'all' | 'playlists' | 'manual'>('all');
-  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
+  // Sync mode: 'all' | 'playlists'
+  const [syncMode, setSyncMode] = useState<'all' | 'playlists'>('all');
+  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(`classitunes_device_playlists_${device.mountPoint}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {}
+    return [];
+  });
   const [namingTemplate, setNamingTemplate] = useState<string>('{Artist}/{Album}/{TrackNumber} - {Title}');
   const [syncPlaylists, setSyncPlaylists] = useState<boolean>(true);
-  const [syncOnlyChecked, setSyncOnlyChecked] = useState<boolean>(() => {
-    return localStorage.getItem(`classitunes_device_sync_checked_${device.mountPoint}`) === 'true';
-  });
-
-  const handleSyncOnlyCheckedChange = (val: boolean) => {
-    setSyncOnlyChecked(val);
-    try {
-      localStorage.setItem(`classitunes_device_sync_checked_${device.mountPoint}`, String(val));
-    } catch (e) {}
-  };
   const [autoSyncOnConnect, setAutoSyncOnConnect] = useState<boolean>(true);
 
   // Sync status
@@ -148,7 +148,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       const saved = localStorage.getItem(`classitunes_device_template_${device.mountPoint}`);
       if (saved) setNamingTemplate(saved.replace(/\.?\{ext\}/g, ''));
       const savedMode = localStorage.getItem(`classitunes_device_mode_${device.mountPoint}`) as any;
-      if (savedMode) setSyncMode(savedMode);
+      if (savedMode === 'all' || savedMode === 'playlists') setSyncMode(savedMode);
       const savedAuto = localStorage.getItem(`classitunes_device_auto_${device.mountPoint}`);
       if (savedAuto !== null) setAutoSyncOnConnect(savedAuto === 'true');
     } catch (e) {}
@@ -177,11 +177,21 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     } catch (e) {}
   };
 
-  const handleSyncModeChange = (mode: 'all' | 'playlists' | 'manual') => {
+  const handleSyncModeChange = (mode: 'all' | 'playlists') => {
     setSyncMode(mode);
     try {
       localStorage.setItem(`classitunes_device_mode_${device.mountPoint}`, mode);
     } catch (e) {}
+    if (mode === 'playlists' && selectedPlaylistIds.length === 0) {
+      const userPlaylists = playlists.filter(p => (!p.systemType || p.systemType === 'user') && !p.isFolder);
+      if (userPlaylists.length > 0) {
+        const defaultIds = [userPlaylists[0].id];
+        setSelectedPlaylistIds(defaultIds);
+        try {
+          localStorage.setItem(`classitunes_device_playlists_${device.mountPoint}`, JSON.stringify(defaultIds));
+        } catch (e) {}
+      }
+    }
   };
 
   const handleAutoSyncChange = (val: boolean) => {
@@ -252,47 +262,38 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     return '';
   };
 
-  // Determine tracks to sync based on mode & checkbox selection
+  // Determine tracks to sync based on mode (all vs selected playlists)
   const tracksToSync = useMemo(() => {
     const available = tracks.filter(t => Boolean(getTrackFsPath(t)));
 
-    // Load checked track IDs if syncOnlyChecked is active
-    let checkedIds: Set<string> | null = checkedTrackIdsProp !== undefined ? checkedTrackIdsProp : null;
-    if (checkedIds === null && syncOnlyChecked) {
-      try {
-        const savedChecked = localStorage.getItem('classitunes_checked_tracks');
-        if (savedChecked !== null) {
-          checkedIds = new Set(JSON.parse(savedChecked));
-        }
-      } catch (e) {}
-    }
-
     if (syncMode === 'all') {
-      if (syncOnlyChecked && checkedIds && checkedIds.size > 0) {
-        return available.filter(t => checkedIds!.has(t.id));
-      }
       return available;
     }
 
     if (syncMode === 'playlists') {
       const trackIdSet = new Set<string>();
+
+      const collectPlaylistTracks = (pl: Playlist) => {
+        if (pl.isFolder) {
+          playlists
+            .filter(child => child.parentId === pl.id)
+            .forEach(collectPlaylistTracks);
+        } else if (pl.isSmart) {
+          evaluateSmartPlaylist(pl, tracks).forEach(t => trackIdSet.add(t.id));
+        } else if (pl.trackIds) {
+          pl.trackIds.forEach(id => trackIdSet.add(id));
+        }
+      };
+
       playlists
         .filter(p => selectedPlaylistIds.includes(p.id))
-        .forEach(p => {
-          if (p.trackIds) {
-            p.trackIds.forEach(id => trackIdSet.add(id));
-          }
-        });
-      const plAvailable = available.filter(t => trackIdSet.has(t.id));
-      if (syncOnlyChecked && checkedIds && checkedIds.size > 0) {
-        return plAvailable.filter(t => checkedIds!.has(t.id));
-      }
-      return plAvailable;
+        .forEach(collectPlaylistTracks);
+
+      return available.filter(t => trackIdSet.has(t.id));
     }
 
-    // manual mode
-    return [];
-  }, [syncMode, tracks, playlists, selectedPlaylistIds, checkedTrackIdsProp, syncOnlyChecked, checkedStorageTick]);
+    return available;
+  }, [syncMode, tracks, playlists, selectedPlaylistIds]);
 
   const estimatedAudioBytes = useMemo(() => {
     return tracksToSync.reduce((acc, t) => {
@@ -371,7 +372,14 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   }, []);
 
   const handleStartSync = async () => {
-    if (tracksToSync.length === 0) return;
+    if (syncMode === 'playlists' && selectedPlaylistIds.length === 0) {
+      setErrorMessage('Please select at least one playlist below to sync.');
+      return;
+    }
+    if (tracksToSync.length === 0) {
+      setErrorMessage('No valid audio tracks found to sync on this device.');
+      return;
+    }
     setIsSyncing(true);
     setErrorMessage(null);
     setSyncResult(null);
@@ -768,34 +776,6 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                     <span className="font-mono font-bold text-current">{device.mountPoint}</span>
                   </div>
                 </div>
-
-                {/* Classic Action Buttons */}
-                <div className="pt-2 flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={isSyncing ? handleStopSync : handleStartSync}
-                    disabled={(!isSyncing && (syncMode === 'manual' || tracksToSync.length === 0)) || isStopping}
-                    className={`px-4 py-1.5 rounded-md text-xs font-semibold shadow transition-all flex items-center gap-2 active:scale-95 ${
-                      isSyncing
-                        ? 'bg-gradient-to-b from-red-500 to-red-700 hover:from-red-600 hover:to-red-800 text-white border border-red-800 shadow-red-500/20'
-                        : syncMode === 'manual' || tracksToSync.length === 0
-                        ? 'opacity-50 cursor-not-allowed bg-gray-500 text-white'
-                        : 'bg-gradient-to-b from-blue-500 to-blue-700 hover:from-blue-400 hover:to-blue-600 text-white border border-blue-800'
-                    }`}
-                    title={isSyncing ? 'Stop current transfer' : 'Synchronize music to device'}
-                  >
-                    {isSyncing ? (
-                      <>
-                        <XCircle className="w-3.5 h-3.5" />
-                        <span>{isStopping ? 'Stopping...' : 'Stop'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Sync Music</span>
-                      </>
-                    )}
-                  </button>
-                </div>
               </div>
             </div>
 
@@ -833,16 +813,6 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   />
                   <span>Selected playlists, artists, and albums</span>
                 </label>
-
-                <label className="flex items-center gap-3 cursor-pointer text-xs font-medium">
-                  <input
-                    type="radio"
-                    name="itunesSyncMode"
-                    checked={syncMode === 'manual'}
-                    onChange={() => handleSyncModeChange('manual')}
-                  />
-                  <span>Manually manage music (drag and drop songs/playlists directly onto this device)</span>
-                </label>
               </div>
 
               {/* Checklist when 'selected playlists' is active */}
@@ -862,11 +832,15 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                             type="checkbox"
                             checked={isChecked}
                             onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedPlaylistIds(prev => [...prev, pl.id]);
-                              } else {
-                                setSelectedPlaylistIds(prev => prev.filter(id => id !== pl.id));
-                              }
+                              setSelectedPlaylistIds(prev => {
+                                const next = e.target.checked
+                                  ? Array.from(new Set([...prev, pl.id]))
+                                  : prev.filter(id => id !== pl.id);
+                                try {
+                                  localStorage.setItem(`classitunes_device_playlists_${device.mountPoint}`, JSON.stringify(next));
+                                } catch (err) {}
+                                return next;
+                              });
                             }}
                           />
                           <span className="truncate">{pl.name}</span>
@@ -906,15 +880,6 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                     onChange={(e) => setSyncPlaylists(e.target.checked)}
                   />
                   <span>Generate <code className="font-mono text-[11px]">.m3u8</code> playlist files in device <code className="font-mono text-[11px]">/Playlists/</code></span>
-                </label>
-
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={syncOnlyChecked}
-                    onChange={(e) => handleSyncOnlyCheckedChange(e.target.checked)}
-                  />
-                  <span>Sync only checked songs</span>
                 </label>
 
                 {/* Customizable Folder Template */}
@@ -1191,11 +1156,11 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         {/* Right: Aqua / Metal Sync Action Button */}
         <button
           onClick={isSyncing ? handleStopSync : handleStartSync}
-          disabled={(!isSyncing && (syncMode === 'manual' || tracksToSync.length === 0)) || isStopping}
+          disabled={!isSyncing && (isStopping || (syncMode === 'all' && tracksToSync.length === 0))}
           className={`px-6 py-1.5 rounded-md font-bold text-xs transition-all shadow-md flex items-center gap-2 border active:scale-95 shrink-0 ${
             isSyncing
               ? 'bg-gradient-to-b from-red-500 via-red-600 to-red-700 hover:from-red-600 hover:to-red-800 text-white border-red-800 shadow-red-500/20'
-              : syncMode === 'manual' || tracksToSync.length === 0
+              : (!isSyncing && (isStopping || (syncMode === 'all' && tracksToSync.length === 0)))
               ? 'opacity-50 cursor-not-allowed bg-gray-500 text-white border-gray-600'
               : 'bg-gradient-to-b from-blue-500 via-blue-600 to-blue-700 hover:from-blue-400 hover:to-blue-600 text-white border-blue-800 shadow-blue-500/20'
           }`}

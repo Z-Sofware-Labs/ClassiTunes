@@ -28,6 +28,9 @@ interface ContextMenuProps {
   onDeleteTrack: (trackId: string) => void;
   onDeleteTracks?: (trackIds: string[]) => void;
   selectedTrackIds?: string[];
+  checkedTrackIds?: Set<string>;
+  isCheckboxVisible?: boolean;
+  onCreatePlaylistWithTracks?: (tracks: Track[]) => void;
   tracks?: Track[];
   theme?: 'dark' | 'light';
   isDeviceContext?: boolean;
