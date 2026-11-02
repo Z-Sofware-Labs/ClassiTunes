@@ -76,6 +76,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
   const [isSortSubmenuOpen, setIsSortSubmenuOpen] = useState(false);
   const isLight = theme === 'light';
+  const track = contextMenu?.track;
 
   const isCheckboxEngaged = Boolean(isCheckboxVisible && checkedTrackIds && checkedTrackIds.size > 0);
   const effectiveTrackIds = useMemo(() => {
@@ -322,7 +323,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     );
   }
 
-  const { track } = contextMenu;
+  if (!track) return null;
   const isCurrentPlayingThis = currentTrack?.id === track.id && isPlaying;
   const userPlaylists = playlists.filter(p => (!p.systemType || p.systemType === 'user') && !p.isFolder && !p.isSmart);
 
