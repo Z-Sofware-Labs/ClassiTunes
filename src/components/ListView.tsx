@@ -92,9 +92,7 @@ export function getInitialColumnOrder(storageScope: string = 'classitunes'): Col
       if (Array.isArray(parsed) && parsed.length > 0) {
         const validSet = new Set<string>(ALL_COLUMN_IDS);
         let filtered = parsed.filter((id: any): id is ColumnId => validSet.has(id));
-        if (filtered.includes('checkbox')) {
-          filtered = ['checkbox', ...filtered.filter(id => id !== 'checkbox')];
-        } else {
+        if (!filtered.includes('checkbox')) {
           filtered = ['checkbox', ...filtered];
         }
         ALL_COLUMN_IDS.forEach(id => {
@@ -110,9 +108,7 @@ export function getInitialColumnOrder(storageScope: string = 'classitunes'): Col
       if (Array.isArray(parsed) && parsed.length > 0) {
         const validSet = new Set<string>(ALL_COLUMN_IDS);
         let order: ColumnId[] = parsed.filter((id: any): id is ColumnId => validSet.has(id));
-        if (order.includes('checkbox')) {
-          order = ['checkbox', ...order.filter(id => id !== 'checkbox')];
-        } else {
+        if (!order.includes('checkbox')) {
           order = ['checkbox', ...order];
         }
         ALL_COLUMN_IDS.forEach(id => {
@@ -709,8 +705,20 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const initialSelectionRef = useRef<string[]>([]);
   const rowRectsRef = useRef<{ id: string; rect: DOMRect }[]>([]);
 
-  const [sortField, setSortField] = useState<keyof Track>('title');
-  const [sortAsc, setSortAsc] = useState<boolean>(true);
+  const [sortField, setSortField] = useState<keyof Track>(() => {
+    try {
+      const saved = localStorage.getItem(`${storageScope}_sort_field`);
+      if (saved) return saved as keyof Track;
+    } catch (e) {}
+    return 'title';
+  });
+  const [sortAsc, setSortAsc] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(`${storageScope}_sort_asc`);
+      if (saved !== null) return saved === 'true';
+    } catch (e) {}
+    return true;
+  });
   const [contextMenuTrackId, setContextMenuTrackId] = useState<string | null>(null);
   const [showColumnPicker, setShowColumnPicker] = useState<boolean>(false);
 
@@ -1075,12 +1083,19 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const userPlaylists = useMemo(() => playlists.filter(p => !p.systemType || p.systemType === 'user'), [playlists]);
 
   const handleSort = (field: keyof Track) => {
+    let nextAsc = true;
+    let nextField = field;
     if (sortField === field) {
-      setSortAsc(!sortAsc);
+      nextAsc = !sortAsc;
+      setSortAsc(nextAsc);
     } else {
       setSortField(field);
       setSortAsc(true);
     }
+    try {
+      localStorage.setItem(`${storageScope}_sort_field`, String(nextField));
+      localStorage.setItem(`${storageScope}_sort_asc`, String(nextAsc));
+    } catch (e) {}
   };
 
   // Define sortedTracks BEFORE any callbacks/effects that reference it to avoid TDZ ReferenceError
@@ -1171,6 +1186,14 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const resetColumns = () => {
     saveColumnOrder([...ALL_COLUMN_IDS]);
     setVisibleColumns(DEFAULT_VISIBLE);
+    setColumnWidths(DEFAULT_COLUMN_WIDTHS);
+    setSortField('title');
+    setSortAsc(true);
+    try {
+      localStorage.removeItem(`${storageScope}_column_widths`);
+      localStorage.removeItem(`${storageScope}_sort_field`);
+      localStorage.removeItem(`${storageScope}_sort_asc`);
+    } catch (e) {}
   };
 
   // Windowed Virtualization Calculation: on Linux/WebKitGTK use 35 rows overscan buffer

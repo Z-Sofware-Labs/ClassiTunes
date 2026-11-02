@@ -161,25 +161,35 @@ export default function App() {
     } catch (e) {}
   }, []);
 
-  // Shared visible columns state (Checkbox column is enabled by default as leftmost column)
+  // Shared visible columns state (persisted across restarts and view changes)
   const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(() => {
     try {
       const saved = localStorage.getItem('classitunes_visible_columns') || localStorage.getItem('itunes_visible_columns');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          let cols: ColumnId[] = [...parsed];
-          if (!cols.includes('checkbox')) {
-            cols = ['checkbox', ...cols];
-          } else if (cols[0] !== 'checkbox') {
-            cols = ['checkbox', ...cols.filter(id => id !== 'checkbox')];
+          // One-time upgrade migration: ensure checkbox is enabled and leftmost on initial migration
+          const hasV2Migrated = localStorage.getItem('classitunes_v2_col_migrated');
+          if (!hasV2Migrated) {
+            let cols: ColumnId[] = [...parsed];
+            if (!cols.includes('checkbox')) {
+              cols = ['checkbox', ...cols];
+            } else if (cols[0] !== 'checkbox') {
+              cols = ['checkbox', ...cols.filter(id => id !== 'checkbox')];
+            }
+            try {
+              localStorage.setItem('classitunes_visible_columns', JSON.stringify(cols));
+              localStorage.setItem('classitunes_v2_col_migrated', 'true');
+            } catch (e) {}
+            return cols;
           }
-          try {
-            localStorage.setItem('classitunes_visible_columns', JSON.stringify(cols));
-          } catch (e) {}
-          return cols;
+          return parsed;
         }
       }
+    } catch (e) {}
+    try {
+      localStorage.setItem('classitunes_v2_col_migrated', 'true');
+      localStorage.setItem('classitunes_visible_columns', JSON.stringify(DEFAULT_VISIBLE));
     } catch (e) {}
     return DEFAULT_VISIBLE;
   });
