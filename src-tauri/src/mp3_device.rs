@@ -83,6 +83,8 @@ pub struct SyncTrackItem {
     #[serde(default)]
     pub lyrics: Option<String>,
     #[serde(default)]
+    pub comments: Option<String>,
+    #[serde(default)]
     pub duration: Option<f64>,
     #[serde(default)]
     pub bitrate: Option<u32>,
@@ -1290,12 +1292,20 @@ pub fn sync_tracks_to_device_impl(
                         if enriched_track.lyrics.is_none() {
                             enriched_track.lyrics = src_meta.lyrics;
                         }
+                        if enriched_track.comments.is_none() {
+                            enriched_track.comments = src_meta.comments;
+                        }
                         if enriched_track.duration.is_none() {
                             enriched_track.duration = src_meta.duration;
                         }
                         if enriched_track.bitrate.is_none() {
                             enriched_track.bitrate = src_meta.bitrate;
                         }
+                    }
+                }
+                if let Some(ref cmt) = enriched_track.comments {
+                    if crate::is_technical_comment("", cmt) {
+                        enriched_track.comments = None;
                     }
                 }
 
@@ -1426,7 +1436,7 @@ pub fn sync_tracks_to_device_impl(
                             disc_number: None,
                             disc_total: None,
                             bpm: None,
-                            comments: None,
+                            comments: Some(enriched_track.comments.clone().unwrap_or_default()),
                             media_kind: Some("Music".to_string()),
                             artwork_data_url,
                             artwork_mime_type: None,

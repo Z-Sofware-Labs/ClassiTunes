@@ -1244,6 +1244,7 @@ export interface SyncTrackItem {
   year?: number;
   coverUrl?: string;
   lyrics?: string;
+  comments?: string;
   duration?: number;
   bitrate?: number;
 }

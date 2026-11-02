@@ -484,6 +484,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
           year: t.year,
           coverUrl: cover,
           lyrics: t.lyrics,
+          comments: t.comments,
           duration: t.duration,
           bitrate: t.bitrate,
         };

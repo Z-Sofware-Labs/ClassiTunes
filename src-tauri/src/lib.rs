@@ -593,6 +593,48 @@ fn is_mp4_file(path: &std::path::Path, ext: &str) -> bool {
     false
 }
 
+/// Returns true if an ID3/MP4 comment frame is actually technical encoder metadata
+/// (such as iTunes `iTunSMPB` gapless playback padding, `iTunNORM` SoundCheck hex blocks,
+/// or `00000000 ...` hex zero blocks) rather than a human-readable user comment.
+pub(crate) fn is_technical_comment(description: &str, text: &str) -> bool {
+    let desc = description.trim().to_ascii_lowercase();
+    if desc.starts_with("itun")
+        || desc.starts_with("replaygain")
+        || desc.starts_with("cddb")
+        || desc == "accurateip"
+        || desc == "encoding"
+    {
+        return true;
+    }
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("itunsmpb")
+        || lower.starts_with("itunnorm")
+        || lower.starts_with("itunpgap")
+        || lower.starts_with("itunes_cddb")
+    {
+        return true;
+    }
+
+    // Detect space-separated 8- or 16-character hexadecimal blocks (e.g. "00000000 00000210 00000840 ...")
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.len() >= 3
+        && tokens.iter().all(|tok| {
+            (tok.len() == 8 || tok.len() == 16)
+                && tok.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    {
+        return true;
+    }
+
+    false
+}
+
 pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetadataResult, String> {
     use id3::TagLike;
     use std::path::Path;
@@ -674,7 +716,9 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
                 res.bpm = Some(bpm as i32);
             }
             if let Some(cmt) = tag.comment() {
-                res.comments = Some(cmt.to_string());
+                if !is_technical_comment("", cmt) {
+                    res.comments = Some(cmt.to_string());
+                }
             }
             if let Some(art) = tag.artwork().or_else(|| tag.artworks().next()) {
                 let fallback = match art.fmt {
@@ -722,7 +766,10 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
             if res.disc_number.is_none() { res.disc_number = tag.disc().map(|d| d as i32); }
             if res.disc_total.is_none() { res.disc_total = tag.total_discs().map(|d| d as i32); }
             if res.comments.is_none() {
-                res.comments = tag.comments().next().map(|c| c.text.clone());
+                res.comments = tag
+                    .comments()
+                    .find(|c| !is_technical_comment(&c.description, &c.text))
+                    .map(|c| c.text.clone());
                 if res.replay_gain_db.is_none() {
                     res.replay_gain_db = tag
                         .extended_texts()
@@ -813,7 +860,11 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
                 if res.disc_number.is_none() { res.disc_number = tag.disk().map(|d| d as i32); }
                 if res.disc_total.is_none() { res.disc_total = tag.disk_total().map(|d| d as i32); }
                 if res.comments.is_none() {
-                    res.comments = tag.comment().as_deref().map(|s| s.to_string());
+                    res.comments = tag
+                        .comment()
+                        .as_deref()
+                        .filter(|s| !is_technical_comment("", s))
+                        .map(|s| s.to_string());
                     if res.replay_gain_db.is_none() {
                         res.replay_gain_db = tag
                             .get_string(ItemKey::ReplayGainTrackGain)

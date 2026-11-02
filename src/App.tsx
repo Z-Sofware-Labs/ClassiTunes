@@ -417,6 +417,8 @@ export default function App() {
           trackNumber: t.trackNumber,
           year: t.year,
           coverUrl: t.coverUrl || getCachedArtwork(t.id) || (t.album ? getCachedArtwork(t.album.trim().toLowerCase()) : undefined),
+          lyrics: t.lyrics,
+          comments: t.comments,
           duration: t.duration,
           bitrate: t.bitrate,
         })),

@@ -617,7 +617,7 @@ async function parseBinaryID3(file: File): Promise<BinaryID3Result | null> {
               const b = parseInt(textContent, 10);
               if (!isNaN(b) && b > 0) result.bpm = b;
             } else if (frameId === 'COMM' && textContent) {
-              result.comments = textContent.replace(/^[a-zA-Z]{3}/, '').trim() || textContent;
+              const rawCmt = textContent.replace(/^[a-zA-Z]{3}/, '').replace(/^(iTunSMPB|iTunNORM|iTunPGAP|iTunes_CDDB_\w+)/i, '').trim(); if (rawCmt && !/^([0-9A-Fa-f]{8,16}\s+){2,}[0-9A-Fa-f]{8,16}$/.test(rawCmt) && !/^(iTunSMPB|iTunNORM|iTunPGAP)/i.test(textContent.replace(/^[a-zA-Z]{3}/, '').trim())) result.comments = rawCmt;
             } else if (frameId === 'TCON' && textContent) {
               const match = textContent.match(/^\(?(\d+)\)?$/);
               if (match) {
@@ -704,7 +704,7 @@ async function parseBinaryID3(file: File): Promise<BinaryID3Result | null> {
               const b = parseInt(textContent, 10);
               if (!isNaN(b) && b > 0) result.bpm = b;
             } else if (frameId === 'COM' && textContent) {
-              result.comments = textContent.replace(/^[a-zA-Z]{3}/, '').trim() || textContent;
+              const rawCmt = textContent.replace(/^[a-zA-Z]{3}/, '').replace(/^(iTunSMPB|iTunNORM|iTunPGAP|iTunes_CDDB_\w+)/i, '').trim(); if (rawCmt && !/^([0-9A-Fa-f]{8,16}\s+){2,}[0-9A-Fa-f]{8,16}$/.test(rawCmt) && !/^(iTunSMPB|iTunNORM|iTunPGAP)/i.test(textContent.replace(/^[a-zA-Z]{3}/, '').trim())) result.comments = rawCmt;
             } else if (frameId === 'TCO' && textContent) {
               const match = textContent.match(/^\(?(\d+)\)?$/);
               if (match) {
@@ -1313,7 +1313,7 @@ export async function extractID3TagsFromFile(file: File | Blob): Promise<Extract
     if (common.bpm && !result.bpm) result.bpm = Math.round(common.bpm);
     if (common.comment && common.comment.length > 0 && !result.comments) {
       const c = common.comment[0] as any;
-      result.comments = typeof c === 'string' ? c.trim() : (c?.text ? String(c.text).trim() : undefined);
+      const validCmt = (common.comment as any[]).map(entry => ({ desc: typeof entry === 'object' && entry?.descriptor ? String(entry.descriptor).trim() : '', txt: typeof entry === 'string' ? entry.trim() : (entry?.text ? String(entry.text).trim() : '') })).find(({ desc, txt }) => txt && !/^(iTun|replaygain|cddb|accurateip)/i.test(desc) && !/^(iTunSMPB|iTunNORM|iTunPGAP|iTunes_CDDB)/i.test(txt) && !/^([0-9A-Fa-f]{8,16}\s+){2,}[0-9A-Fa-f]{8,16}$/.test(txt)); result.comments = validCmt?.txt;
     }
     if (fmt.duration && !result.duration) result.duration = fmt.duration;
     if (fmt.bitrate && !result.bitrate) result.bitrate = Math.round(fmt.bitrate / 1000);
