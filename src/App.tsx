@@ -231,6 +231,7 @@ export default function App() {
   const [selectedDevice, setSelectedDevice] = useState<Mp3Device | null>(null);
   const selectedDeviceRef = useRef<Mp3Device | null>(null);
   selectedDeviceRef.current = selectedDevice;
+  const activeSyncDeviceRef = useRef<Mp3Device | null>(null);
   const [deviceSyncProgress, setDeviceSyncProgress] = useState<DeviceSyncProgressInfo | null>(null);
 
   // Sync Progress Event Listener for LCD Main Player Display
@@ -251,7 +252,7 @@ export default function App() {
             current: p.currentIndex,
             total: p.totalTracks,
             title: p.currentTitle,
-            deviceName: selectedDeviceRef.current?.name || 'Device',
+            deviceName: activeSyncDeviceRef.current?.name || selectedDeviceRef.current?.name || 'Device',
             isComplete: p.isComplete,
           });
 
@@ -329,7 +330,8 @@ export default function App() {
   };
 
   const handleDropTracksToDevice = async (trackIds: string[], dev: Mp3Device) => {
-    setSelectedDevice(dev);
+    // Keep user on the library view without switching the main view to the device
+    activeSyncDeviceRef.current = dev;
     const droppedTracks = tracks.filter(t => trackIds.includes(t.id) && (Boolean(t.filePath) || Boolean(audioEngine.extractFsPathFromUrl(t.audioUrl))));
     if (droppedTracks.length === 0) return;
 
@@ -396,11 +398,13 @@ export default function App() {
       });
       setTimeout(() => {
         setDeviceSyncProgress(null);
+        activeSyncDeviceRef.current = null;
       }, 2500);
       refreshDevices();
     } catch (err) {
       console.error('Failed to sync dropped tracks to device:', err);
       setDeviceSyncProgress(null);
+      activeSyncDeviceRef.current = null;
     }
   };
 
