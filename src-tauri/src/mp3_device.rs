@@ -951,12 +951,100 @@ pub fn list_device_contents_native(mount_point: &str) -> Vec<DeviceTrackItem> {
     tracks
 }
 
-pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
-    let p = Path::new(file_path);
-    if !p.exists() {
-        return Err("File does not exist".to_string());
+fn decode_percent_path(s: &str) -> String {
+    let mut bytes = Vec::new();
+    let chars = s.as_bytes();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == b'%' && i + 2 < chars.len() {
+            if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&chars[i + 1..i + 3]).unwrap_or(""), 16) {
+                bytes.push(val);
+                i += 3;
+                continue;
+            }
+        }
+        bytes.push(chars[i]);
+        i += 1;
     }
-    fs::remove_file(p).map_err(|e| format!("Failed to delete file: {e}"))?;
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
+    let clean = file_path.trim().trim_matches('"');
+    let unfile = if let Some(stripped) = clean.strip_prefix("file:///") {
+        stripped
+    } else if let Some(stripped) = clean.strip_prefix("file://") {
+        stripped
+    } else {
+        clean
+    };
+
+    let target_str = if Path::new(unfile).exists() {
+        unfile.to_string()
+    } else {
+        let dec = decode_percent_path(unfile);
+        if Path::new(&dec).exists() {
+            dec
+        } else {
+            unfile.to_string()
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    let normalized = target_str.replace('/', "\\");
+    #[cfg(not(target_os = "windows"))]
+    let normalized = target_str;
+
+    let p = Path::new(&normalized);
+    if !p.exists() {
+        return Err(format!("File does not exist on device: {normalized}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, read-only permissions prevent DeleteFileW with Access Denied (os error 5).
+        // Strip read-only attribute if present.
+        if let Ok(meta) = fs::metadata(p) {
+            let mut perms = meta.permissions();
+            if perms.readonly() {
+                perms.set_readonly(false);
+                let _ = fs::set_permissions(p, perms);
+            }
+        }
+    }
+
+    let remove_res = fs::remove_file(p);
+    if let Err(e) = remove_res {
+        #[cfg(target_os = "windows")]
+        {
+            use std::process::Command;
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+            // Attempt cmd /C del /F /Q /A "<path>"
+            let _ = Command::new("cmd")
+                .args(["/C", "del", "/F", "/Q", "/A", &normalized])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+
+            if p.exists() {
+                let escaped = normalized.replace('\'', "''");
+                let ps_cmd = format!("Remove-Item -LiteralPath '{}' -Force", escaped);
+                let _ = Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &ps_cmd])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+
+            if p.exists() {
+                return Err(format!("Failed to delete file on device: {e}"));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            return Err(format!("Failed to delete file on device: {e}"));
+        }
+    }
 
     // If deleted file belonged to an iPod, refresh its native iTunesDB
     let mut ancestor = p.parent();
