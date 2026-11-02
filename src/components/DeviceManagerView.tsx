@@ -11,6 +11,7 @@ import {
   resolveNativeCoverUrlSync, isTauri
 } from '../utils/tauriWindow';
 import { Track, Playlist } from '../types';
+import { audioEngine } from '../services/audioEngine';
 import { ListView, ColumnId } from './ListView';
 import { ContextMenu, ContextMenuState } from './ContextMenu';
 
@@ -113,6 +114,16 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
   const [namingTemplate, setNamingTemplate] = useState<string>('{Artist}/{Album}/{TrackNumber} - {Title}');
   const [syncPlaylists, setSyncPlaylists] = useState<boolean>(true);
+  const [syncOnlyChecked, setSyncOnlyChecked] = useState<boolean>(() => {
+    return localStorage.getItem(`classitunes_device_sync_checked_${device.mountPoint}`) === 'true';
+  });
+
+  const handleSyncOnlyCheckedChange = (val: boolean) => {
+    setSyncOnlyChecked(val);
+    try {
+      localStorage.setItem(`classitunes_device_sync_checked_${device.mountPoint}`, String(val));
+    } catch (e) {}
+  };
   const [autoSyncOnConnect, setAutoSyncOnConnect] = useState<boolean>(true);
 
   // Sync status
@@ -228,49 +239,35 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     };
   }, []);
 
+  // Helper to extract local disk file path from either t.filePath or t.audioUrl
+  const getTrackFsPath = (t: Track): string => {
+    if (t.filePath && t.filePath.trim().length > 0) return t.filePath.trim();
+    if (t.audioUrl) {
+      const extracted = audioEngine.extractFsPathFromUrl(t.audioUrl);
+      if (extracted && extracted.trim().length > 0) return extracted.trim();
+    }
+    return '';
+  };
+
   // Determine tracks to sync based on mode & checkbox selection
   const tracksToSync = useMemo(() => {
-    // Check if checkbox column is visible
-    let isCheckboxVisible = isCheckboxColumnVisibleProp !== undefined ? isCheckboxColumnVisibleProp : true;
-    if (isCheckboxColumnVisibleProp === undefined) {
-      try {
-        const savedCols = localStorage.getItem('classitunes_visible_columns') || localStorage.getItem('itunes_visible_columns');
-        if (savedCols) {
-          const parsedCols = JSON.parse(savedCols);
-          if (Array.isArray(parsedCols)) {
-            isCheckboxVisible = parsedCols.includes('checkbox');
-          }
-        }
-      } catch (e) {}
-    }
+    const available = tracks.filter(t => Boolean(getTrackFsPath(t)));
 
-    // Load checked track IDs
+    // Load checked track IDs if syncOnlyChecked is active
     let checkedIds: Set<string> | null = checkedTrackIdsProp !== undefined ? checkedTrackIdsProp : null;
-    if (checkedIds === null && isCheckboxVisible) {
+    if (checkedIds === null && syncOnlyChecked) {
       try {
         const savedChecked = localStorage.getItem('classitunes_checked_tracks');
         if (savedChecked !== null) {
           checkedIds = new Set(JSON.parse(savedChecked));
-        } else {
-          checkedIds = new Set<string>();
         }
-      } catch (e) {
-        checkedIds = new Set<string>();
-      }
+      } catch (e) {}
     }
 
     if (syncMode === 'all') {
-      const available = tracks.filter(t => !!t.filePath);
-      if (isCheckboxVisible) {
-        // Checkbox column is visible / engaged:
-        // - If nothing is checked (checkedIds.size === 0): estimate NOTHING (0 tracks, 0 bytes)
-        // - If some or all songs are checked: estimate ONLY those checked
-        if (!checkedIds || checkedIds.size === 0) {
-          return [];
-        }
-        return available.filter(t => checkedIds.has(t.id));
+      if (syncOnlyChecked && checkedIds && checkedIds.size > 0) {
+        return available.filter(t => checkedIds!.has(t.id));
       }
-      // Checkbox column is NOT visible / disabled: estimate entire library
       return available;
     }
 
@@ -283,17 +280,16 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
             p.trackIds.forEach(id => trackIdSet.add(id));
           }
         });
-      const available = tracks.filter(t => trackIdSet.has(t.id) && !!t.filePath);
-      if (isCheckboxVisible) {
-        if (!checkedIds || checkedIds.size === 0) {
-          return [];
-        }
-        return available.filter(t => checkedIds.has(t.id));
+      const plAvailable = available.filter(t => trackIdSet.has(t.id));
+      if (syncOnlyChecked && checkedIds && checkedIds.size > 0) {
+        return plAvailable.filter(t => checkedIds!.has(t.id));
       }
-      return available;
+      return plAvailable;
     }
+
+    // manual mode
     return [];
-  }, [syncMode, tracks, playlists, selectedPlaylistIds, checkedTrackIdsProp, isCheckboxColumnVisibleProp, checkedStorageTick]);
+  }, [syncMode, tracks, playlists, selectedPlaylistIds, checkedTrackIdsProp, syncOnlyChecked, checkedStorageTick]);
 
   const estimatedAudioBytes = useMemo(() => {
     return tracksToSync.reduce((acc, t) => {
@@ -419,7 +415,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         }
         return {
           id: t.id,
-          filePath: t.filePath || '',
+          filePath: getTrackFsPath(t),
           title: t.title,
           artist: t.artist,
           albumArtist: t.albumArtist,
@@ -856,6 +852,15 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   <span>Generate <code className="font-mono text-[11px]">.m3u8</code> playlist files in device <code className="font-mono text-[11px]">/Playlists/</code></span>
                 </label>
 
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={syncOnlyChecked}
+                    onChange={(e) => handleSyncOnlyCheckedChange(e.target.checked)}
+                  />
+                  <span>Sync only checked songs</span>
+                </label>
+
                 {/* Customizable Folder Template */}
                 <div className={`mt-3 pt-3 border-t space-y-2 ${isLight ? 'border-gray-200' : 'border-white/10'}`}>
                   <div className="flex items-center justify-between">
@@ -939,17 +944,41 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
               </div>
             )}
 
-            {syncResult && !isSyncing && (
+            {errorMessage && !isSyncing && (
               <div className={`p-3.5 rounded-xl border flex items-start gap-2.5 ${
+                isLight ? 'bg-red-50 border-red-200 text-red-900' : 'bg-red-950/30 border-red-500/30 text-red-200'
+              }`}>
+                <AlertCircle className="w-4 h-4 mt-0.5 text-red-500 shrink-0" />
+                <div className="text-xs">
+                  <span className="font-bold">Sync Error: </span>
+                  <span>{errorMessage}</span>
+                </div>
+              </div>
+            )}
+
+            {syncResult && !isSyncing && (
+              <div className={`p-3.5 rounded-xl border flex flex-col gap-1.5 ${
                 syncResult.errors.length > 0 
                   ? (isLight ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-amber-950/30 border-amber-500/30 text-amber-200')
                   : (isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200')
               }`}>
-                <ShieldCheck className="w-4 h-4 mt-0.5 text-emerald-500 shrink-0" />
-                <div className="text-xs">
-                  <span className="font-bold">Sync Completed: </span>
-                  <span>{syncResult.tracksSynced} songs copied ({formatBytes(syncResult.totalBytesTransferred)}), {syncResult.tracksSkipped} songs already up to date.</span>
+                <div className="flex items-start gap-2.5">
+                  <ShieldCheck className="w-4 h-4 mt-0.5 text-emerald-500 shrink-0" />
+                  <div className="text-xs">
+                    <span className="font-bold">Sync Completed: </span>
+                    <span>{syncResult.tracksSynced} songs copied ({formatBytes(syncResult.totalBytesTransferred)}), {syncResult.tracksSkipped} songs already up to date.</span>
+                  </div>
                 </div>
+                {syncResult.errors.length > 0 && (
+                  <div className="text-[11px] opacity-80 pl-6 space-y-0.5">
+                    {syncResult.errors.slice(0, 3).map((err, i) => (
+                      <div key={i} className="truncate">• {err}</div>
+                    ))}
+                    {syncResult.errors.length > 3 && (
+                      <div>...and {syncResult.errors.length - 3} more items skipped</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

@@ -976,7 +976,15 @@ pub fn sync_tracks_to_device_impl(
     payload: DeviceSyncPayload,
 ) -> Result<DeviceSyncResult, String> {
     SYNC_ABORT_REQUESTED.store(false, Ordering::SeqCst);
-    let mount_dir = Path::new(&payload.mount_point);
+    let clean_mount = payload.mount_point.trim_end_matches(['\\', '/']);
+    let mount_dir_buf = if clean_mount.len() == 1 && clean_mount.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+        PathBuf::from(format!("{clean_mount}:\\"))
+    } else if clean_mount.ends_with(':') {
+        PathBuf::from(format!("{clean_mount}\\"))
+    } else {
+        PathBuf::from(&payload.mount_point)
+    };
+    let mount_dir = mount_dir_buf.as_path();
     if !mount_dir.exists() {
         return Err(format!("Mount point not accessible: {}", payload.mount_point));
     }
