@@ -18,6 +18,7 @@ interface StatusBarProps {
   onToggleRepeat: () => void;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+  checkedCount?: number;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -32,6 +33,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   repeatMode,
   onToggleRepeat,
   theme = 'dark',
+  checkedCount,
 }) => {
   const [showCoverPreview, setShowCoverPreview] = useState(false);
   const [showSpeedPopover, setShowSpeedPopover] = useState(false);
@@ -105,7 +107,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
       {/* Center Summary */}
       <div className={`font-mono text-[11px] font-semibold text-center ${isLight ? 'text-gray-800' : 'text-gray-300'}`}>
-        {totalCount} {totalCount === 1 ? 'item' : 'items'}, {totalMinutes} minutes, {totalMB} MB
+        {totalCount} {totalCount === 1 ? 'item' : 'items'}, {totalMinutes} minutes, {totalMB} MB{checkedCount && checkedCount > 0 ? ` (${checkedCount} checked)` : ''}
       </div>
 
       {/* Right Quick Toggles */}

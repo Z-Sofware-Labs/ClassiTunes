@@ -847,16 +847,24 @@ export default function App() {
     });
   }, []);
 
-  const handleCreatePlaylistWithTrack = useCallback((track: Track) => {
+  const handleCreatePlaylistWithTracks = useCallback((tracksOrTrack: Track | Track[]) => {
+    const list = Array.isArray(tracksOrTrack) ? tracksOrTrack : [tracksOrTrack];
+    if (list.length === 0) return;
+    const first = list[0];
+    const name = list.length === 1 ? `${first.title} Playlist` : `${first.artist || 'Selected'} Selection`;
     const newPl: Playlist = {
       id: `pl_${Date.now()}`,
-      name: `${track.title} Playlist`,
+      name,
       systemType: 'user',
-      trackIds: [track.id],
+      trackIds: list.map(t => t.id),
     };
     setPlaylists(prev => [...prev, newPl]);
     setSelectedPlaylistId(newPl.id);
   }, []);
+
+  const handleCreatePlaylistWithTrack = useCallback((track: Track) => {
+    handleCreatePlaylistWithTracks([track]);
+  }, [handleCreatePlaylistWithTracks]);
 
   // Modals State
   const [isEQOpen, setIsEQOpen] = useState<boolean>(false);
@@ -1915,6 +1923,14 @@ function hashString(str: string): string {
     });
     setTracks(prev => prev.filter(t => !trackIds.includes(t.id)));
     setSelectedTrackIds(prev => prev.filter(id => !trackIds.includes(id)));
+    setCheckedTrackIds(prev => {
+      const next = new Set(prev);
+      trackIds.forEach(id => next.delete(id));
+      try {
+        localStorage.setItem('classitunes_checked_tracks', JSON.stringify(Array.from(next)));
+      } catch (e) {}
+      return next;
+    });
     setPlaylists(prev => prev.map(p => ({ ...p, trackIds: p.trackIds.filter(id => !trackIds.includes(id)) })));
     if (currentTrack && trackIds.includes(currentTrack.id)) {
       setCurrentTrack(null);
@@ -3179,6 +3195,9 @@ function hashString(str: string): string {
         onDeleteTrack={handleDeleteTrack}
         onDeleteTracks={handleDeleteTracks}
         selectedTrackIds={selectedTrackIds}
+        checkedTrackIds={checkedTrackIds}
+        isCheckboxVisible={visibleColumns.includes('checkbox')}
+        onCreatePlaylistWithTracks={handleCreatePlaylistWithTracks}
         tracks={displayTracks}
         theme={theme}
         isDeviceContext={!!selectedDevice}
@@ -3213,6 +3232,7 @@ function hashString(str: string): string {
       {/* Bottom Status Bar */}
       <StatusBar
         tracks={displayTracks}
+        checkedCount={visibleColumns.includes('checkbox') ? checkedTrackIds.size : undefined}
         currentTrack={currentTrack}
         onOpenEQ={() => setIsEQOpen(true)}
         onOpenVisualizer={() => setIsVisualizerOpen(true)}

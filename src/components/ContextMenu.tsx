@@ -58,6 +58,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onDeleteTrack,
   onDeleteTracks,
   selectedTrackIds = [],
+  checkedTrackIds,
+  isCheckboxVisible = false,
+  onCreatePlaylistWithTracks,
   tracks = [],
   theme = 'dark',
   isDeviceContext = false,
@@ -73,6 +76,21 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
   const [isSortSubmenuOpen, setIsSortSubmenuOpen] = useState(false);
   const isLight = theme === 'light';
+
+  const isCheckboxEngaged = Boolean(isCheckboxVisible && checkedTrackIds && checkedTrackIds.size > 0);
+  const effectiveTrackIds = useMemo(() => {
+    if (isCheckboxEngaged && checkedTrackIds) {
+      return Array.from(checkedTrackIds);
+    }
+    return selectedTrackIds.length > 0 ? selectedTrackIds : (track ? [track.id] : []);
+  }, [isCheckboxEngaged, checkedTrackIds, selectedTrackIds, track?.id]);
+
+  const effectiveSelectedTracks = useMemo(() => {
+    if (tracks.length === 0) return track ? [track] : [];
+    const idSet = new Set(effectiveTrackIds);
+    const matched = tracks.filter(t => idSet.has(t.id));
+    return matched.length > 0 ? matched : (track ? [track] : []);
+  }, [tracks, effectiveTrackIds, track]);
 
   useEffect(() => {
     setIsSortSubmenuOpen(false);
@@ -309,7 +327,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const userPlaylists = playlists.filter(p => (!p.systemType || p.systemType === 'user') && !p.isFolder && !p.isSmart);
 
   const handleCopyDetails = () => {
-    const text = `${track.title} by ${track.artist} (${track.album})`;
+    const text = effectiveSelectedTracks
+      .map(t => `${t.title} by ${t.artist} (${t.album})`)
+      .join('\n');
     navigator.clipboard.writeText(text);
     onClose();
   };
@@ -329,8 +349,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       <div className={`px-3 py-1 mb-1 border-b text-[10px] truncate ${
         isLight ? 'border-gray-200 text-gray-500' : 'border-white/10 text-gray-400'
       }`}>
-        <span className="font-bold uppercase tracking-wider block text-[9px] opacity-70">Song Options</span>
-        <span className={`font-semibold text-xs truncate block ${isLight ? 'text-gray-900' : 'text-white'}`}>{track.title}</span>
+        <span className="font-bold uppercase tracking-wider block text-[9px] opacity-70">
+          {isCheckboxEngaged ? 'Checked Songs Options' : 'Song Options'}
+        </span>
+        <span className={`font-semibold text-xs truncate block ${isLight ? 'text-gray-900' : 'text-white'}`}>
+          {isCheckboxEngaged
+            ? `${effectiveTrackIds.length} Checked Songs`
+            : effectiveTrackIds.length > 1
+            ? `${effectiveTrackIds.length} Selected Songs`
+            : track.title}
+        </span>
       </div>
 
       {/* Play / Pause */}
@@ -363,9 +391,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       {/* Get Info */}
       <button
         onClick={() => {
-          if (selectedTrackIds && selectedTrackIds.length > 1 && selectedTrackIds.includes(track.id) && tracks.length > 0) {
-            const selectedList = tracks.filter(t => selectedTrackIds.includes(t.id));
-            onOpenGetInfo(selectedList, contextMenu.navigationTracks);
+          if (effectiveTrackIds.length > 1) {
+            onOpenGetInfo(effectiveSelectedTracks, contextMenu.navigationTracks);
           } else {
             onOpenGetInfo(track, contextMenu.navigationTracks);
           }
@@ -378,8 +405,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         <div className="flex items-center gap-2.5">
           <Info className="w-3.5 h-3.5 text-blue-500" />
           <span>
-            {selectedTrackIds && selectedTrackIds.length > 1 && selectedTrackIds.includes(track.id)
-              ? `Get Info (${selectedTrackIds.length} items)`
+            {effectiveTrackIds.length > 1
+              ? `Get Info (${effectiveTrackIds.length} ${isCheckboxEngaged ? 'checked items' : 'items'})`
               : 'Get Info'}
           </span>
         </div>
@@ -445,8 +472,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
               <button
                 key={pl.id}
                 onClick={() => {
-                  const idsToAdd = selectedTrackIds.length > 0 ? selectedTrackIds : [track.id];
-                  idsToAdd.forEach(id => onAddTrackToPlaylist(id, pl.id));
+                  effectiveTrackIds.forEach(id => onAddTrackToPlaylist(id, pl.id));
                   onClose();
                 }}
                 className={`w-full px-3 py-1 flex items-center gap-2 pl-4 text-[11px] transition-colors ${
@@ -465,7 +491,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         {onCreatePlaylistWithTrack && (
           <button
             onClick={() => {
-              onCreatePlaylistWithTrack(track);
+              if (onCreatePlaylistWithTracks) {
+                onCreatePlaylistWithTracks(effectiveSelectedTracks);
+              } else {
+                onCreatePlaylistWithTrack(effectiveSelectedTracks[0] || track);
+              }
               onClose();
             }}
             className={`w-full px-3 py-1.5 flex items-center gap-2 pl-4 text-[11px] font-medium transition-colors ${
@@ -473,7 +503,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             }`}
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>New Playlist from Selection</span>
+            <span>New Playlist from ${isCheckboxEngaged ? 'Checked Songs' : 'Selection'}</span>
           </button>
         )}
       </div>
@@ -488,12 +518,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
             </div>
             <div className="space-y-0.5">
               {devices.map((dev) => {
-                const targetIds = selectedTrackIds.length > 0 ? selectedTrackIds : [track.id];
                 return (
                   <button
                     key={dev.id}
                     onClick={() => {
-                      onImportToDevice(targetIds, dev);
+                      onImportToDevice(effectiveTrackIds, dev);
                       onClose();
                     }}
                     className={`w-full px-3 py-1 flex items-center gap-2 pl-4 text-[11px] transition-colors ${
@@ -505,7 +534,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                     ) : (
                       <HardDrive className="w-3.5 h-3.5 text-blue-500" />
                     )}
-                    <span className="truncate">{dev.name} ({targetIds.length > 1 ? `${targetIds.length} Songs` : '1 Song'})</span>
+                    <span className="truncate">
+                      {dev.name} ({effectiveTrackIds.length > 1 ? `${effectiveTrackIds.length} ${isCheckboxEngaged ? 'Checked Songs' : 'Songs'}` : '1 Song'})
+                    </span>
                   </button>
                 );
               })}
@@ -554,11 +585,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       {/* Delete from Library / Device */}
       <button
         onClick={() => {
-          const idsToDelete = selectedTrackIds.length > 0 ? selectedTrackIds : [track.id];
           if (onDeleteTracks) {
-            onDeleteTracks(idsToDelete);
+            onDeleteTracks(effectiveTrackIds);
           } else {
-            idsToDelete.forEach(id => onDeleteTrack(id));
+            effectiveTrackIds.forEach(id => onDeleteTrack(id));
           }
           onClose();
         }}
@@ -567,8 +597,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         <Trash2 className="w-3.5 h-3.5" />
         <span>
           {isDeviceContext
-            ? `Delete from Device (${selectedTrackIds.length > 1 ? `${selectedTrackIds.length} Songs` : '1 Song'})`
-            : `Delete from Library (${selectedTrackIds.length > 1 ? `${selectedTrackIds.length} Songs` : '1 Song'})`}
+            ? `Delete from Device (${effectiveTrackIds.length > 1 ? `${effectiveTrackIds.length} ${isCheckboxEngaged ? 'Checked Songs' : 'Songs'}` : '1 Song'})`
+            : `Delete from Library (${effectiveTrackIds.length > 1 ? `${effectiveTrackIds.length} ${isCheckboxEngaged ? 'Checked Songs' : 'Songs'}` : '1 Song'})`}
         </span>
       </button>
     </div>

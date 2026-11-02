@@ -774,9 +774,11 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         updateSelectedTrackIds(allIds);
       }
       // Ctrl+I or Cmd+I
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i' && selectedTrackIdsRef.current.length > 0) {
+      const isCheckboxEngaged = (visibleColumns || []).includes('checkbox') && checkedTrackIds && checkedTrackIds.size > 0;
+      const targetIds = isCheckboxEngaged ? Array.from(checkedTrackIds!) : selectedTrackIdsRef.current;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i' && targetIds.length > 0) {
         e.preventDefault();
-        const selected = sortedTracksRef.current.filter(t => selectedTrackIdsRef.current.includes(t.id));
+        const selected = sortedTracksRef.current.filter(t => targetIds.includes(t.id));
         if (selected.length === 1) {
           onOpenGetInfo(selected[0], sortedTracksRef.current);
         } else if (selected.length > 1) {
@@ -784,9 +786,9 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         }
       }
       // Delete or Backspace
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTrackIdsRef.current.length > 0) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && targetIds.length > 0) {
         e.preventDefault();
-        const idsToDelete = [...selectedTrackIdsRef.current];
+        const idsToDelete = [...targetIds];
         updateSelectedTrackIds([]);
         if (onDeleteTracks) {
           onDeleteTracks(idsToDelete);
@@ -797,7 +799,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [tracks, onDeleteTracks, onDeleteTrack]);
+  }, [tracks, onDeleteTracks, onDeleteTrack, onOpenGetInfo, checkedTrackIds, visibleColumns]);
 
   const [internalVisibleColumns, setInternalVisibleColumns] = useState<ColumnId[]>(() => {
     try {
@@ -1323,10 +1325,16 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
   const handleDragStart = useCallback((e: React.DragEvent, track: Track) => {
     resetDragAndBoxSelection();
-    const currentSelected = selectedTrackIdsRef.current;
-    const idsToDrag = currentSelected.includes(track.id) ? currentSelected : [track.id];
-    if (!currentSelected.includes(track.id)) {
-      updateSelectedTrackIds([track.id]);
+    const isCheckboxEngaged = (visibleColumns || []).includes('checkbox') && checkedTrackIds && checkedTrackIds.size > 0;
+    let idsToDrag: string[];
+    if (isCheckboxEngaged && (checkedTrackIds!.has(track.id) || selectedTrackIdsRef.current.includes(track.id) || selectedTrackIdsRef.current.length <= 1)) {
+      idsToDrag = Array.from(checkedTrackIds!);
+    } else {
+      const currentSelected = selectedTrackIdsRef.current;
+      idsToDrag = currentSelected.includes(track.id) ? currentSelected : [track.id];
+      if (!currentSelected.includes(track.id)) {
+        updateSelectedTrackIds([track.id]);
+      }
     }
 
     const json = JSON.stringify(idsToDrag);
