@@ -761,6 +761,28 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     };
   }, [tracks.length > 0]); // Re-attach properly whenever switching between 0 tracks (empty state) and >0 tracks (table mounted)
 
+  const [internalVisibleColumns, setInternalVisibleColumns] = useState<ColumnId[]>(() => {
+    try {
+      const saved = localStorage.getItem(`${storageScope}_visible_columns`) || (storageScope === 'classitunes' ? (localStorage.getItem('classitunes_visible_columns') || localStorage.getItem('itunes_visible_columns')) : null);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // If the user's saved list does not have 'checkbox' recorded yet (e.g. from older version),
+          // ensure 'checkbox' is placed at the front so it is visible by default
+          const validIds = ALL_COLUMNS.map(c => c.id);
+          const filtered = parsed.filter((id: any) => validIds.includes(id));
+          if (!filtered.includes('checkbox')) {
+            filtered.unshift('checkbox');
+          }
+          return filtered;
+        }
+      }
+    } catch (e) {}
+    return defaultVisibleColumns || DEFAULT_VISIBLE;
+  });
+
+  const visibleColumns = propVisibleColumns !== undefined ? propVisibleColumns : internalVisibleColumns;
+
   // Keyboard shortcut for CTRL+A (Select All) and Delete / Backspace (Clear/Delete selected tracks)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -800,28 +822,6 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [tracks, onDeleteTracks, onDeleteTrack, onOpenGetInfo, checkedTrackIds, visibleColumns]);
-
-  const [internalVisibleColumns, setInternalVisibleColumns] = useState<ColumnId[]>(() => {
-    try {
-      const saved = localStorage.getItem(`${storageScope}_visible_columns`) || (storageScope === 'classitunes' ? (localStorage.getItem('classitunes_visible_columns') || localStorage.getItem('itunes_visible_columns')) : null);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // If the user's saved list does not have 'checkbox' recorded yet (e.g. from older version),
-          // ensure 'checkbox' is placed at the front so it is visible by default
-          const validIds = ALL_COLUMNS.map(c => c.id);
-          const filtered = parsed.filter((id: any) => validIds.includes(id));
-          if (!filtered.includes('checkbox')) {
-            filtered.unshift('checkbox');
-          }
-          return filtered;
-        }
-      }
-    } catch (e) {}
-    return defaultVisibleColumns || DEFAULT_VISIBLE;
-  });
-
-  const visibleColumns = propVisibleColumns !== undefined ? propVisibleColumns : internalVisibleColumns;
 
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => getInitialColumnOrder(storageScope));
 
