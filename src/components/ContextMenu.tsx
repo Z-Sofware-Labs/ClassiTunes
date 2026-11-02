@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Play, Pause, Info, FolderPlus, Trash2, Star, Heart, Copy, Plus, Disc, Music, FolderOpen, HardDrive, Smartphone, ArrowUpDown, ChevronRight, Check, Shuffle } from 'lucide-react';
 import { Track, Playlist, AlbumSortField } from '../types';
 import { openFileLocation, Mp3Device } from '../utils/tauriWindow';
