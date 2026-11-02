@@ -806,6 +806,23 @@ export class AudioEngine {
     this.activeAudio?.pause();
   }
 
+  public stop(): void {
+    this.stopNativePolling();
+    this.nativeState.paused = true;
+    this.nativeState.currentTime = 0;
+    if (this.usingNativeBackend && this.isTauriEnv()) {
+      import('@tauri-apps/api/core').then(({ invoke }) => invoke('native_audio_stop')).catch(() => {});
+    }
+    this.decks.forEach(deck => {
+      if (deck?.audio) {
+        deck.audio.pause();
+        deck.audio.currentTime = 0;
+        deck.audio.src = '';
+        deck.audio.load();
+      }
+    });
+  }
+
   public resume(): void {
     if (this.usingNativeBackend && this.isTauriEnv()) {
       this.nativeState.paused = false;

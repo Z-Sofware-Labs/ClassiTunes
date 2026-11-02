@@ -1741,6 +1741,20 @@ function hashString(str: string): string {
     return () => unsub();
   }, []);
 
+  const handleStopPlayback = useCallback(() => {
+    setCurrentTrack(null);
+    setIsPlaying(false);
+    audioEngine.stop();
+  }, []);
+
+  useEffect(() => {
+    const handleStopEvent = () => {
+      handleStopPlayback();
+    };
+    window.addEventListener('classitunes:stop-playback', handleStopEvent);
+    return () => window.removeEventListener('classitunes:stop-playback', handleStopEvent);
+  }, [handleStopPlayback]);
+
   // Track Counts for Sidebar
   const trackCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -3108,6 +3122,7 @@ function hashString(str: string): string {
                 isPlaying={isPlaying}
                 onPlayTrack={playTrack}
                 onTogglePlay={togglePlay}
+                onStopPlayback={handleStopPlayback}
                 onOpenGetInfo={handleOpenGetInfo}
                 onTrackContextMenu={handleTrackContextMenu}
                 onAddTrackToPlaylist={handleAddTrackToPlaylist}

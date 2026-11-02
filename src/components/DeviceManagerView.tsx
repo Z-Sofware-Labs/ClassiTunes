@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  HardDrive, Smartphone, Disc, Check, AlertCircle, RefreshCw, Square, 
+  HardDrive, Smartphone, Disc, Check, AlertCircle, RefreshCw, Square, XCircle,
   Folder, Music, ListMusic, ArrowRight, ShieldCheck, Trash2,
   Search, Play, Pause, FileAudio, Info, Settings, Sliders,
   HelpCircle, ChevronRight
@@ -35,6 +35,7 @@ interface DeviceManagerViewProps {
   isPlaying?: boolean;
   onPlayTrack?: (track: Track, queue?: Track[]) => void;
   onTogglePlay?: () => void;
+  onStopPlayback?: () => void;
   onOpenGetInfo?: (track: Track) => void;
   onTrackContextMenu?: (track: Track, e: React.MouseEvent) => void;
   onAddTrackToPlaylist?: (trackId: string, playlistId: string) => void;
@@ -95,6 +96,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   isPlaying = false,
   onPlayTrack,
   onTogglePlay,
+  onStopPlayback,
   onOpenGetInfo,
   onTrackContextMenu,
   onAddTrackToPlaylist,
@@ -480,10 +482,19 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
 
   const executeDeleteDeviceFiles = async (filePaths: string[]) => {
     try {
-      // Pause playback if the currently playing song is being deleted to release file locks on Windows
+      // If currently playing a track from the device that is being deleted, stop playback immediately
       const currentFsPath = currentTrack?.filePath || (currentTrack?.audioUrl ? audioEngine.extractFsPathFromUrl(currentTrack.audioUrl) : '');
-      if (currentFsPath && filePaths.some(fp => fp.toLowerCase() === currentFsPath.toLowerCase())) {
-        audioEngine.pause();
+      const currentId = currentTrack?.id || '';
+      const isCurrentBeingDeleted = filePaths.some(fp => {
+        const normFp = fp.toLowerCase().replace(/\\/g, '/');
+        const normCurrent = currentFsPath ? currentFsPath.toLowerCase().replace(/\\/g, '/') : '';
+        return (normCurrent && normFp === normCurrent) || currentId === `dev_${fp}` || currentId === fp;
+      });
+
+      if (isCurrentBeingDeleted) {
+        audioEngine.stop();
+        onStopPlayback?.();
+        window.dispatchEvent(new CustomEvent('classitunes:stop-playback'));
       }
 
       const deletedPaths: string[] = [];
@@ -773,7 +784,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   >
                     {isSyncing ? (
                       <>
-                        <Square className="w-3.5 h-3.5 fill-current" />
+                        <XCircle className="w-3.5 h-3.5" />
                         <span>{isStopping ? 'Stopping...' : 'Stop'}</span>
                       </>
                     ) : (
@@ -1191,7 +1202,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         >
           {isSyncing ? (
             <>
-              <Square className="w-3 h-3 fill-current" />
+              <XCircle className="w-3 h-3" />
               <span>{isStopping ? 'Stopping...' : 'Stop'}</span>
             </>
           ) : (
@@ -1218,7 +1229,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                 className={`p-1 rounded transition-colors ${isLight ? 'hover:bg-gray-200 text-gray-500' : 'hover:bg-white/10 text-gray-400 hover:text-white'}`}
                 title="Cancel"
               >
-                <Square className="w-3.5 h-3.5 opacity-40 hover:opacity-100" />
+                <XCircle className="w-4 h-4 opacity-50 hover:opacity-100" />
               </button>
             </div>
             <p className={`text-xs leading-5 mb-4 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>

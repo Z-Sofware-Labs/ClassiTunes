@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Search, Sliders, Shuffle, Repeat, Repeat1, Star,
-  Sun, Moon, Minus, Square, X, Disc, List, LayoutGrid, RefreshCw
+  Sun, Moon, Minus, Square, X, Disc, List, LayoutGrid, RefreshCw, XCircle
 } from 'lucide-react';
 import { Track, ViewMode } from '../types';
 import { audioEngine } from '../services/audioEngine';
@@ -465,10 +465,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                               e.stopPropagation();
                               onStopDeviceSync();
                             }}
-                            className="ml-1 p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                            className="ml-1 p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors shrink-0"
                             title="Stop sync"
                           >
-                            <Square className="w-2.5 h-2.5 fill-current" />
+                            <XCircle className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </>
