@@ -1069,7 +1069,7 @@ pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     let normalized = target_str.replace('/', "\\");
     #[cfg(not(target_os = "windows"))]
-    let normalized = target_str;
+    let normalized = target_str.clone();
 
     let p = Path::new(&normalized);
     if !p.exists() {
@@ -1124,7 +1124,9 @@ pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
 
     // Remove deleted track from in-memory device metadata cache
     if let Ok(mut guard) = device_track_cache().lock() {
-        guard.retain(|(k_path, _), _| !k_path.eq_ignore_ascii_case(&target_str));
+        guard.retain(|(k_path, _), _| {
+            !k_path.eq_ignore_ascii_case(&normalized) && !k_path.eq_ignore_ascii_case(&target_str)
+        });
     }
 
     // If deleted file belonged to an iPod, refresh its native iTunesDB
