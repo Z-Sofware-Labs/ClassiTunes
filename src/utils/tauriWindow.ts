@@ -1260,11 +1260,14 @@ export interface DeviceSyncPayload {
   transcodeBitrate?: number;
   transcodeDownmixMono?: boolean;
   transcodeDownsample44k?: boolean;
+  mirrorSync?: boolean;
 }
 
 export interface DeviceSyncResult {
   tracksSynced: number;
   tracksSkipped: number;
+  tracksUpdated?: number;
+  tracksDeleted?: number;
   totalBytesTransferred: number;
   errors: string[];
 }

@@ -635,6 +635,15 @@ pub(crate) fn is_technical_comment(description: &str, text: &str) -> bool {
     false
 }
 
+pub(crate) fn file_has_technical_comment(path: &std::path::Path) -> bool {
+    if let Ok(tag) = id3::Tag::read_from_path(path) {
+        if tag.comments().any(|c| is_technical_comment(&c.description, &c.text)) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetadataResult, String> {
     use id3::TagLike;
     use std::path::Path;

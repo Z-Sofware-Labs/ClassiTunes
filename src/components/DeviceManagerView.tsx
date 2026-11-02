@@ -262,11 +262,18 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     return '';
   };
 
-  // Determine tracks to sync based on mode (all vs selected playlists)
+  // Determine tracks to sync based on mode (all vs selected playlists) and active checked songs
   const tracksToSync = useMemo(() => {
     const available = tracks.filter(t => Boolean(getTrackFsPath(t)));
+    const hasCheckedSelection =
+      isCheckboxColumnVisibleProp !== false &&
+      Boolean(checkedTrackIdsProp && checkedTrackIdsProp.size > 0);
 
     if (syncMode === 'all') {
+      if (hasCheckedSelection && checkedTrackIdsProp) {
+        const checkedSubset = available.filter(t => checkedTrackIdsProp.has(t.id));
+        if (checkedSubset.length > 0) return checkedSubset;
+      }
       return available;
     }
 
@@ -289,11 +296,16 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         .filter(p => selectedPlaylistIds.includes(p.id))
         .forEach(collectPlaylistTracks);
 
-      return available.filter(t => trackIdSet.has(t.id));
+      const playlistTracks = available.filter(t => trackIdSet.has(t.id));
+      if (hasCheckedSelection && checkedTrackIdsProp) {
+        const checkedPlaylistSubset = playlistTracks.filter(t => checkedTrackIdsProp.has(t.id));
+        if (checkedPlaylistSubset.length > 0) return checkedPlaylistSubset;
+      }
+      return playlistTracks;
     }
 
     return available;
-  }, [syncMode, tracks, playlists, selectedPlaylistIds]);
+  }, [syncMode, tracks, playlists, selectedPlaylistIds, checkedTrackIdsProp, isCheckboxColumnVisibleProp, checkedStorageTick]);
 
   const estimatedAudioBytes = useMemo(() => {
     return tracksToSync.reduce((acc, t) => {
@@ -502,6 +514,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       transcodeBitrate,
       transcodeDownmixMono,
       transcodeDownsample44k,
+      mirrorSync: true,
     };
 
     try {
@@ -1047,7 +1060,12 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   <ShieldCheck className="w-4 h-4 mt-0.5 text-emerald-500 shrink-0" />
                   <div className="text-xs">
                     <span className="font-bold">Sync Completed: </span>
-                    <span>{syncResult.tracksSynced} songs copied ({formatBytes(syncResult.totalBytesTransferred)}), {syncResult.tracksSkipped} songs already up to date.</span>
+                    <span>
+                      {syncResult.tracksSynced} copied ({formatBytes(syncResult.totalBytesTransferred)})
+                      {syncResult.tracksUpdated ? `, ${syncResult.tracksUpdated} updated` : ''}
+                      {syncResult.tracksDeleted ? `, ${syncResult.tracksDeleted} removed` : ''}
+                      , {syncResult.tracksSkipped} already up to date.
+                    </span>
                   </div>
                 </div>
                 {syncResult.errors.length > 0 && (

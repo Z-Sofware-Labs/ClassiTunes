@@ -429,6 +429,7 @@ export default function App() {
         transcodeBitrate,
         transcodeDownmixMono,
         transcodeDownsample44k,
+        mirrorSync: false,
       });
       setDeviceSyncProgress({
         active: true,

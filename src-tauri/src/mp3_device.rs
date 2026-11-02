@@ -103,6 +103,8 @@ pub struct DeviceSyncPayload {
     pub transcode_bitrate: Option<u32>,
     pub transcode_downmix_mono: Option<bool>,
     pub transcode_downsample_44k: Option<bool>,
+    #[serde(default)]
+    pub mirror_sync: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +125,8 @@ pub struct SyncProgressEvent {
 pub struct DeviceSyncResult {
     pub tracks_synced: usize,
     pub tracks_skipped: usize,
+    pub tracks_updated: usize,
+    pub tracks_deleted: usize,
     pub total_bytes_transferred: u64,
     pub errors: Vec<String>,
 }
@@ -1149,6 +1153,167 @@ impl Drop for SyncActiveGuard {
     }
 }
 
+fn normalize_device_path_key(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+fn str_tag_matches(file_val: &Option<String>, expected_val: &Option<String>) -> bool {
+    match expected_val.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some(exp) => match file_val.as_deref().map(str::trim) {
+            Some(actual) => actual == exp,
+            None => false,
+        },
+    }
+}
+
+fn file_metadata_is_complete(
+    file_meta: &crate::ReadMetadataResult,
+    track: &SyncTrackItem,
+    has_artwork: bool,
+    file_path: &Path,
+) -> bool {
+    if has_artwork && file_meta.cover_url.is_none() {
+        return false;
+    }
+    if !str_tag_matches(&file_meta.title, &track.title) {
+        return false;
+    }
+    if !str_tag_matches(&file_meta.artist, &track.artist) {
+        return false;
+    }
+    if !str_tag_matches(&file_meta.album, &track.album) {
+        return false;
+    }
+    if !str_tag_matches(&file_meta.genre, &track.genre) {
+        return false;
+    }
+    if !str_tag_matches(&file_meta.comments, &track.comments) {
+        return false;
+    }
+    if track.year.is_some() && file_meta.year != track.year {
+        return false;
+    }
+    if track.track_number.is_some() && file_meta.track_number != track.track_number {
+        return false;
+    }
+    if crate::file_has_technical_comment(file_path) {
+        return false;
+    }
+    true
+}
+
+fn remove_empty_dirs_recursive(dir: &Path, root_stop: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                remove_empty_dirs_recursive(&p, root_stop);
+            }
+        }
+    }
+    if dir != root_stop {
+        if let Ok(mut entries) = fs::read_dir(dir) {
+            if entries.next().is_none() {
+                let _ = fs::remove_dir(dir);
+            }
+        }
+    }
+}
+
+fn collect_device_audio_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 7 {
+        return;
+    }
+    let valid_exts = ["mp3", "m4a", "flac", "wav", "aac", "ogg", "wma", "aiff", "alac"];
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if ft.is_dir() {
+                let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if dir_name.starts_with('$') || dir_name == "System Volume Information" {
+                    continue;
+                }
+                collect_device_audio_files(&path, depth + 1, out);
+            } else if ft.is_file() {
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if valid_exts.contains(&ext.as_str()) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+}
+
+fn resolve_track_artwork_data_url(
+    enriched_track: &SyncTrackItem,
+    src_path: &Path,
+    artwork_cache: &Mutex<HashMap<String, Option<String>>>,
+) -> Option<String> {
+    let cache_key = enriched_track
+        .cover_url
+        .clone()
+        .unwrap_or_else(|| format!("src:{}", src_path.to_string_lossy()));
+
+    if let Ok(guard) = artwork_cache.lock() {
+        if let Some(cached) = guard.get(&cache_key) {
+            return cached.clone();
+        }
+    }
+
+    let resolved_art = enriched_track
+        .cover_url
+        .as_deref()
+        .and_then(crate::load_artwork_bytes)
+        .or_else(|| crate::extract_artwork_bytes_from_file_or_folder(src_path));
+
+    let encoded = resolved_art.map(|(mime, bytes)| {
+        format!("data:{mime};base64,{}", crate::encode_base64(&bytes))
+    });
+
+    if let Ok(mut guard) = artwork_cache.lock() {
+        guard.insert(cache_key, encoded.clone());
+    }
+    encoded
+}
+
+fn build_sync_tag_payload(
+    enriched_track: &SyncTrackItem,
+    dest_path: &Path,
+    artwork_data_url: Option<String>,
+) -> crate::Id3TagPayload {
+    crate::Id3TagPayload {
+        title: enriched_track
+            .title
+            .clone()
+            .or_else(|| dest_path.file_stem().map(|s| s.to_string_lossy().to_string())),
+        artist: enriched_track.artist.clone(),
+        album_artist: enriched_track.album_artist.clone(),
+        album: enriched_track.album.clone(),
+        composer: None,
+        publisher: None,
+        lyrics: enriched_track.lyrics.clone(),
+        genre: enriched_track.genre.clone(),
+        year: enriched_track.year,
+        track_number: enriched_track.track_number,
+        track_total: None,
+        disc_number: None,
+        disc_total: None,
+        bpm: None,
+        comments: Some(enriched_track.comments.clone().unwrap_or_default()),
+        media_kind: Some("Music".to_string()),
+        artwork_data_url,
+        artwork_mime_type: None,
+    }
+}
+
 pub fn sync_tracks_to_device_impl(
     app: &AppHandle,
     payload: DeviceSyncPayload,
@@ -1187,6 +1352,8 @@ pub fn sync_tracks_to_device_impl(
 
     let mut tracks_synced = 0;
     let mut tracks_skipped = 0;
+    let mut tracks_updated = 0;
+    let mut tracks_deleted = 0;
     let mut total_bytes_transferred = 0u64;
     let mut errors = Vec::new();
 
@@ -1197,6 +1364,7 @@ pub fn sync_tracks_to_device_impl(
         .unwrap_or("{Artist}/{Album}/{TrackNumber} - {Title}.{ext}");
 
     let should_transcode = payload.transcode_enabled.unwrap_or(false);
+    let mirror_sync = payload.mirror_sync.unwrap_or(false);
     let transcode_target_format = crate::transcoder::TranscodeTargetFormat::from_str(
         payload.transcode_format.as_deref().unwrap_or("MP3"),
     );
@@ -1207,10 +1375,96 @@ pub fn sync_tracks_to_device_impl(
         downsample_44k: payload.transcode_downsample_44k.unwrap_or(true),
     };
 
-    let sync_playlists_flag = payload.sync_playlists;
     let artwork_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
     let mut created_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut synced_relative_paths: Vec<PathBuf> = Vec::new();
+
+    use rayon::prelude::*;
+
+    // Pre-pass: When mirror_sync is true (Sync button pressed), determine all target paths on the device
+    // and delete any obsolete audio files on the device that are no longer in the sync selection!
+    if mirror_sync && !SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+        let expected_keys: std::collections::HashSet<String> = payload
+            .tracks
+            .par_iter()
+            .enumerate()
+            .filter_map(|(index, track)| {
+                let src_path = Path::new(&track.file_path);
+                if !src_path.exists() {
+                    return None;
+                }
+                let ext = if should_transcode {
+                    transcode_target_format.extension().to_string()
+                } else {
+                    src_path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("mp3")
+                        .to_lowercase()
+                };
+                let mut enriched = track.clone();
+                if enriched.title.is_none() || enriched.artist.is_none() || enriched.album.is_none() {
+                    if let Ok(m) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
+                        if enriched.title.is_none() {
+                            enriched.title = m.title;
+                        }
+                        if enriched.artist.is_none() {
+                            enriched.artist = m.artist;
+                        }
+                        if enriched.album.is_none() {
+                            enriched.album = m.album;
+                        }
+                    }
+                }
+                let dest_path = if is_ipod {
+                    let f_dir = format!("F{:02}", index % 20);
+                    music_root
+                        .join(&f_dir)
+                        .join(format!("ITUN_{:04}.{}", index + 1, ext))
+                } else {
+                    let rel = render_naming_template(naming_tmpl, &enriched, &ext);
+                    music_root.join(&rel)
+                };
+                Some(normalize_device_path_key(&dest_path))
+            })
+            .collect();
+
+        let priority_roots = [
+            mount_dir.join("Music"),
+            mount_dir.join("Audio"),
+            mount_dir.join("MP3"),
+            mount_dir.join("iPod_Control"),
+        ];
+        let mut existing_device_files: Vec<PathBuf> = Vec::new();
+        for p_root in &priority_roots {
+            if p_root.exists() {
+                collect_device_audio_files(p_root, 0, &mut existing_device_files);
+            }
+        }
+        for existing_path in existing_device_files {
+            if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+            let key = normalize_device_path_key(&existing_path);
+            if !expected_keys.contains(&key) {
+                if delete_device_file_native(&existing_path.to_string_lossy()).is_ok() {
+                    tracks_deleted += 1;
+                }
+            }
+        }
+        remove_empty_dirs_recursive(&music_root, &music_root);
+    }
+
+    enum SyncItemAction {
+        /// File already exists on device with valid audio and complete tags/artwork.
+        Skip,
+        /// File already exists on device with valid audio, only missing artwork or updated tags need in-place patching.
+        UpdateTagsInPlace(crate::Id3TagPayload),
+        /// Transcoding is disabled and source file already has complete tags/artwork -> direct unmodified byte-for-byte copy.
+        DirectCopyUnmodified(PathBuf),
+        /// Staged file in local SSD temp folder (either transcoded, or untranscoded with injected library tags/artwork).
+        CopyStaged(PathBuf),
+    }
 
     struct PreparedStageItem {
         global_index: usize,
@@ -1220,12 +1474,9 @@ pub fn sync_tracks_to_device_impl(
         src_size: u64,
         dest_path: PathBuf,
         rel_path_for_list: PathBuf,
-        do_process: bool,
-        staged_temp_path: Option<PathBuf>,
+        action: SyncItemAction,
         stage_error: Option<String>,
     }
-
-    use rayon::prelude::*;
 
     for (chunk_idx, chunk) in payload.tracks.chunks(4).enumerate() {
         if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
@@ -1235,7 +1486,7 @@ pub fn sync_tracks_to_device_impl(
 
         let base_idx = chunk_idx * 4;
 
-        // Stage up to 4 tracks in parallel on local fast SSD temp storage (transcoding + ID3/MP4 tag & artwork embedding)
+        // Inspect device files FIRST in parallel, and only stage/transcode files that actually need it!
         let staged_batch: Vec<Result<PreparedStageItem, String>> = chunk
             .par_iter()
             .enumerate()
@@ -1250,59 +1501,57 @@ pub fn sync_tracks_to_device_impl(
                     return Err(format!("Source track not found: {}", track.file_path));
                 }
 
+                let src_ext = src_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("mp3")
+                    .to_lowercase();
+
                 let ext = if should_transcode {
                     transcode_target_format.extension().to_string()
                 } else {
-                    src_path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("mp3")
-                        .to_lowercase()
+                    src_ext.clone()
                 };
 
-                // Only peek at source file metadata if core identifying fields are missing
+                let src_meta_opt = crate::read_music_metadata_internal(&src_path.to_string_lossy()).ok();
+
                 let mut enriched_track = track.clone();
-                if enriched_track.title.is_none()
-                    || enriched_track.artist.is_none()
-                    || enriched_track.album.is_none()
-                {
-                    if let Ok(src_meta) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
-                        if enriched_track.title.is_none() {
-                            enriched_track.title = src_meta.title;
-                        }
-                        if enriched_track.artist.is_none() {
-                            enriched_track.artist = src_meta.artist;
-                        }
-                        if enriched_track.album_artist.is_none() {
-                            enriched_track.album_artist = src_meta.album_artist;
-                        }
-                        if enriched_track.album.is_none() {
-                            enriched_track.album = src_meta.album;
-                        }
-                        if enriched_track.genre.is_none() {
-                            enriched_track.genre = src_meta.genre;
-                        }
-                        if enriched_track.year.is_none() {
-                            enriched_track.year = src_meta.year;
-                        }
-                        if enriched_track.track_number.is_none() {
-                            enriched_track.track_number = src_meta.track_number;
-                        }
-                        if enriched_track.cover_url.is_none() {
-                            enriched_track.cover_url = src_meta.cover_url;
-                        }
-                        if enriched_track.lyrics.is_none() {
-                            enriched_track.lyrics = src_meta.lyrics;
-                        }
-                        if enriched_track.comments.is_none() {
-                            enriched_track.comments = src_meta.comments;
-                        }
-                        if enriched_track.duration.is_none() {
-                            enriched_track.duration = src_meta.duration;
-                        }
-                        if enriched_track.bitrate.is_none() {
-                            enriched_track.bitrate = src_meta.bitrate;
-                        }
+                if let Some(ref src_meta) = src_meta_opt {
+                    if enriched_track.title.is_none() {
+                        enriched_track.title = src_meta.title.clone();
+                    }
+                    if enriched_track.artist.is_none() {
+                        enriched_track.artist = src_meta.artist.clone();
+                    }
+                    if enriched_track.album_artist.is_none() {
+                        enriched_track.album_artist = src_meta.album_artist.clone();
+                    }
+                    if enriched_track.album.is_none() {
+                        enriched_track.album = src_meta.album.clone();
+                    }
+                    if enriched_track.genre.is_none() {
+                        enriched_track.genre = src_meta.genre.clone();
+                    }
+                    if enriched_track.year.is_none() {
+                        enriched_track.year = src_meta.year;
+                    }
+                    if enriched_track.track_number.is_none() {
+                        enriched_track.track_number = src_meta.track_number;
+                    }
+                    if enriched_track.cover_url.is_none() {
+                        enriched_track.cover_url = src_meta.cover_url.clone();
+                    }
+                    if enriched_track.lyrics.is_none() {
+                        enriched_track.lyrics = src_meta.lyrics.clone();
+                    }
+                    if enriched_track.comments.is_none() {
+                        enriched_track.comments = src_meta.comments.clone();
+                    }
+                    if enriched_track.duration.is_none() {
+                        enriched_track.duration = src_meta.duration;
+                    }
+                    if enriched_track.bitrate.is_none() {
+                        enriched_track.bitrate = src_meta.bitrate;
                     }
                 }
                 if let Some(ref cmt) = enriched_track.comments {
@@ -1326,128 +1575,144 @@ pub fn sync_tracks_to_device_impl(
                 };
 
                 let src_size = fs::metadata(src_path).map(|m| m.len()).unwrap_or(0);
+                let track_title = enriched_track.title.clone().unwrap_or_else(|| "Track".to_string());
+                let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, &artwork_cache);
+                let has_artwork = artwork_data_url.as_ref().map_or(false, |s| !s.trim().is_empty());
 
-                let mut do_process = true;
+                // 1. CHECK EXISTING FILE ON DEVICE FIRST (WMP pre-inspection before touching or transcoding)
                 if dest_path.exists() {
                     if let Ok(dest_meta) = fs::metadata(&dest_path) {
-                        if !should_transcode && dest_meta.len() == src_size && src_size > 0 {
-                            do_process = false;
-                        } else if should_transcode && dest_meta.len() > 0 {
-                            if dest_meta.len() == src_size || !sync_playlists_flag {
-                                do_process = true;
+                        let dest_len = dest_meta.len();
+                        if dest_len > 0 {
+                            let dev_meta_opt = crate::read_music_metadata_internal(&dest_path.to_string_lossy()).ok();
+
+                            let audio_already_valid = if !should_transcode {
+                                if dest_len == src_size {
+                                    true
+                                } else if let (Some(ref dm), Some(src_dur)) = (&dev_meta_opt, enriched_track.duration) {
+                                    dm.duration.map_or(true, |dev_dur| (dev_dur - src_dur).abs() < 2.5)
+                                } else {
+                                    dev_meta_opt.is_some()
+                                }
                             } else {
-                                do_process = false;
+                                // Transcoding enabled: check if the file on the device is ALREADY transcoded
+                                if ext == "wav" {
+                                    dest_len > 1024
+                                } else if let Some(ref dm) = dev_meta_opt {
+                                    let target_br = transcode_opts.bitrate_kbps as i32;
+                                    let br_matches = dm
+                                        .bitrate
+                                        .map_or(false, |b| (b as i32 - target_br).abs() <= 48);
+                                    br_matches || src_ext != ext || dest_len != src_size
+                                } else {
+                                    false
+                                }
+                            };
+
+                            if audio_already_valid {
+                                if let Some(ref dev_meta) = dev_meta_opt {
+                                    if file_metadata_is_complete(dev_meta, &enriched_track, has_artwork, &dest_path) {
+                                        // Device file has valid audio AND complete tags/artwork -> SKIP completely!
+                                        return Ok(PreparedStageItem {
+                                            global_index: index,
+                                            enriched_track,
+                                            track_title,
+                                            ext,
+                                            src_size,
+                                            dest_path,
+                                            rel_path_for_list,
+                                            action: SyncItemAction::Skip,
+                                            stage_error: None,
+                                        });
+                                    } else {
+                                        // Device file has valid audio, only missing artwork or updated tags -> Update in-place!
+                                        let payload = build_sync_tag_payload(&enriched_track, &dest_path, artwork_data_url);
+                                        return Ok(PreparedStageItem {
+                                            global_index: index,
+                                            enriched_track,
+                                            track_title,
+                                            ext,
+                                            src_size,
+                                            dest_path,
+                                            rel_path_for_list,
+                                            action: SyncItemAction::UpdateTagsInPlace(payload),
+                                            stage_error: None,
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                let track_title = enriched_track.title.clone().unwrap_or_else(|| "Track".to_string());
-                let mut staged_temp_path = None;
+                // 2. FILE IS NOT ON DEVICE YET (OR NEEDS AUDIO TRANSFER)
+                // If transcoding is DISABLED and source file already has complete tags & artwork,
+                // copy the source file directly byte-for-byte without modifying it!
+                if !should_transcode {
+                    if let Some(ref src_meta) = src_meta_opt {
+                        if file_metadata_is_complete(src_meta, &enriched_track, has_artwork, src_path) {
+                            return Ok(PreparedStageItem {
+                                global_index: index,
+                                enriched_track,
+                                track_title,
+                                ext,
+                                src_size,
+                                dest_path,
+                                rel_path_for_list,
+                                action: SyncItemAction::DirectCopyUnmodified(src_path.to_path_buf()),
+                                stage_error: None,
+                            });
+                        }
+                    }
+                }
+
+                // 3. Stage in local SSD temp directory (either transcoding, or injecting missing library artwork/tags)
+                let temp_file = stage_dir.join(format!(
+                    "stage_{}_{}.{}",
+                    std::process::id(),
+                    index,
+                    ext
+                ));
                 let mut stage_error = None;
 
-                if do_process {
-                    let temp_file = stage_dir.join(format!(
-                        "stage_{}_{}.{}",
-                        std::process::id(),
-                        index,
-                        ext
-                    ));
-
-                    let stage_ok = if should_transcode {
-                        match crate::transcoder::transcode_audio_file(src_path, &temp_file, &transcode_opts) {
-                            Ok(()) => true,
-                            Err(err) => match fs::copy(src_path, &temp_file) {
-                                Ok(_) => true,
-                                Err(e) => {
-                                    stage_error = Some(format!(
-                                        "Failed to sync {}: transcode ({err}), copy ({e})",
-                                        track_title
-                                    ));
-                                    false
-                                }
-                            },
-                        }
-                    } else {
-                        match fs::copy(src_path, &temp_file) {
+                let stage_ok = if should_transcode {
+                    match crate::transcoder::transcode_audio_file(src_path, &temp_file, &transcode_opts) {
+                        Ok(()) => true,
+                        Err(err) => match fs::copy(src_path, &temp_file) {
                             Ok(_) => true,
                             Err(e) => {
-                                stage_error = Some(format!("Failed to stage {}: {e}", track_title));
+                                stage_error = Some(format!(
+                                    "Failed to sync {}: transcode ({err}), copy ({e})",
+                                    track_title
+                                ));
                                 false
                             }
-                        }
-                    };
-
-                    if stage_ok && temp_file.exists() {
-                        #[cfg(windows)]
-                        {
-                            if let Ok(m) = fs::metadata(&temp_file) {
-                                let mut perms = m.permissions();
-                                if perms.readonly() {
-                                    perms.set_readonly(false);
-                                    let _ = fs::set_permissions(&temp_file, perms);
-                                }
-                            }
-                        }
-
-                        // Resolve and cache artwork by key so albums sharing cover art only encode once
-                        let cache_key = enriched_track
-                            .cover_url
-                            .clone()
-                            .unwrap_or_else(|| format!("src:{}", src_path.to_string_lossy()));
-
-                        let cached_art = if let Ok(guard) = artwork_cache.lock() {
-                            guard.get(&cache_key).cloned()
-                        } else {
-                            None
-                        };
-
-                        let artwork_data_url = match cached_art {
-                            Some(val) => val,
-                            None => {
-                                let resolved_art = enriched_track
-                                    .cover_url
-                                    .as_deref()
-                                    .and_then(crate::load_artwork_bytes)
-                                    .or_else(|| crate::extract_artwork_bytes_from_file_or_folder(src_path));
-
-                                let encoded = resolved_art.map(|(mime, bytes)| {
-                                    format!("data:{mime};base64,{}", crate::encode_base64(&bytes))
-                                });
-                                if let Ok(mut guard) = artwork_cache.lock() {
-                                    guard.insert(cache_key, encoded.clone());
-                                }
-                                encoded
-                            }
-                        };
-
-                        let tag_payload = crate::Id3TagPayload {
-                            title: enriched_track.title.clone().or_else(|| {
-                                dest_path.file_stem().map(|s| s.to_string_lossy().to_string())
-                            }),
-                            artist: enriched_track.artist.clone(),
-                            album_artist: enriched_track.album_artist.clone(),
-                            album: enriched_track.album.clone(),
-                            composer: None,
-                            publisher: None,
-                            lyrics: enriched_track.lyrics.clone(),
-                            genre: enriched_track.genre.clone(),
-                            year: enriched_track.year,
-                            track_number: enriched_track.track_number,
-                            track_total: None,
-                            disc_number: None,
-                            disc_total: None,
-                            bpm: None,
-                            comments: Some(enriched_track.comments.clone().unwrap_or_default()),
-                            media_kind: Some("Music".to_string()),
-                            artwork_data_url,
-                            artwork_mime_type: None,
-                        };
-
-                        // Stamp ID3/MP4 tags and artwork in fast local SSD cache before copying to USB!
-                        let _ = crate::write_music_metadata_internal(&temp_file.to_string_lossy(), tag_payload);
-                        staged_temp_path = Some(temp_file);
+                        },
                     }
+                } else {
+                    match fs::copy(src_path, &temp_file) {
+                        Ok(_) => true,
+                        Err(e) => {
+                            stage_error = Some(format!("Failed to stage {}: {e}", track_title));
+                            false
+                        }
+                    }
+                };
+
+                if stage_ok && temp_file.exists() {
+                    #[cfg(windows)]
+                    {
+                        if let Ok(m) = fs::metadata(&temp_file) {
+                            let mut perms = m.permissions();
+                            if perms.readonly() {
+                                perms.set_readonly(false);
+                                let _ = fs::set_permissions(&temp_file, perms);
+                            }
+                        }
+                    }
+
+                    let tag_payload = build_sync_tag_payload(&enriched_track, &dest_path, artwork_data_url);
+                    let _ = crate::write_music_metadata_internal(&temp_file.to_string_lossy(), tag_payload);
                 }
 
                 Ok(PreparedStageItem {
@@ -1458,14 +1723,13 @@ pub fn sync_tracks_to_device_impl(
                     src_size,
                     dest_path,
                     rel_path_for_list,
-                    do_process,
-                    staged_temp_path,
+                    action: SyncItemAction::CopyStaged(temp_file),
                     stage_error,
                 })
             })
             .collect();
 
-        // Sequentially write each staged file to the USB device and emit progress
+        // Execute the planned action for each item sequentially onto the USB device and emit progress
         for item_res in staged_batch {
             if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
                 errors.push("Sync stopped by user".to_string());
@@ -1494,10 +1758,48 @@ pub fn sync_tracks_to_device_impl(
                 }
             }
 
-            let mut item_size = item.src_size;
+            let item_size: u64;
 
-            if item.do_process {
-                if let Some(ref temp_file) = item.staged_temp_path {
+            match item.action {
+                SyncItemAction::Skip => {
+                    tracks_skipped += 1;
+                    item_size = fs::metadata(&item.dest_path).map(|m| m.len()).unwrap_or(item.src_size);
+                }
+                SyncItemAction::UpdateTagsInPlace(tag_payload) => {
+                    #[cfg(windows)]
+                    {
+                        if let Ok(m) = fs::metadata(&item.dest_path) {
+                            let mut perms = m.permissions();
+                            if perms.readonly() {
+                                perms.set_readonly(false);
+                                let _ = fs::set_permissions(&item.dest_path, perms);
+                            }
+                        }
+                    }
+                    match crate::write_music_metadata_internal(&item.dest_path.to_string_lossy(), tag_payload) {
+                        Ok(_) => {
+                            tracks_updated += 1;
+                        }
+                        Err(e) => {
+                            errors.push(format!("Failed to update tags on {}: {e}", item.track_title));
+                        }
+                    }
+                    item_size = fs::metadata(&item.dest_path).map(|m| m.len()).unwrap_or(item.src_size);
+                }
+                SyncItemAction::DirectCopyUnmodified(ref src_file) => {
+                    match copy_file_buffered(src_file, &item.dest_path) {
+                        Ok(bytes) => {
+                            tracks_synced += 1;
+                            total_bytes_transferred += bytes;
+                            item_size = bytes;
+                        }
+                        Err(e) => {
+                            errors.push(format!("Failed to write {} to device: {e}", item.track_title));
+                            continue;
+                        }
+                    }
+                }
+                SyncItemAction::CopyStaged(ref temp_file) => {
                     match copy_file_buffered(temp_file, &item.dest_path) {
                         Ok(bytes) => {
                             tracks_synced += 1;
@@ -1512,9 +1814,6 @@ pub fn sync_tracks_to_device_impl(
                     }
                     let _ = fs::remove_file(temp_file);
                 }
-            } else {
-                tracks_skipped += 1;
-                item_size = fs::metadata(&item.dest_path).map(|m| m.len()).unwrap_or(item.src_size);
             }
 
             synced_relative_paths.push(item.rel_path_for_list.clone());
@@ -1538,7 +1837,11 @@ pub fn sync_tracks_to_device_impl(
                 track_number: item.enriched_track.track_number,
                 duration_secs: item.enriched_track.duration,
                 cover_url: item.enriched_track.cover_url.clone(),
-                bitrate: item.enriched_track.bitrate,
+                bitrate: if should_transcode && item.ext != "wav" {
+                    Some(transcode_opts.bitrate_kbps)
+                } else {
+                    item.enriched_track.bitrate
+                },
                 sample_rate: None,
             };
 
@@ -1605,6 +1908,8 @@ pub fn sync_tracks_to_device_impl(
     Ok(DeviceSyncResult {
         tracks_synced,
         tracks_skipped,
+        tracks_updated,
+        tracks_deleted,
         total_bytes_transferred,
         errors,
     })
