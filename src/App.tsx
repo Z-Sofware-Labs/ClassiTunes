@@ -376,7 +376,7 @@ export default function App() {
           genre: t.genre,
           trackNumber: t.trackNumber,
           year: t.year,
-          coverUrl: t.coverUrl,
+          coverUrl: t.coverUrl || getCachedArtwork(t.id) || (t.album ? getCachedArtwork(t.album.trim().toLowerCase()) : undefined),
         })),
         namingTemplate: savedTemplate,
         syncPlaylists: false,

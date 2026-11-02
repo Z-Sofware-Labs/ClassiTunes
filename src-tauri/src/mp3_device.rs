@@ -1251,7 +1251,29 @@ pub fn sync_tracks_to_device_impl(
             };
 
             if write_ok && dest_path.exists() {
+                // Ensure write permissions on Windows (destination file might have inherited readonly attribute from source)
+                #[cfg(windows)]
+                {
+                    if let Ok(m) = fs::metadata(&dest_path) {
+                        let mut perms = m.permissions();
+                        if perms.readonly() {
+                            perms.set_readonly(false);
+                            let _ = fs::set_permissions(&dest_path, perms);
+                        }
+                    }
+                }
+
                 // Ensure complete ID3 / MP4 metadata and cover artwork are stamped onto the destination file
+                let resolved_art = enriched_track
+                    .cover_url
+                    .as_deref()
+                    .and_then(crate::load_artwork_bytes)
+                    .or_else(|| crate::extract_artwork_bytes_from_file_or_folder(src_path));
+
+                let artwork_data_url = resolved_art.map(|(mime, bytes)| {
+                    format!("data:{mime};base64,{}", crate::encode_base64(&bytes))
+                });
+
                 let tag_payload = crate::Id3TagPayload {
                     title: enriched_track.title.clone().or_else(|| {
                         dest_path.file_stem().map(|s| s.to_string_lossy().to_string())
@@ -1271,7 +1293,7 @@ pub fn sync_tracks_to_device_impl(
                     bpm: None,
                     comments: None,
                     media_kind: Some("Music".to_string()),
-                    artwork_data_url: enriched_track.cover_url.clone(),
+                    artwork_data_url,
                     artwork_mime_type: None,
                 };
 

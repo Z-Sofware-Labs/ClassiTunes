@@ -56,6 +56,188 @@ pub(crate) fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     Ok(values)
 }
 
+pub(crate) fn percent_decode_str(s: &str) -> String {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut iter = s.as_bytes().iter().copied();
+    while let Some(b) = iter.next() {
+        if b == b'%' {
+            let h1 = iter.next();
+            let h2 = iter.next();
+            if let (Some(c1), Some(c2)) = (h1, h2) {
+                let hex_str = [c1, c2];
+                if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&hex_str).unwrap_or(""), 16) {
+                    bytes.push(val);
+                    continue;
+                } else {
+                    bytes.push(b'%');
+                    bytes.push(c1);
+                    bytes.push(c2);
+                    continue;
+                }
+            } else {
+                bytes.push(b'%');
+                if let Some(c1) = h1 { bytes.push(c1); }
+                continue;
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+pub(crate) fn load_artwork_bytes(art_src: &str) -> Option<(String, Vec<u8>)> {
+    let trimmed = art_src.trim();
+    if trimmed.is_empty() || trimmed.starts_with("data:image/svg") {
+        return None;
+    }
+
+    // 1. Data URL (Base64)
+    if trimmed.starts_with("data:") {
+        if let Some((prefix, encoded)) = trimmed.split_once(',') {
+            let mime = prefix
+                .strip_prefix("data:")
+                .and_then(|v| v.split(';').next())
+                .unwrap_or("image/jpeg")
+                .to_string();
+            if let Ok(b) = decode_base64(encoded.trim()) {
+                if !b.is_empty() {
+                    let actual_mime = detect_image_mime(&b, &mime).to_string();
+                    return Some((actual_mime, b));
+                }
+            }
+        }
+        return None;
+    }
+
+    // 2. URL paths (Asset protocol, localhost, file://, etc.)
+    let candidate_path = if let Some(rest) = trimmed
+        .strip_prefix("http://asset.localhost/")
+        .or_else(|| trimmed.strip_prefix("https://asset.localhost/"))
+        .or_else(|| trimmed.strip_prefix("asset://localhost/"))
+        .or_else(|| trimmed.strip_prefix("asset://"))
+    {
+        let decoded = percent_decode_str(rest);
+        let s = decoded.trim_start_matches('/');
+        s.replace('/', "\\")
+    } else if let Some(rest) = trimmed.strip_prefix("file:///") {
+        let decoded = percent_decode_str(rest);
+        let s = decoded.trim_start_matches('/');
+        s.replace('/', "\\")
+    } else if let Some(rest) = trimmed.strip_prefix("file://") {
+        let decoded = percent_decode_str(rest);
+        decoded.replace('/', "\\")
+    } else if trimmed.contains("cover?path=") || trimmed.contains("?path=") || trimmed.contains("&path=") {
+        let after = if let Some(pos) = trimmed.find("path=") {
+            &trimmed[pos + 5..]
+        } else {
+            trimmed
+        };
+        let param_val = after.split('&').next().unwrap_or(after);
+        let decoded = percent_decode_str(param_val);
+        let s = decoded.trim_start_matches('/');
+        s.replace('/', "\\")
+    } else {
+        trimmed.to_string()
+    };
+
+    if let Ok(b) = std::fs::read(&candidate_path) {
+        if !b.is_empty() {
+            let mime = detect_image_mime(&b, "image/jpeg").to_string();
+            return Some((mime, b));
+        }
+    }
+
+    if candidate_path != trimmed {
+        if let Ok(b) = std::fs::read(trimmed) {
+            if !b.is_empty() {
+                let mime = detect_image_mime(&b, "image/jpeg").to_string();
+                return Some((mime, b));
+            }
+        }
+    }
+
+    None
+}
+
+pub(crate) fn extract_artwork_bytes_from_file_or_folder(file_path: &std::path::Path) -> Option<(String, Vec<u8>)> {
+    if !file_path.exists() {
+        return None;
+    }
+
+    // 1. Try reading MP4 covr atom
+    if let Ok(tag) = mp4ameta::Tag::read_from_path(file_path) {
+        if let Some(art) = tag.artworks().next() {
+            if !art.data.is_empty() {
+                let fallback = match art.fmt {
+                    mp4ameta::ImgFmt::Png => "image/png",
+                    mp4ameta::ImgFmt::Bmp => "image/bmp",
+                    mp4ameta::ImgFmt::Jpeg => "image/jpeg",
+                };
+                let mime = detect_image_mime(art.data, fallback).to_string();
+                return Some((mime, art.data.to_vec()));
+            }
+        }
+    }
+
+    // 2. Try reading ID3 APIC frame
+    if let Ok(tag) = id3::Tag::read_from_path(file_path) {
+        let pic_opt = tag
+            .pictures()
+            .find(|p| p.picture_type == id3::frame::PictureType::CoverFront)
+            .or_else(|| tag.pictures().find(|p| p.picture_type == id3::frame::PictureType::Other))
+            .or_else(|| tag.pictures().next());
+        if let Some(pic) = pic_opt {
+            if !pic.data.is_empty() {
+                let mime = detect_image_mime(&pic.data, &pic.mime_type).to_string();
+                return Some((mime, pic.data.clone()));
+            }
+        }
+    }
+
+    // 3. Try probe via Lofty (supports FLAC, WAV, OGG, MP3, etc.)
+    use lofty::file::TaggedFileExt;
+    if let Ok(tagged_file) = lofty::read_from_path(file_path) {
+        for tag in tagged_file.tags() {
+            let pic_opt = tag
+                .pictures()
+                .iter()
+                .find(|p| p.pic_type() == lofty::picture::PictureType::CoverFront)
+                .or_else(|| tag.pictures().iter().find(|p| p.pic_type() == lofty::picture::PictureType::Other))
+                .or_else(|| tag.pictures().first());
+            if let Some(pic) = pic_opt {
+                if !pic.data().is_empty() {
+                    let fallback_mime = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
+                    let mime = detect_image_mime(pic.data(), fallback_mime).to_string();
+                    return Some((mime, pic.data().to_vec()));
+                }
+            }
+        }
+    }
+
+    // 4. Folder image fallback in same directory (folder.jpg, cover.jpg, etc.)
+    if let Some(parent) = file_path.parent() {
+        let candidates = [
+            "cover.jpg", "cover.jpeg", "cover.png",
+            "folder.jpg", "folder.jpeg", "folder.png",
+            "album.jpg", "front.jpg",
+            "Cover.jpg", "Folder.jpg", "Album.jpg", "Front.jpg",
+        ];
+        for name in candidates {
+            let candidate = parent.join(name);
+            if candidate.is_file() {
+                if let Ok(bytes) = std::fs::read(&candidate) {
+                    if !bytes.is_empty() {
+                        let mime = detect_image_mime(&bytes, "image/jpeg").to_string();
+                        return Some((mime, bytes));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn write_id3_tags_impl(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> {
     use id3::{Content, Frame, Tag, TagLike, Version};
 
@@ -162,44 +344,22 @@ fn write_id3_tags_impl(file_path: &str, tags: Id3TagPayload) -> Result<bool, Str
     }
 
     if let Some(art_src) = tags.artwork_data_url {
-        tag.remove("APIC");
         let trimmed_src = art_src.trim();
-        if !trimmed_src.is_empty() {
-            let loaded: Option<(String, Vec<u8>)> = if trimmed_src.starts_with("data:") {
-                if let Some((prefix, encoded)) = trimmed_src.split_once(',') {
-                    let mime = tags
-                        .artwork_mime_type
-                        .filter(|v| !v.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            prefix
-                                .strip_prefix("data:")
-                                .and_then(|v| v.split(';').next())
-                                .unwrap_or("image/jpeg")
-                                .to_string()
-                        });
-                    decode_base64(encoded).ok().map(|b| (mime, b))
-                } else {
-                    None
-                }
-            } else if let Ok(b) = std::fs::read(trimmed_src) {
-                let mime = detect_image_mime(&b, "image/jpeg").to_string();
-                Some((mime, b))
-            } else {
-                None
-            };
-
-            if let Some((mime_type, bytes)) = loaded {
-                if !bytes.is_empty() {
-                    tag.add_frame(Frame::with_content(
-                        "APIC",
-                        Content::Picture(id3::frame::Picture {
-                            mime_type,
-                            picture_type: id3::frame::PictureType::CoverFront,
-                            description: String::new(),
-                            data: bytes,
-                        }),
-                    ));
-                }
+        if trimmed_src.is_empty() {
+            // Explicitly requested artwork removal
+            tag.remove("APIC");
+        } else if let Some((mime_type, bytes)) = load_artwork_bytes(trimmed_src) {
+            tag.remove("APIC");
+            if !bytes.is_empty() {
+                tag.add_frame(Frame::with_content(
+                    "APIC",
+                    Content::Picture(id3::frame::Picture {
+                        mime_type,
+                        picture_type: id3::frame::PictureType::CoverFront,
+                        description: String::new(),
+                        data: bytes,
+                    }),
+                ));
             }
         }
     }
@@ -268,25 +428,28 @@ fn write_mp4_tags(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> 
     }
 
     if let Some(art_src) = tags.artwork_data_url {
-        tag.remove_artworks();
         let trimmed_src = art_src.trim();
-        if !trimmed_src.is_empty() {
-            let bytes_opt: Option<Vec<u8>> = if trimmed_src.starts_with("data:") {
-                trimmed_src
-                    .split_once(',')
-                    .and_then(|(_, encoded)| decode_base64(encoded).ok())
-            } else {
-                std::fs::read(trimmed_src).ok()
-            };
-
-            if let Some(bytes) = bytes_opt {
-                if !bytes.is_empty() {
-                    let is_png = bytes.len() >= 8 && bytes[..8] == [137, 80, 78, 71, 13, 10, 26, 10];
-                    let is_jpeg = bytes.len() >= 3 && bytes[0..3] == [0xff, 0xd8, 0xff];
-                    if is_png {
-                        tag.set_artwork(Img::png(bytes));
-                    } else if is_jpeg {
-                        tag.set_artwork(Img::jpeg(bytes));
+        if trimmed_src.is_empty() {
+            // Explicitly requested artwork removal
+            tag.remove_artworks();
+        } else if let Some((_mime, bytes)) = load_artwork_bytes(trimmed_src) {
+            if !bytes.is_empty() {
+                tag.remove_artworks();
+                let is_png = bytes.len() >= 8 && bytes[..8] == [137, 80, 78, 71, 13, 10, 26, 10];
+                let is_jpeg = bytes.len() >= 3 && bytes[0..3] == [0xff, 0xd8, 0xff];
+                if is_png {
+                    tag.set_artwork(Img::png(bytes));
+                } else if is_jpeg {
+                    tag.set_artwork(Img::jpeg(bytes));
+                } else {
+                    if let Ok(img) = image::load_from_memory(&bytes) {
+                        let mut jpg_buf = std::io::Cursor::new(Vec::new());
+                        if img.write_to(&mut jpg_buf, image::ImageFormat::Jpeg).is_ok() {
+                            let jpg_bytes = jpg_buf.into_inner();
+                            if !jpg_bytes.is_empty() {
+                                tag.set_artwork(Img::jpeg(jpg_bytes));
+                            }
+                        }
                     }
                 }
             }
@@ -345,7 +508,7 @@ fn cache_or_encode_artwork(bytes: &[u8], mime: &str) -> Option<String> {
     Some(format!("data:{mime};base64,{b64}"))
 }
 
-fn encode_base64(bytes: &[u8]) -> String {
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
@@ -391,7 +554,7 @@ fn parse_year_string(s: &str) -> Option<i32> {
     None
 }
 
-fn detect_image_mime(data: &[u8], fallback: &str) -> &'static str {
+pub(crate) fn detect_image_mime(data: &[u8], fallback: &str) -> &'static str {
     if data.len() >= 8 && data[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
         "image/png"
     } else if data.len() >= 3 && data[0..3] == [0xFF, 0xD8, 0xFF] {

@@ -12,6 +12,7 @@ import {
 } from '../utils/tauriWindow';
 import { Track, Playlist } from '../types';
 import { audioEngine } from '../services/audioEngine';
+import { getCachedArtwork } from '../services/mediaStorage';
 import { ListView, ColumnId } from './ListView';
 import { ContextMenu, ContextMenuState } from './ContextMenu';
 
@@ -409,7 +410,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
 
     const preparedTracks = await Promise.all(
       tracksToSync.map(async (t) => {
-        let cover = t.coverUrl;
+        let cover = t.coverUrl || getCachedArtwork(t.id) || (t.album ? getCachedArtwork(t.album.trim().toLowerCase()) : undefined);
         if (scaleArtwork500 && cover) {
           try {
             cover = await scaleCoverTo500(cover);
