@@ -17,8 +17,34 @@ const DB_VERSION = 3;
 const STORE_NAME = 'media_files';
 const METADATA_STORE = 'track_metadata';
 const PLAYBACK_METADATA_STORE = 'playback_metadata';
-const ARTWORK_CACHE_LIMIT = 350;
-const ARTWORK_BLOB_LIMIT = 48;
+const ARTWORK_CACHE_LIMIT = 120;
+const ARTWORK_BLOB_LIMIT = 24;
+
+// Lightweight string intern pool for repetitive metadata strings across large libraries
+const stringPool = new Map<string, string>();
+
+export function internString(str: string | undefined): string | undefined {
+  if (typeof str !== 'string') return str;
+  if (str.length === 0) return '';
+  if (str.length > 256) return str;
+  const existing = stringPool.get(str);
+  if (existing !== undefined) return existing;
+  stringPool.set(str, str);
+  return str;
+}
+
+export function internTrackStrings<T extends Record<string, any>>(track: T): T {
+  if (!track) return track;
+  if (typeof track.artist === 'string') track.artist = internString(track.artist)!;
+  if (typeof track.album === 'string') track.album = internString(track.album)!;
+  if (typeof track.albumArtist === 'string') track.albumArtist = internString(track.albumArtist);
+  if (typeof track.genre === 'string') track.genre = internString(track.genre)!;
+  if (typeof track.composer === 'string') track.composer = internString(track.composer);
+  if (typeof track.publisher === 'string') track.publisher = internString(track.publisher);
+  if (typeof track.format === 'string') track.format = internString(track.format);
+  if (typeof track.mediaKind === 'string') track.mediaKind = internString(track.mediaKind);
+  return track;
+}
 
 export function dataURLtoBlob(dataurl: string): Blob | null {
   try {
@@ -195,7 +221,7 @@ export async function getTracksMetadata(): Promise<any[]> {
   if (isTauri()) {
     const nativeTracks = await dbGetAllTracks();
     if (Array.isArray(nativeTracks) && nativeTracks.length > 0) {
-      return nativeTracks;
+      return nativeTracks.map(internTrackStrings);
     }
   }
   try {
@@ -209,7 +235,7 @@ export async function getTracksMetadata(): Promise<any[]> {
     if (isTauri() && Array.isArray(idbTracks) && idbTracks.length > 0) {
       void dbSaveTracksBatch(idbTracks);
     }
-    return idbTracks;
+    return (idbTracks || []).map(internTrackStrings);
   } catch (e) {
     return [];
   }
@@ -411,6 +437,29 @@ function createCachedArtworkUrl(trackId: string, blob: Blob): string {
   const objectUrl = URL.createObjectURL(blob);
   registerArtworkReference(trackId, objectUrl, true);
   return objectUrl;
+}
+
+export function trimArtworkBlobs(targetLimit = 0): void {
+  let ownedBlobCount = 0;
+  for (const entry of artworkResourceCache.values()) {
+    if (entry.owned && entry.url.startsWith('blob:')) {
+      ownedBlobCount++;
+    }
+  }
+  if (ownedBlobCount > targetLimit) {
+    for (const [key, entry] of artworkResourceCache.entries()) {
+      if (ownedBlobCount <= targetLimit) break;
+      if (entry.owned && entry.url.startsWith('blob:')) {
+        for (const alias of [...entry.refs]) {
+          globalArtworkCache.delete(alias);
+          artworkAliasMap.delete(alias);
+        }
+        try { URL.revokeObjectURL(entry.url); } catch {}
+        artworkResourceCache.delete(key);
+        ownedBlobCount--;
+      }
+    }
+  }
 }
 
 export function clearCachedArtwork(key?: string): void {

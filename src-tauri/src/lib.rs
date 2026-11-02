@@ -2,32 +2,37 @@ use serde::Deserialize;
 
 pub mod audio_engine;
 pub mod db;
+pub mod itunes_db;
+pub mod mp3_device;
+pub mod transcoder;
+#[cfg(target_os = "windows")]
+pub mod windows_taskbar;
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct Id3TagPayload {
-    title: Option<String>,
-    artist: Option<String>,
-    album_artist: Option<String>,
-    album: Option<String>,
-    composer: Option<String>,
-    publisher: Option<String>,
-    lyrics: Option<String>,
-    genre: Option<String>,
-    year: Option<i32>,
-    track_number: Option<i32>,
-    track_total: Option<i32>,
-    disc_number: Option<i32>,
-    disc_total: Option<i32>,
-    bpm: Option<i32>,
-    comments: Option<String>,
-    media_kind: Option<String>,
-    artwork_data_url: Option<String>,
-    artwork_mime_type: Option<String>,
+pub struct Id3TagPayload {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
+    pub album: Option<String>,
+    pub composer: Option<String>,
+    pub publisher: Option<String>,
+    pub lyrics: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i32>,
+    pub track_number: Option<i32>,
+    pub track_total: Option<i32>,
+    pub disc_number: Option<i32>,
+    pub disc_total: Option<i32>,
+    pub bpm: Option<i32>,
+    pub comments: Option<String>,
+    pub media_kind: Option<String>,
+    pub artwork_data_url: Option<String>,
+    pub artwork_mime_type: Option<String>,
 }
 
-fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     let mut values = Vec::with_capacity(input.len() * 3 / 4);
     let mut acc: u32 = 0;
     let mut bits: u8 = 0;
@@ -156,35 +161,46 @@ fn write_id3_tags_impl(file_path: &str, tags: Id3TagPayload) -> Result<bool, Str
         }
     }
 
-    if let Some(data_url) = tags.artwork_data_url {
+    if let Some(art_src) = tags.artwork_data_url {
         tag.remove("APIC");
-        if !data_url.trim().is_empty() {
-            let (mime_type, encoded) = data_url
-                .split_once(',')
-                .ok_or_else(|| "Invalid artwork data URL".to_string())?;
-            let mime_type = tags
-                .artwork_mime_type
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| {
-                    mime_type
-                        .strip_prefix("data:")
-                        .and_then(|v| v.split(';').next())
-                        .unwrap_or("image/jpeg")
-                        .to_string()
-                });
-            let bytes = decode_base64(encoded)?;
-            if bytes.is_empty() {
-                return Err("Artwork image is empty".to_string());
+        let trimmed_src = art_src.trim();
+        if !trimmed_src.is_empty() {
+            let loaded: Option<(String, Vec<u8>)> = if trimmed_src.starts_with("data:") {
+                if let Some((prefix, encoded)) = trimmed_src.split_once(',') {
+                    let mime = tags
+                        .artwork_mime_type
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            prefix
+                                .strip_prefix("data:")
+                                .and_then(|v| v.split(';').next())
+                                .unwrap_or("image/jpeg")
+                                .to_string()
+                        });
+                    decode_base64(encoded).ok().map(|b| (mime, b))
+                } else {
+                    None
+                }
+            } else if let Ok(b) = std::fs::read(trimmed_src) {
+                let mime = detect_image_mime(&b, "image/jpeg").to_string();
+                Some((mime, b))
+            } else {
+                None
+            };
+
+            if let Some((mime_type, bytes)) = loaded {
+                if !bytes.is_empty() {
+                    tag.add_frame(Frame::with_content(
+                        "APIC",
+                        Content::Picture(id3::frame::Picture {
+                            mime_type,
+                            picture_type: id3::frame::PictureType::CoverFront,
+                            description: String::new(),
+                            data: bytes,
+                        }),
+                    ));
+                }
             }
-            tag.add_frame(Frame::with_content(
-                "APIC",
-                Content::Picture(id3::frame::Picture {
-                    mime_type,
-                    picture_type: id3::frame::PictureType::CoverFront,
-                    description: String::new(),
-                    data: bytes,
-                }),
-            ));
         }
     }
 
@@ -251,24 +267,28 @@ fn write_mp4_tags(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> 
         }
     }
 
-    if let Some(data_url) = tags.artwork_data_url {
+    if let Some(art_src) = tags.artwork_data_url {
         tag.remove_artworks();
-        if !data_url.trim().is_empty() {
-            let (_, encoded) = data_url
-                .split_once(',')
-                .ok_or_else(|| "Invalid artwork data URL".to_string())?;
-            let bytes = decode_base64(encoded)?;
-            if bytes.is_empty() {
-                return Err("Artwork image is empty".to_string());
-            }
-            let is_png = bytes.len() >= 8 && bytes[..8] == [137, 80, 78, 71, 13, 10, 26, 10];
-            let is_jpeg = bytes.len() >= 3 && bytes[0..3] == [0xff, 0xd8, 0xff];
-            if is_png {
-                tag.set_artwork(Img::png(bytes));
-            } else if is_jpeg {
-                tag.set_artwork(Img::jpeg(bytes));
+        let trimmed_src = art_src.trim();
+        if !trimmed_src.is_empty() {
+            let bytes_opt: Option<Vec<u8>> = if trimmed_src.starts_with("data:") {
+                trimmed_src
+                    .split_once(',')
+                    .and_then(|(_, encoded)| decode_base64(encoded).ok())
             } else {
-                return Err("AAC/M4A artwork must be a JPEG or PNG image".to_string());
+                std::fs::read(trimmed_src).ok()
+            };
+
+            if let Some(bytes) = bytes_opt {
+                if !bytes.is_empty() {
+                    let is_png = bytes.len() >= 8 && bytes[..8] == [137, 80, 78, 71, 13, 10, 26, 10];
+                    let is_jpeg = bytes.len() >= 3 && bytes[0..3] == [0xff, 0xd8, 0xff];
+                    if is_png {
+                        tag.set_artwork(Img::png(bytes));
+                    } else if is_jpeg {
+                        tag.set_artwork(Img::jpeg(bytes));
+                    }
+                }
             }
         }
     }
@@ -278,7 +298,7 @@ fn write_mp4_tags(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> 
     Ok(true)
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadMetadataResult {
     pub title: Option<String>,
@@ -410,12 +430,11 @@ fn is_mp4_file(path: &std::path::Path, ext: &str) -> bool {
     false
 }
 
-#[tauri::command]
-fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> {
+pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetadataResult, String> {
     use id3::TagLike;
     use std::path::Path;
 
-    let path = Path::new(&file_path);
+    let path = Path::new(file_path);
     if !path.is_file() {
         return Err(format!("File does not exist: {file_path}"));
     }
@@ -579,12 +598,15 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
     }
 
     // 3. Audio file probe via Lofty (supports MP3, M4A, FLAC, WAV, OGG, etc. for accurate duration, properties, and metadata)
-    if res.duration.is_none() || res.sample_rate.is_none() || res.title.is_none() || res.year.is_none() || res.cover_url.is_none() {
+    if res.duration.is_none() || res.sample_rate.is_none() || res.bitrate.is_none() || res.title.is_none() || res.year.is_none() || res.cover_url.is_none() {
         use lofty::file::{AudioFile, TaggedFileExt};
         use lofty::probe::Probe;
         use lofty::tag::{Accessor, ItemKey};
 
-        if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+        let tagged_file_res = lofty::read_from_path(path)
+            .or_else(|_| Probe::open(path).and_then(|p| p.read()));
+
+        if let Ok(tagged_file) = tagged_file_res {
             let props = tagged_file.properties();
             if res.duration.is_none() {
                 let dur = props.duration().as_secs_f64();
@@ -596,7 +618,7 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
                 res.sample_rate = props.sample_rate();
             }
             if res.bitrate.is_none() {
-                res.bitrate = props.audio_bitrate();
+                res.bitrate = props.audio_bitrate().or_else(|| props.overall_bitrate());
             }
 
             // Fallback tags if still missing
@@ -653,7 +675,67 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
         }
     }
 
-    // 4. Fallback estimation: if duration is still missing, calculate from file size and bitrate
+    // 4. Symphonia fallback probe for audio properties (bitrate, sample rate, duration)
+    if res.duration.is_none() || res.sample_rate.is_none() || res.bitrate.is_none() {
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::formats::{FormatOptions, TrackType};
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::io::MediaSourceStream;
+        let mut hint = Hint::new();
+        if !ext.is_empty() {
+            hint.with_extension(&ext);
+        }
+        if let Ok(file) = std::fs::File::open(path) {
+            let mss = MediaSourceStream::new(Box::new(file), Default::default());
+            if let Ok(format) = symphonia::default::get_probe().probe(&hint, mss, FormatOptions::default(), MetadataOptions::default()) {
+                if let Some(track) = format.default_track(TrackType::Audio) {
+                    let time_base = track.time_base;
+                    if let Some(audio_params) = track.codec_params.as_ref().and_then(|cp| cp.audio()) {
+                        if res.sample_rate.is_none() {
+                            res.sample_rate = audio_params.sample_rate;
+                        }
+                        if res.duration.is_none() {
+                            let dur_secs = track
+                                .duration
+                                .and_then(|dur| time_base.and_then(|tb| tb.calc_duration(dur)))
+                                .map(|t| t.as_secs_f64())
+                                .or_else(|| {
+                                    track
+                                        .num_frames
+                                        .zip(audio_params.sample_rate)
+                                        .map(|(frames, sr)| frames as f64 / sr.max(1) as f64)
+                                });
+                            if let Some(d) = dur_secs {
+                                if d > 0.0 {
+                                    res.duration = Some(d);
+                                }
+                            }
+                        }
+                        if res.bitrate.is_none() {
+                            if let (Some(bps), Some(sr), Some(channels)) = (audio_params.bits_per_sample, audio_params.sample_rate, audio_params.channels.as_ref()) {
+                                let total_bps = sr as u64 * channels.count() as u64 * bps as u64;
+                                res.bitrate = Some((total_bps / 1000) as u32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Fallback calculation for bitrate if size and duration are known
+    if res.bitrate.is_none() {
+        if let (Some(size), Some(dur)) = (res.size_bytes, res.duration) {
+            if dur > 0.0 && size > 0 {
+                let br = ((size as f64 * 8.0) / (dur * 1000.0)).round() as u32;
+                if br > 0 {
+                    res.bitrate = Some(br);
+                }
+            }
+        }
+    }
+
+    // 6. Fallback estimation: if duration is still missing, calculate from file size and bitrate
     if res.duration.is_none() {
         if let Some(size) = res.size_bytes {
             let br = res.bitrate.unwrap_or(320); // kbps
@@ -666,7 +748,17 @@ fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> 
         }
     }
 
+    // Default sample rate to 44100 Hz if none could be detected
+    if res.sample_rate.is_none() {
+        res.sample_rate = Some(44100);
+    }
+
     Ok(res)
+}
+
+#[tauri::command]
+fn read_music_metadata(file_path: String) -> Result<ReadMetadataResult, String> {
+    read_music_metadata_internal(&file_path)
 }
 
 #[derive(serde::Serialize)]
@@ -682,7 +774,7 @@ fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadataItem> 
     file_paths
         .into_par_iter()
         .map(|path| {
-            let meta = read_music_metadata(path.clone()).ok();
+            let meta = read_music_metadata_internal(&path).ok();
             BatchMetadataItem {
                 path,
                 metadata: meta,
@@ -834,8 +926,8 @@ fn scan_directory_native(
             let file_name_os = entry.file_name();
             let name_str = file_name_os.to_string_lossy();
 
-            // Ignore hidden files and dot-folders
-            if name_str.starts_with('.') {
+            // Ignore AppleDouble resource fork metadata files and OS desktop files
+            if name_str.starts_with("._") || name_str == ".DS_Store" || name_str == ".localized" {
                 continue;
             }
 
@@ -846,6 +938,11 @@ fn scan_directory_native(
             };
 
             if file_type.is_dir() {
+                // Ignore hidden directories starting with '.' (like .git, .cache, etc.)
+                if name_str.starts_with('.') {
+                    continue;
+                }
+
                 let name_lower = name_str.to_ascii_lowercase();
                 let should_ignore = match name_lower.as_str() {
                     // Dependency / Dev folders
@@ -989,7 +1086,8 @@ fn scan_windows_music_directory(
             let file_name_os = entry.file_name();
             let name_str = file_name_os.to_string_lossy();
 
-            if name_str.starts_with('.') {
+            // Ignore AppleDouble resource fork metadata files and OS desktop files
+            if name_str.starts_with("._") || name_str == ".DS_Store" || name_str == ".localized" {
                 continue;
             }
 
@@ -1006,6 +1104,11 @@ fn scan_windows_music_directory(
             if symlink_meta.is_dir() {
                 // Do not recurse through Windows reparse points / junctions
                 if is_reparse_point {
+                    continue;
+                }
+
+                // Ignore hidden directories starting with '.' (like .git, .vscode, etc.)
+                if name_str.starts_with('.') {
                     continue;
                 }
 
@@ -1304,18 +1407,22 @@ fn get_audio_stream_port() -> u16 {
     }
 }
 
-#[tauri::command]
-fn write_music_metadata(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
+pub(crate) fn write_music_metadata_internal(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> {
     use std::path::Path;
-    let path = Path::new(&file_path);
+    let path = Path::new(file_path);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if is_mp4_file(path, &ext) {
-        write_mp4_tags(&file_path, tags)
+        write_mp4_tags(file_path, tags)
     } else {
         // Raw AAC/ADTS has no MP4 ilst container. ID3v2 is the interoperable
         // metadata mechanism for ADTS AAC, so use the same writer as MP3.
-        write_id3_tags_impl(&file_path, tags)
+        write_id3_tags_impl(file_path, tags)
     }
+}
+
+#[tauri::command]
+fn write_music_metadata(file_path: String, tags: Id3TagPayload) -> Result<bool, String> {
+    write_music_metadata_internal(&file_path, tags)
 }
 
 #[tauri::command]
@@ -1598,6 +1705,47 @@ async fn install_linux_package_elevated(pkg_path: String) -> Result<(), String> 
     }
 }
 
+#[tauri::command]
+fn update_taskbar_thumbnail_toolbar(is_playing: bool) {
+    #[cfg(target_os = "windows")]
+    windows_taskbar::update_windows_taskbar_thumbnail(is_playing);
+    #[cfg(not(target_os = "windows"))]
+    let _ = is_playing;
+}
+
+#[tauri::command]
+fn list_connected_devices() -> Vec<mp3_device::Mp3Device> {
+    mp3_device::list_connected_devices_native()
+}
+
+#[tauri::command]
+async fn sync_tracks_to_device(
+    app: tauri::AppHandle,
+    payload: mp3_device::DeviceSyncPayload,
+) -> Result<mp3_device::DeviceSyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mp3_device::sync_tracks_to_device_impl(&app, payload)
+    })
+    .await
+    .map_err(|e| format!("Device sync task failed: {e}"))?
+}
+
+#[tauri::command]
+fn eject_device(mount_point: String) -> Result<bool, String> {
+    mp3_device::eject_device_native(&mount_point)
+}
+
+#[tauri::command]
+fn list_device_contents(mount_point: String) -> Vec<mp3_device::DeviceTrackItem> {
+    mp3_device::list_device_contents_native(&mount_point)
+}
+
+#[tauri::command]
+fn delete_device_file(file_path: String) -> Result<bool, String> {
+    mp3_device::delete_device_file_native(&file_path)
+}
+
+
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
@@ -1638,6 +1786,15 @@ pub fn run() {
                     let _ = window.set_decorations(true);
                 }
             }
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                let target_window = _app.get_webview_window("main")
+                    .or_else(|| _app.webview_windows().into_values().next());
+                if let Some(window) = target_window {
+                    windows_taskbar::init_windows_taskbar_thumbnail(&window, _app.handle().clone());
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1668,10 +1825,17 @@ pub fn run() {
             audio_engine::native_audio_stop,
             audio_engine::native_audio_seek,
             audio_engine::native_audio_set_volume,
+            audio_engine::native_audio_set_playback_rate,
             audio_engine::native_audio_set_normalization,
             audio_engine::native_audio_set_eq,
             audio_engine::native_audio_get_state,
-            audio_engine::native_audio_get_visualizer
+            audio_engine::native_audio_get_visualizer,
+            update_taskbar_thumbnail_toolbar,
+            list_connected_devices,
+            sync_tracks_to_device,
+            eject_device,
+            list_device_contents,
+            delete_device_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

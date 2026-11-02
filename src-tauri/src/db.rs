@@ -132,19 +132,30 @@ impl LibraryDb {
     }
 
     fn load_from_disk(&mut self) {
-        if !self.db_path.exists() {
-            return;
-        }
-        let Ok(bytes) = fs::read(&self.db_path) else {
-            return;
-        };
-        let config = bincode::config::standard();
-        if let Ok((snapshot, _)) = bincode::serde::decode_from_slice::<LibrarySnapshot, _>(&bytes, config) {
-            self.tracks_by_id.clear();
-            self.ordered_ids.clear();
-            for track in snapshot.tracks {
-                self.ordered_ids.push(track.id.clone());
-                self.tracks_by_id.insert(track.id.clone(), track);
+        let paths_to_try = [
+            self.db_path.clone(),
+            self.db_path.with_extension("bin.bak"),
+            self.db_path.with_extension("bin.tmp"),
+        ];
+
+        for p in &paths_to_try {
+            if !p.exists() {
+                continue;
+            }
+            if let Ok(bytes) = fs::read(p) {
+                let config = bincode::config::standard();
+                if let Ok((snapshot, _)) = bincode::serde::decode_from_slice::<LibrarySnapshot, _>(&bytes, config) {
+                    if !snapshot.tracks.is_empty() {
+                        self.tracks_by_id.clear();
+                        self.ordered_ids.clear();
+                        for track in snapshot.tracks {
+                            self.ordered_ids.push(track.id.clone());
+                            self.tracks_by_id.insert(track.id.clone(), track);
+                        }
+                        eprintln!("Successfully loaded {} tracks from {:?}", self.ordered_ids.len(), p);
+                        return;
+                    }
+                }
             }
         }
     }
@@ -153,6 +164,13 @@ impl LibraryDb {
         if let Some(parent) = self.db_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
+
+        // Backup existing valid file before rewriting
+        if self.db_path.exists() && !self.tracks_by_id.is_empty() {
+            let backup_path = self.db_path.with_extension("bin.bak");
+            let _ = fs::copy(&self.db_path, &backup_path);
+        }
+
         let tracks: Vec<TrackRecord> = self
             .ordered_ids
             .iter()
@@ -184,6 +202,14 @@ impl LibraryDb {
     }
 
     pub fn replace_all_tracks(&mut self, tracks: Vec<TrackRecord>) -> Result<(), String> {
+        // SAFETY GUARD: If caller passes an empty vector, but we currently have existing tracks,
+        // NEVER wipe the database! An empty library replacement must only happen if explicitly requested.
+        // In practice, this prevents frontend startup race conditions from wiping the library.
+        if tracks.is_empty() && !self.tracks_by_id.is_empty() {
+            eprintln!("Prevented wiping {} tracks with empty batch in replace_all_tracks", self.tracks_by_id.len());
+            return Ok(());
+        }
+
         self.tracks_by_id.clear();
         self.ordered_ids.clear();
         for track in tracks {

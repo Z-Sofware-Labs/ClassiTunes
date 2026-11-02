@@ -22,6 +22,7 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [mode, setMode] = useState<VisualizerMode>('classic_bars');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const isMac = platformInfo.isMacOS;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -221,9 +222,21 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
     <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-between animate-in fade-in duration-200">
       {/* Header Bar */}
       <div className="p-4 bg-gradient-to-b from-gray-900/90 to-transparent flex items-center justify-between z-10">
-        <div>
-          <h2 className="text-white text-sm font-bold tracking-wide font-sans">{trackTitle}</h2>
-          <p className="text-cyan-400 text-xs font-mono">{artistName}</p>
+        <div className="flex items-center gap-3">
+          {isMac && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer mr-1 shrink-0 transition-opacity"
+              title="Close Visualizer"
+            >
+              <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+            </button>
+          )}
+          <div>
+            <h2 className="text-white text-sm font-bold tracking-wide font-sans">{trackTitle}</h2>
+            <p className="text-cyan-400 text-xs font-mono">{artistName}</p>
+          </div>
         </div>
 
         {/* Visualizer Mode Selector */}
@@ -275,13 +288,15 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-          <button
-            onClick={onClose}
-            className="p-2 text-gray-400 hover:text-white rounded bg-gray-800/60 border border-gray-700 hover:bg-red-600"
-            title="Close Visualizer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {!isMac && (
+            <button
+              onClick={onClose}
+              className="p-2 text-gray-400 hover:text-white rounded bg-gray-800/60 border border-gray-700 hover:bg-red-600"
+              title="Close Visualizer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 

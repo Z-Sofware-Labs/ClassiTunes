@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Trash2, Sliders, Sparkles, Check } from 'lucide-react';
+import { platformInfo } from '../utils/platform';
 import { Playlist, SmartRule } from '../types';
 
 interface SmartPlaylistModalProps {
@@ -71,7 +72,7 @@ export const SmartPlaylistModal: React.FC<SmartPlaylistModalProps> = ({
     }
   }, [initialPlaylist, isOpen]);
 
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const isMac = platformInfo.isMacOS;
 
   if (!isOpen) return null;
 
@@ -134,11 +135,14 @@ export const SmartPlaylistModal: React.FC<SmartPlaylistModalProps> = ({
         }`}>
           <div className="flex items-center gap-2">
             {isMac && (
-              <>
-                <span className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] cursor-pointer" onClick={onClose} />
-                <span className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123]" />
-                <span className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29]" />
-              </>
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer mr-1 shrink-0 transition-opacity"
+                title="Close"
+              >
+                <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+              </button>
             )}
             <Sparkles className="w-4 h-4 text-purple-500 dark:text-purple-400" />
             <h3 className="font-bold text-sm">
@@ -147,10 +151,12 @@ export const SmartPlaylistModal: React.FC<SmartPlaylistModalProps> = ({
           </div>
           {!isMac && (
             <button
+              type="button"
               onClick={onClose}
               className={`p-1 rounded-md transition-colors ${
-                isLight ? 'hover:bg-black/10 text-gray-700' : 'hover:bg-white/10 text-gray-400'
+                isLight ? 'hover:bg-black/10 text-gray-700' : 'hover:bg-white/10 text-gray-400 hover:text-white'
               }`}
+              title="Close"
             >
               <X className="w-4 h-4" />
             </button>

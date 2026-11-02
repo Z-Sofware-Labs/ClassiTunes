@@ -1,4 +1,5 @@
 export type ViewMode = 'list' | 'grid';
+export type AlbumSortField = 'album' | 'artist' | 'genre' | 'year';
 
 export interface Track {
   id: string;
@@ -32,6 +33,7 @@ export interface Track {
   sizeBytes?: number;
   dateAdded: string; // ISO string
   filePath?: string;
+  isChecked?: boolean;
 }
 
 export interface Album {
@@ -53,6 +55,9 @@ export interface SmartRule {
 export interface Playlist {
   id: string;
   name: string;
+  isFolder?: boolean;
+  parentId?: string;
+  collapsed?: boolean;
   isSmart?: boolean;
   matchType?: 'all' | 'any';
   rules?: SmartRule[];
@@ -96,4 +101,41 @@ export type EQPreset =
   | 'Treble Booster';
 
 export type VisualizerMode = 'classic_bars' | 'laser_wave' | 'frequency_ring' | 'cosmic_particles';
+
+export type ThemePreference = 'system' | 'dark' | 'light';
+
+export type TranscodeFormat = 'MP3' | 'AAC' | 'WAV';
+export type TranscodeBitrate = '128' | '192' | '256' | '320';
+
+export type OptionsTab = 'general' | 'playback' | 'transcode' | 'appearance' | 'updates';
+
+export interface AppSettings {
+  defaultMusicPath: string;
+  organizeMusicFolders: boolean;
+  crossfadeEnabled: boolean;
+  crossfadeSeconds: number;
+  audioNormalization: boolean;
+  defaultTheme: ThemePreference;
+  transcodeOnSync: boolean;
+  transcodeFormat: TranscodeFormat;
+  transcodeBitrate: TranscodeBitrate;
+  transcodeDownmixMono: boolean;
+  transcodeDownsample44k: boolean;
+  scaleArtwork500: boolean;
+}
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  defaultMusicPath: '',
+  organizeMusicFolders: false,
+  crossfadeEnabled: false,
+  crossfadeSeconds: 5,
+  audioNormalization: false,
+  defaultTheme: 'system',
+  transcodeOnSync: false,
+  transcodeFormat: 'MP3',
+  transcodeBitrate: '256',
+  transcodeDownmixMono: false,
+  transcodeDownsample44k: true,
+  scaleArtwork500: true,
+};
 

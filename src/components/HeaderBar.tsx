@@ -2,13 +2,29 @@ import React, { useState, useEffect } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Search, Sliders, Shuffle, Repeat, Repeat1, Star,
-  Sun, Moon, Minus, Square, X, Disc, List, LayoutGrid
+  Sun, Moon, Minus, Square, X, Disc, List, LayoutGrid, RefreshCw
 } from 'lucide-react';
 import { Track, ViewMode } from '../types';
 import { audioEngine } from '../services/audioEngine';
 import { tauriMinimize, tauriMaximize, tauriClose, tauriIsMaximized, tauriOnWindowMaximizedChange } from '../utils/tauriWindow';
 import { MarqueeText } from './MarqueeText';
 import { platformInfo } from '../utils/platform';
+
+export interface DeviceSyncProgressInfo {
+  active: boolean;
+  current: number;
+  total: number;
+  title: string;
+  deviceName?: string;
+  isComplete?: boolean;
+}
+
+export interface LibraryImportProgressInfo {
+  current: number;
+  total: number;
+  statusText?: string;
+  phase?: 'scanning' | 'importing';
+}
 
 interface HeaderBarProps {
   currentTrack: Track | null;
@@ -29,6 +45,9 @@ interface HeaderBarProps {
   onUpdateRating: (trackId: string, rating: number) => void;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+  deviceSyncProgress?: DeviceSyncProgressInfo | null;
+  importProgress?: LibraryImportProgressInfo | null;
+  isImporting?: boolean;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -50,6 +69,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onUpdateRating,
   theme = 'dark',
   onToggleTheme,
+  deviceSyncProgress,
+  importProgress,
+  isImporting,
 }) => {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -409,7 +431,84 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             <div className={`absolute top-0 left-0 right-0 h-1/2 pointer-events-none ${isLight ? 'bg-gradient-to-b from-white/60 to-transparent' : 'bg-gradient-to-b from-white/5 to-transparent'
               }`} />
 
-            {currentTrack ? (
+            {(deviceSyncProgress && deviceSyncProgress.active) || (isImporting && importProgress) ? (
+              <div className="flex flex-col items-center justify-center relative w-full h-full px-2">
+                {/* Row 1: Status text with sync/import spinner - Centered */}
+                <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-1 font-medium overflow-hidden">
+                  <div className="flex items-center justify-center gap-1.5 truncate max-w-full">
+                    <RefreshCw className={`w-3 h-3 shrink-0 ${
+                      deviceSyncProgress?.isComplete ? 'text-emerald-500' : 'text-blue-500 animate-spin'
+                    }`} />
+                    {deviceSyncProgress && deviceSyncProgress.active ? (
+                      <>
+                        <span className={`truncate font-semibold ${isLight ? 'text-gray-900' : 'text-white'}`}>
+                          {deviceSyncProgress.isComplete
+                            ? `Finished syncing "${deviceSyncProgress.deviceName || 'Device'}"`
+                            : `Updating "${deviceSyncProgress.deviceName || 'Device'}"`}
+                        </span>
+                        {!deviceSyncProgress.isComplete && deviceSyncProgress.total > 0 && (
+                          <span className={`text-[10px] tabular-nums shrink-0 font-medium ${isLight ? 'text-gray-600' : 'text-gray-300'}`}>
+                            ({deviceSyncProgress.current} of {deviceSyncProgress.total})
+                          </span>
+                        )}
+                        {!deviceSyncProgress.isComplete && deviceSyncProgress.title && (
+                          <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                            — {deviceSyncProgress.title}
+                          </span>
+                        )}
+                      </>
+                    ) : importProgress ? (
+                      <>
+                        <span className={`truncate font-semibold ${isLight ? 'text-gray-900' : 'text-white'}`}>
+                          {importProgress.phase === 'importing' ? 'Importing Music' : 'Scanning Music'}
+                        </span>
+                        {importProgress.total > 0 && (
+                          <span className={`text-[10px] tabular-nums shrink-0 font-medium ${isLight ? 'text-gray-600' : 'text-gray-300'}`}>
+                            ({importProgress.current} of {importProgress.total})
+                          </span>
+                        )}
+                        {importProgress.statusText && (
+                          <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                            — {importProgress.statusText}
+                          </span>
+                        )}
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* Row 2: Classic Barber-pole Striped Progress Bar */}
+                <div className="w-full flex items-center justify-center gap-2 mt-1 px-1">
+                  <div className={`relative flex-1 h-[7px] rounded-full overflow-hidden border shadow-inner ${
+                    isLight ? 'bg-black/10 border-black/15' : 'bg-black/50 border-white/10'
+                  }`}>
+                    {(() => {
+                      const currentVal = deviceSyncProgress?.active ? deviceSyncProgress.current : (importProgress?.current || 0);
+                      const totalVal = deviceSyncProgress?.active ? deviceSyncProgress.total : (importProgress?.total || 0);
+                      const pct = totalVal > 0 ? (currentVal / totalVal) * 100 : 5;
+                      return (
+                        <div
+                          className="h-full bg-gradient-to-r from-blue-600 via-blue-500 to-indigo-500 rounded-full transition-all duration-200 relative overflow-hidden"
+                          style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                        >
+                          {/* Barber pole diagonal candy-stripe gloss animation */}
+                          <div className="absolute inset-0 bg-[linear-gradient(45deg,rgba(255,255,255,0.3)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.3)_50%,rgba(255,255,255,0.3)_75%,transparent_75%,transparent)] bg-[length:14px_14px] animate-[pulse_2s_infinite]" />
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  <span className={`text-[9px] tabular-nums font-bold min-w-[28px] text-right ${
+                    isLight ? 'text-blue-700' : 'text-blue-400'
+                  }`}>
+                    {(() => {
+                      const currentVal = deviceSyncProgress?.active ? deviceSyncProgress.current : (importProgress?.current || 0);
+                      const totalVal = deviceSyncProgress?.active ? deviceSyncProgress.total : (importProgress?.total || 0);
+                      return totalVal > 0 ? `${Math.round((currentVal / totalVal) * 100)}%` : '0%';
+                    })()}
+                  </span>
+                </div>
+              </div>
+            ) : currentTrack ? (
               <div className="flex flex-col items-center relative w-full">
                 {/* Row 1: Song - Artist with Marquee support for long text */}
                 <div className="w-full text-center px-4 leading-none pt-[1px] pb-[2px] overflow-hidden">
@@ -510,7 +609,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* Right Section: View Mode, Search & Controls */}
         <div className="flex items-center justify-end gap-1.5 sm:gap-2.5 min-w-0">
-          {/* iTunes 11 Style View Mode Segmented Control */}
+          {/* Classic View Mode Segmented Control */}
           <div className={`flex items-center p-0.5 rounded-md border shrink-0 text-xs ${
             isLight ? 'bg-[#d8e0ed] border-[#9aa7b9]' : 'bg-[#1e1e1e] border-[#333]'
           }`}>

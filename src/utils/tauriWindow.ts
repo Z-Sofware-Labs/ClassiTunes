@@ -1188,3 +1188,148 @@ export async function dbClearAll(): Promise<boolean> {
   }
 }
 
+export async function updateTaskbarThumbnailToolbar(isPlaying: boolean): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('update_taskbar_thumbnail_toolbar', { isPlaying });
+  } catch (e) {
+    // Silently ignore if not supported or not Windows
+  }
+}
+
+export type DeviceCategory = 'ipod' | 'iphone' | 'android' | 'mp3Player' | 'usbDevice';
+
+export interface Mp3Device {
+  id: string;
+  name: string;
+  mountPoint: string;
+  totalBytes: number;
+  availableBytes: number;
+  usedBytes: number;
+  filesystem: string;
+  category: DeviceCategory;
+  isIpod: boolean;
+  isAudioPlayer: boolean;
+  modelDescription?: string;
+}
+
+export interface DeviceTrackItem {
+  fileName: string;
+  relativePath: string;
+  fullPath: string;
+  sizeBytes: number;
+  format: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+  genre?: string;
+  year?: number;
+  trackNumber?: number;
+  durationSecs?: number;
+  coverUrl?: string;
+  bitrate?: number;
+  sampleRate?: number;
+}
+
+export interface SyncTrackItem {
+  id: string;
+  filePath: string;
+  title?: string;
+  artist?: string;
+  albumArtist?: string;
+  album?: string;
+  genre?: string;
+  trackNumber?: number;
+  year?: number;
+  coverUrl?: string;
+  lyrics?: string;
+}
+
+export interface DeviceSyncPayload {
+  mountPoint: string;
+  tracks: SyncTrackItem[];
+  namingTemplate?: string;
+  syncPlaylists: boolean;
+  playlistName?: string;
+  transcodeEnabled?: boolean;
+  transcodeFormat?: string;
+  transcodeBitrate?: number;
+  transcodeDownmixMono?: boolean;
+  transcodeDownsample44k?: boolean;
+}
+
+export interface DeviceSyncResult {
+  tracksSynced: number;
+  tracksSkipped: number;
+  totalBytesTransferred: number;
+  errors: string[];
+}
+
+export interface SyncProgressEvent {
+  currentIndex: number;
+  totalTracks: number;
+  currentTitle: string;
+  bytesCopied: number;
+  totalBytes: number;
+  isComplete: boolean;
+}
+
+export async function listConnectedDevices(): Promise<Mp3Device[]> {
+  if (!isTauri()) return [];
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<Mp3Device[]>('list_connected_devices');
+  } catch (e) {
+    console.warn('list_connected_devices failed:', e);
+    return [];
+  }
+}
+
+export async function syncTracksToDevice(payload: DeviceSyncPayload): Promise<DeviceSyncResult | null> {
+  if (!isTauri()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<DeviceSyncResult>('sync_tracks_to_device', { payload });
+  } catch (e) {
+    console.error('sync_tracks_to_device failed:', e);
+    throw e;
+  }
+}
+
+export async function ejectDevice(mountPoint: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('eject_device', { mountPoint });
+  } catch (e) {
+    console.error('eject_device failed:', e);
+    return false;
+  }
+}
+
+export async function listDeviceContents(mountPoint: string): Promise<DeviceTrackItem[]> {
+  if (!isTauri()) return [];
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<DeviceTrackItem[]>('list_device_contents', { mountPoint });
+  } catch (e) {
+    console.error('list_device_contents failed:', e);
+    return [];
+  }
+}
+
+export async function deleteDeviceFile(filePath: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('delete_device_file', { filePath });
+  } catch (e) {
+    console.error('delete_device_file failed:', e);
+    return false;
+  }
+}
+
+
+
+

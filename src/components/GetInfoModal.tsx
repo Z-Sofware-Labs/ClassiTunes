@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { X, Info, Image as ImageIcon, FileText, Sparkles, RefreshCw, CheckCircle2, Music, Tag, Disc, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { X, Info, Image as ImageIcon, FileText, Sparkles, RefreshCw, CheckCircle2, Music, Tag, Disc, AlertCircle, ChevronLeft, ChevronRight, ClipboardPaste, Copy, Upload, Trash2 } from 'lucide-react';
 import { Track } from '../types';
 import { extractID3TagsFromTrack, ExtractedID3Tags } from '../services/metadataParser';
 import { platformInfo } from '../utils/platform';
@@ -477,30 +477,316 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
     setPendingNavigation(null);
   };
 
-  const handleArtworkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Keep the image as a data URL so the native writer can embed the exact
-    // image bytes into the audio file. Object URLs cannot be persisted into
-    // ID3/APIC tags after the dialog closes.
+  const applyArtworkBlob = useCallback(async (blobOrFile: Blob | File) => {
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
         reader.onerror = () => reject(reader.error || new Error('Could not read artwork'));
-        reader.readAsDataURL(file);
+        reader.readAsDataURL(blobOrFile);
       });
       setCustomCoverUrl(dataUrl);
       setArtworkChanged(true);
       setArtworkRemoved(false);
       setIsDirty(true);
     } catch (error) {
-      console.error('Could not read selected artwork:', error);
-      window.alert('Could not read the selected image.');
+      console.error('Could not process artwork:', error);
+      window.alert('Could not read the image.');
+    }
+  }, []);
+
+  const applyArtworkUrlOrText = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed.startsWith('data:image/')) {
+      setCustomCoverUrl(trimmed);
+      setArtworkChanged(true);
+      setArtworkRemoved(false);
+      setIsDirty(true);
+      return;
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      try {
+        const res = await fetch(trimmed);
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob.type.startsWith('image/')) {
+            await applyArtworkBlob(blob);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch remote image URL for artwork:', err);
+      }
+      setCustomCoverUrl(trimmed);
+      setArtworkChanged(true);
+      setArtworkRemoved(false);
+      setIsDirty(true);
+    }
+  }, [applyArtworkBlob]);
+
+  const handleArtworkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      await applyArtworkBlob(file);
     } finally {
       e.target.value = '';
     }
+  };
+
+  const handlePasteEvent = useCallback(async (e: ClipboardEvent | React.ClipboardEvent) => {
+    if (activeTab !== 'artwork') return;
+
+    // If an input, textarea, or contenteditable is currently focused, allow normal text paste
+    const activeEl = document.activeElement;
+    if (
+      activeEl &&
+      (activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.getAttribute('contenteditable') === 'true')
+    ) {
+      return;
+    }
+
+    const items = e.clipboardData?.items;
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            await applyArtworkBlob(file);
+            return;
+          }
+        }
+      }
+    }
+
+    const text = e.clipboardData?.getData('text/plain');
+    if (text) {
+      const trimmed = text.trim();
+      if (
+        trimmed.startsWith('data:image/') ||
+        trimmed.startsWith('http://') ||
+        trimmed.startsWith('https://')
+      ) {
+        e.preventDefault();
+        await applyArtworkUrlOrText(trimmed);
+      }
+    }
+  }, [activeTab, applyArtworkBlob, applyArtworkUrlOrText]);
+
+  const handlePasteFromClipboardButton = useCallback(async () => {
+    try {
+      if (navigator.clipboard?.read) {
+        try {
+          const clipboardItems = await navigator.clipboard.read();
+          for (const item of clipboardItems) {
+            const imageType = item.types.find((t) => t.startsWith('image/'));
+            if (imageType) {
+              const blob = await item.getType(imageType);
+              await applyArtworkBlob(blob);
+              return;
+            }
+          }
+        } catch {
+          // Fallback to text reading if permission or format requires it
+        }
+      }
+
+      if (navigator.clipboard?.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          const trimmed = text.trim();
+          if (
+            trimmed.startsWith('data:image/') ||
+            trimmed.startsWith('http://') ||
+            trimmed.startsWith('https://')
+          ) {
+            await applyArtworkUrlOrText(trimmed);
+            return;
+          }
+        }
+      }
+
+      window.alert(
+        `No image found in clipboard. Copy an image or image URL and press ${
+          isMac ? '⌘V' : 'Ctrl+V'
+        } to paste.`
+      );
+    } catch (err) {
+      console.warn('Clipboard read error:', err);
+      window.alert(
+        `Could not access clipboard. Please press ${
+          isMac ? '⌘V' : 'Ctrl+V'
+        } directly on the window to paste.`
+      );
+    }
+  }, [isMac, applyArtworkBlob, applyArtworkUrlOrText]);
+
+  const [isDraggingArtwork, setIsDraggingArtwork] = useState(false);
+
+  const handleArtworkDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDraggingArtwork) setIsDraggingArtwork(true);
+  };
+
+  const handleArtworkDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingArtwork(false);
+  };
+
+  const handleArtworkDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingArtwork(false);
+
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].type.startsWith('image/')) {
+          await applyArtworkBlob(files[i]);
+          return;
+        }
+      }
+    }
+
+    const text = e.dataTransfer.getData('text/plain');
+    if (text) {
+      const trimmed = text.trim();
+      if (
+        trimmed.startsWith('data:image/') ||
+        trimmed.startsWith('http://') ||
+        trimmed.startsWith('https://')
+      ) {
+        await applyArtworkUrlOrText(trimmed);
+      }
+    }
+  };
+
+  // Artwork context menu & clipboard states
+  const [artworkContextMenu, setArtworkContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const artworkMenuRef = useRef<HTMLDivElement>(null);
+  const artworkFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleCopyArtwork = useCallback(async () => {
+    if (!customCoverUrl) return;
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.src = customCoverUrl;
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load image for clipboard copy'));
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get 2D canvas context');
+      ctx.drawImage(img, 0, 0);
+
+      canvas.toBlob(async (blob) => {
+        if (blob && navigator.clipboard?.write) {
+          try {
+            await navigator.clipboard.write([
+              new ClipboardItem({ 'image/png': blob })
+            ]);
+          } catch (clipErr) {
+            console.warn('Clipboard write error:', clipErr);
+          }
+        }
+      }, 'image/png');
+    } catch (err) {
+      console.warn('Failed to copy artwork to clipboard:', err);
+    }
+  }, [customCoverUrl]);
+
+  // Window-level paste & copy listeners when Artwork tab is active
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'artwork') return;
+
+    const onWindowPaste = (e: ClipboardEvent) => {
+      handlePasteEvent(e);
+    };
+
+    const onWindowCopy = (e: ClipboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.getAttribute('contenteditable') === 'true')
+      ) {
+        return;
+      }
+      if (customCoverUrl) {
+        e.preventDefault();
+        handleCopyArtwork();
+      }
+    };
+
+    window.addEventListener('paste', onWindowPaste);
+    window.addEventListener('copy', onWindowCopy);
+    return () => {
+      window.removeEventListener('paste', onWindowPaste);
+      window.removeEventListener('copy', onWindowCopy);
+    };
+  }, [isOpen, activeTab, handlePasteEvent, handleCopyArtwork, customCoverUrl]);
+
+  // Dismiss context menu on click outside or Escape
+  useEffect(() => {
+    if (!artworkContextMenu) return;
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (artworkMenuRef.current && !artworkMenuRef.current.contains(e.target as Node)) {
+        setArtworkContextMenu(null);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setArtworkContextMenu(null);
+      }
+    };
+
+    window.addEventListener('mousedown', handleClickOutside);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [artworkContextMenu]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'artwork') {
+      setArtworkContextMenu(null);
+    }
+  }, [isOpen, activeTab]);
+
+  const handleArtworkContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setArtworkContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  const getArtworkMenuPosition = () => {
+    if (!artworkContextMenu) return { left: 0, top: 0 };
+    const menuWidth = 210;
+    const menuHeight = 220;
+    let left = artworkContextMenu.x;
+    let top = artworkContextMenu.y;
+    if (left + menuWidth > window.innerWidth - 10) {
+      left = window.innerWidth - menuWidth - 10;
+    }
+    if (top + menuHeight > window.innerHeight - 10) {
+      top = window.innerHeight - menuHeight - 10;
+    }
+    return { left: Math.max(10, left), top: Math.max(10, top) };
   };
 
   const handleReExtractArtwork = async () => {
@@ -551,15 +837,14 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
         >
           <div className="flex items-center gap-2 min-w-0">
             {isMac && (
-              <div className="flex items-center gap-1.5 mr-1">
-                <button
-                  onClick={onClose}
-                  className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:opacity-80 transition-opacity"
-                  title="Close"
-                />
-                <span className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123]" />
-                <span className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29]" />
-              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer mr-1 shrink-0 transition-opacity"
+                title="Close"
+              >
+                <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+              </button>
             )}
             <Tag className="w-4 h-4 text-indigo-500 shrink-0" />
             <span
@@ -1045,13 +1330,13 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Bit Rate</span>
-                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{bitrate || singleTrack?.bitrate || 320} kbps</span>
+                  <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>{(bitrate || singleTrack?.bitrate) ? `${bitrate || singleTrack?.bitrate} kbps` : 'Unknown'}</span>
                 </div>
 
                 <div>
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Sample Rate</span>
                   <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>
-                    {sampleRate || singleTrack?.sampleRate ? `${((sampleRate || singleTrack?.sampleRate || 44100) / 1000).toFixed(1)} kHz` : '44.1 kHz'}
+                    {(sampleRate || singleTrack?.sampleRate) ? `${((sampleRate || singleTrack?.sampleRate!) / 1000).toFixed(1)} kHz` : 'Unknown'}
                   </span>
                 </div>
 
@@ -1112,8 +1397,25 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
           {/* TAB 3: ARTWORK */}
           {activeTab === 'artwork' && (
-            <div className="flex flex-col items-center justify-center gap-4 py-3 max-w-sm mx-auto">
-              <div className="relative group w-44 h-44 rounded-lg border shadow-xl overflow-hidden bg-black/60 flex items-center justify-center">
+            <div
+              className="flex flex-col items-center justify-center gap-4 py-3 max-w-sm mx-auto"
+              onPaste={handlePasteEvent}
+              onContextMenu={handleArtworkContextMenu}
+            >
+              <div
+                onDragOver={handleArtworkDragOver}
+                onDragLeave={handleArtworkDragLeave}
+                onDrop={handleArtworkDrop}
+                onContextMenu={handleArtworkContextMenu}
+                className={`relative group w-48 h-48 rounded-lg border-2 shadow-xl overflow-hidden flex items-center justify-center transition-all cursor-context-menu ${
+                  isDraggingArtwork
+                    ? 'border-indigo-500 ring-4 ring-indigo-500/30 scale-105 bg-indigo-950/40'
+                    : isLight
+                    ? 'border-gray-300 bg-gray-50'
+                    : 'border-[#3d3d3d] bg-black/60'
+                }`}
+                title="Right-click for options"
+              >
                 {customCoverUrl ? (
                   <img
                     src={customCoverUrl}
@@ -1123,23 +1425,49 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                     onLoad={(e) => { (e.target as HTMLImageElement).style.display = ''; }}
                   />
                 ) : (
-                  <div className="flex flex-col items-center justify-center text-gray-500 gap-2">
+                  <div className="flex flex-col items-center justify-center text-gray-500 gap-2 p-4 text-center">
                     <Disc className="w-12 h-12" />
-                    <span className="text-[11px]">No Artwork</span>
+                    <span className="text-[11px] font-medium">No Artwork</span>
+                    <span className={`text-[10px] ${isLight ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Right-click, paste ({isMac ? '⌘V' : 'Ctrl+V'}), or drag image here
+                    </span>
+                  </div>
+                )}
+
+                {/* Drag over overlay */}
+                {isDraggingArtwork && (
+                  <div className="absolute inset-0 bg-indigo-600/70 backdrop-blur-xs flex flex-col items-center justify-center text-white gap-2 font-bold text-xs pointer-events-none">
+                    <ImageIcon className="w-8 h-8 animate-bounce" />
+                    <span>Drop image to apply</span>
                   </div>
                 )}
               </div>
 
               <div className="flex items-center gap-2 flex-wrap justify-center pt-2">
-                <label
-                  className={`px-3 py-1.5 rounded-md text-xs font-bold cursor-pointer transition-colors border shadow-sm ${
+                <button
+                  type="button"
+                  onClick={handlePasteFromClipboardButton}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors border shadow-sm flex items-center gap-1.5 ${
                     isLight
-                      ? 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
-                      : 'bg-indigo-950/60 border-indigo-800/80 text-indigo-300 hover:bg-indigo-900/60'
+                      ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-700'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500'
+                  }`}
+                  title={`Paste image from clipboard (${isMac ? '⌘V' : 'Ctrl+V'})`}
+                >
+                  <ClipboardPaste className="w-3.5 h-3.5" />
+                  <span>Paste Artwork</span>
+                </button>
+
+                <label
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer transition-colors border shadow-sm ${
+                    isLight
+                      ? 'bg-gray-100 border-gray-300 text-gray-700 hover:bg-gray-200'
+                      : 'bg-[#262626] border-[#3d3d3d] text-gray-200 hover:bg-[#333]'
                   }`}
                 >
-                  Choose Custom Image...
+                  Choose File...
                   <input
+                    ref={artworkFileInputRef}
                     type="file"
                     accept="image/*"
                     onChange={handleArtworkUpload}
@@ -1174,7 +1502,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                 )}
               </div>
               <p className={`text-[11px] text-center ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
-                Embedded ID3 artwork is automatically extracted from ID3v2 APIC or MP4 covr atoms.
+                Right-click or press <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-black/10 dark:bg-white/10 border border-current">{isMac ? '⌘V' : 'Ctrl+V'}</kbd> to paste, drag & drop, or choose a file.
               </p>
             </div>
           )}
@@ -1324,6 +1652,122 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {/* Artwork Right-Click Context Menu */}
+      {artworkContextMenu && (
+        <div
+          ref={artworkMenuRef}
+          style={{ left: `${getArtworkMenuPosition().left}px`, top: `${getArtworkMenuPosition().top}px` }}
+          className={`fixed z-[70] w-52 rounded-lg shadow-2xl border py-1 text-xs select-none animate-in fade-in zoom-in-95 duration-100 ${
+            isLight
+              ? 'bg-white/95 backdrop-blur-md border-gray-300 text-gray-800 shadow-[0_10px_25px_rgba(0,0,0,0.15)]'
+              : 'bg-[#1e1e1e]/95 backdrop-blur-md border-[#3a3a3a] text-gray-200 shadow-[0_10px_30px_rgba(0,0,0,0.6)]'
+          }`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className={`px-3 py-1 mb-1 border-b text-[10px] ${
+            isLight ? 'border-gray-200 text-gray-500' : 'border-white/10 text-gray-400'
+          }`}>
+            <span className="font-bold uppercase tracking-wider block text-[9px] opacity-70">Album Artwork</span>
+          </div>
+
+          {/* Paste Artwork */}
+          <button
+            type="button"
+            onClick={() => {
+              setArtworkContextMenu(null);
+              handlePasteFromClipboardButton();
+            }}
+            className={`w-full px-3 py-1.5 flex items-center justify-between transition-colors ${
+              isLight ? 'hover:bg-indigo-600 hover:text-white' : 'hover:bg-indigo-600 hover:text-white'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <ClipboardPaste className="w-3.5 h-3.5" />
+              <span className="font-medium">Paste Artwork</span>
+            </div>
+            <span className="text-[10px] opacity-60 font-mono">{isMac ? '⌘V' : 'Ctrl+V'}</span>
+          </button>
+
+          {/* Copy Artwork (shown if artwork is present) */}
+          {customCoverUrl && (
+            <button
+              type="button"
+              onClick={() => {
+                setArtworkContextMenu(null);
+                handleCopyArtwork();
+              }}
+              className={`w-full px-3 py-1.5 flex items-center justify-between transition-colors ${
+                isLight ? 'hover:bg-indigo-600 hover:text-white' : 'hover:bg-indigo-600 hover:text-white'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Copy className="w-3.5 h-3.5" />
+                <span className="font-medium">Copy Artwork</span>
+              </div>
+              <span className="text-[10px] opacity-60 font-mono">{isMac ? '⌘C' : 'Ctrl+C'}</span>
+            </button>
+          )}
+
+          <div className={`my-1 border-t ${isLight ? 'border-gray-200' : 'border-white/10'}`} />
+
+          {/* Choose File... */}
+          <button
+            type="button"
+            onClick={() => {
+              setArtworkContextMenu(null);
+              artworkFileInputRef.current?.click();
+            }}
+            className={`w-full px-3 py-1.5 flex items-center gap-2 transition-colors ${
+              isLight ? 'hover:bg-indigo-600 hover:text-white' : 'hover:bg-indigo-600 hover:text-white'
+            }`}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span className="font-medium">Choose File...</span>
+          </button>
+
+          {/* Re-extract from ID3 (single track) */}
+          {singleTrack && (
+            <button
+              type="button"
+              disabled={isExtractingID3}
+              onClick={() => {
+                setArtworkContextMenu(null);
+                handleReExtractArtwork();
+              }}
+              className={`w-full px-3 py-1.5 flex items-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                isLight ? 'hover:bg-indigo-600 hover:text-white' : 'hover:bg-indigo-600 hover:text-white'
+              }`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isExtractingID3 ? 'animate-spin' : ''}`} />
+              <span className="font-medium">{isExtractingID3 ? 'Extracting...' : 'Extract from ID3'}</span>
+            </button>
+          )}
+
+          {/* Remove Artwork (if artwork is present) */}
+          {customCoverUrl && (
+            <>
+              <div className={`my-1 border-t ${isLight ? 'border-gray-200' : 'border-white/10'}`} />
+              <button
+                type="button"
+                onClick={() => {
+                  setArtworkContextMenu(null);
+                  setCustomCoverUrl('');
+                  setArtworkChanged(true);
+                  setArtworkRemoved(true);
+                  setIsDirty(true);
+                }}
+                className={`w-full px-3 py-1.5 flex items-center gap-2 transition-colors ${
+                  isLight ? 'text-red-600 hover:bg-red-600 hover:text-white' : 'text-red-400 hover:bg-red-600 hover:text-white'
+                }`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="font-medium">Remove Artwork</span>
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

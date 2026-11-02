@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
+import { platformInfo } from '../utils/platform';
 import { EqualizerBands, EQPreset } from '../types';
 import { EQ_PRESETS, audioEngine } from '../services/audioEngine';
 
@@ -55,7 +56,7 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({ isOpen, onClose 
     { key: 'b16k', label: '16K' },
   ];
 
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const isMac = platformInfo.isMacOS;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
@@ -65,16 +66,24 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({ isOpen, onClose 
         <div className="bg-[#242424] px-4 py-2.5 border-b border-[#333] flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-2">
             {isMac && (
-              <>
-                <span className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] cursor-pointer" onClick={onClose} />
-                <span className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123]" />
-                <span className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29]" />
-              </>
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer mr-1 shrink-0 transition-opacity"
+                title="Close"
+              >
+                <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+              </button>
             )}
-            <span className="text-xs font-bold font-sans text-gray-200 ml-2">Equalizer</span>
+            <span className="text-xs font-bold font-sans text-gray-200">Equalizer</span>
           </div>
           {!isMac && (
-            <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+              title="Close"
+            >
               <X className="w-4 h-4" />
             </button>
           )}

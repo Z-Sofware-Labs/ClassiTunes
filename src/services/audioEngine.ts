@@ -48,6 +48,7 @@ export class AudioEngine {
   private decks: [Deck | null, Deck | null] = [null, null];
   private activeIndex = 0;
   private currentVolume = 0.8;
+  private currentPlaybackRate = 1.0;
   private isInitialized = false;
   private normalizationEnabled = false;
   // Prevents the same codec-missing dialog from appearing more than once per session.
@@ -76,6 +77,15 @@ export class AudioEngine {
 
   constructor() {
     // Decks are created lazily after a user gesture so AudioContext creation remains autoplay-safe.
+    try {
+      const savedRate = localStorage.getItem('classitunes_playback_rate');
+      if (savedRate) {
+        const parsed = parseFloat(savedRate);
+        if (!isNaN(parsed) && parsed >= 0.25 && parsed <= 3.0) {
+          this.currentPlaybackRate = parsed;
+        }
+      }
+    } catch {}
   }
 
   // ── Native Rust Audio Polling & Helpers ─────────────────────────────────────
@@ -324,6 +334,8 @@ export class AudioEngine {
     // media loading on WebKitGTK (Linux). Windows/macOS WebViews are more lenient
     // with local protocol CORS, which is why the bug only manifests on Linux.
     audio.preload = 'auto';
+    audio.playbackRate = this.currentPlaybackRate;
+    (audio as any).preservesPitch = true;
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -569,6 +581,7 @@ export class AudioEngine {
     // On Linux/Tauri, convert the asset:// URL to a blob: URL to bypass the
     // WebKit2GTK GStreamer sandbox that blocks system codec plugins (error 4).
     const resolvedUrl = await this.resolveAudioUrl(url, filePathHint);
+    this.revokeStaleBlobUrls(resolvedUrl);
     // Pause current deck and reset before changing source
     deck.audio.pause();
     // For HTTP stream URLs (e.g. 127.0.0.1 stream server), crossOrigin MUST be 'anonymous'
@@ -621,6 +634,8 @@ export class AudioEngine {
 
     let finalUrl = resolvedUrl;
     try {
+      deck.audio.playbackRate = this.currentPlaybackRate;
+      (deck.audio as any).preservesPitch = true;
       await deck.audio.play();
       if ((import.meta as any).env?.DEV) {
         console.debug(
@@ -828,6 +843,29 @@ export class AudioEngine {
   }
 
   public getVolume(): number { return this.currentVolume; }
+
+  public setPlaybackRate(val: number): void {
+    const clamped = Math.max(0.25, Math.min(3.0, val));
+    this.currentPlaybackRate = clamped;
+    try {
+      localStorage.setItem('classitunes_playback_rate', String(clamped));
+    } catch {}
+    this.decks.forEach(deck => {
+      if (deck?.audio) {
+        deck.audio.playbackRate = clamped;
+        (deck.audio as any).preservesPitch = true;
+      }
+    });
+    if (this.isTauriEnv()) {
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('native_audio_set_playback_rate', { rate: clamped }))
+        .catch(() => {});
+    }
+  }
+
+  public getPlaybackRate(): number {
+    return this.currentPlaybackRate;
+  }
   public getCurrentTime(): number {
     if (this.usingNativeBackend) return this.nativeState.currentTime;
     return this.activeAudio?.currentTime || 0;

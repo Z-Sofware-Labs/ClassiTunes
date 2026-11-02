@@ -399,13 +399,15 @@ impl DeckDecoder {
         Ok(())
     }
 
-    /// Pull next stereo frame at output_sample_rate using fractional linear interpolation if rates differ
-    fn next_frame(&mut self, output_sample_rate: u32) -> Option<(f32, f32)> {
+    /// Pull next stereo frame at output_sample_rate using fractional linear interpolation if rates differ or speed != 1.0
+    fn next_frame(&mut self, output_sample_rate: u32, speed: f64) -> Option<(f32, f32)> {
         if self.fifo.len() < 2048 && !self.eof {
             let _ = self.refill_fifo(4096);
         }
 
-        if self.sample_rate == output_sample_rate || output_sample_rate == 0 {
+        let speed = if speed > 0.05 { speed } else { 1.0 };
+
+        if (speed - 1.0).abs() < 0.001 && (self.sample_rate == output_sample_rate || output_sample_rate == 0) {
             let sample = self.fifo.pop_front()?;
             let dt = 1.0 / output_sample_rate.max(1) as f64;
             self.current_time_secs += dt;
@@ -413,8 +415,8 @@ impl DeckDecoder {
         }
 
         // Fractional linear interpolation between source sample rate (e.g. 44100 Hz)
-        // and device output sample rate (e.g. 48000 Hz) so pitch and speed remain exact.
-        let step = self.sample_rate as f64 / output_sample_rate as f64;
+        // and device output sample rate (e.g. 48000 Hz), scaled by playback speed.
+        let step = (self.sample_rate as f64 / output_sample_rate.max(1) as f64) * speed;
 
         if self.prev_src_sample.is_none() {
             self.prev_src_sample = self.fifo.pop_front();
@@ -431,7 +433,7 @@ impl DeckDecoder {
         let out_r = prev.1 + (curr.1 - prev.1) * frac;
 
         let dt = 1.0 / output_sample_rate.max(1) as f64;
-        self.current_time_secs += dt;
+        self.current_time_secs += dt * speed;
 
         self.resample_pos += step;
         while self.resample_pos >= 1.0 {
@@ -468,6 +470,7 @@ pub struct EngineSharedState {
     crossfade: Option<CrossfadeState>,
     eq_chain: EqChain,
     volume: f32,
+    playback_speed: f64,
     normalization_enabled: bool,
     paused: bool,
     ended_flag: bool,
@@ -484,6 +487,7 @@ impl EngineSharedState {
             crossfade: None,
             eq_chain: EqChain::new(output_sample_rate as f32),
             volume: 0.8,
+            playback_speed: 1.0,
             normalization_enabled: false,
             paused: true,
             ended_flag: false,
@@ -502,6 +506,7 @@ impl EngineSharedState {
         }
 
         let sr = self.output_sample_rate;
+        let speed = self.playback_speed;
         self.eq_chain.set_sample_rate(sr as f32);
 
         for frame in out.chunks_mut(channels) {
@@ -516,7 +521,7 @@ impl EngineSharedState {
                 let fade_out_gain = 1.0 - progress;
                 xf.elapsed_frames += 1;
 
-                if let Some((ol, or)) = xf.outgoing_deck.next_frame(sr) {
+                if let Some((ol, or)) = xf.outgoing_deck.next_frame(sr, speed) {
                     let og = xf.outgoing_deck.normalization_gain * fade_out_gain;
                     l_mix += ol * og;
                     r_mix += or * og;
@@ -525,7 +530,7 @@ impl EngineSharedState {
             }
 
             if let Some(ref mut deck) = self.active_deck {
-                if let Some((al, ar)) = deck.next_frame(sr) {
+                if let Some((al, ar)) = deck.next_frame(sr, speed) {
                     let ag = deck.normalization_gain * fade_in_gain;
                     l_mix += al * ag;
                     r_mix += ar * ag;
@@ -870,6 +875,16 @@ pub fn native_audio_set_eq(gains: Option<Vec<f32>>, bands: Option<EqBandsPayload
                     b.b32, b.b64, b.b125, b.b250, b.b500, b.b1k, b.b2k, b.b4k, b.b8k, b.b16k,
                 ]);
             }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn native_audio_set_playback_rate(rate: f64) -> Result<(), String> {
+    if let Some(state_arc) = ENGINE_STATE.get() {
+        if let Ok(mut guard) = state_arc.lock() {
+            guard.playback_speed = rate.clamp(0.25, 3.0);
         }
     }
     Ok(())

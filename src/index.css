@@ -56,7 +56,7 @@
   animation: marquee 16s linear infinite;
 }
 
-/* Option 1: Classic iTunes Lucida Grande / SF Pro Display */
+/* Option 1: Classic Lucida Grande / SF Pro Display */
 .font-lcd-classic {
   font-family: "Lucida Grande", "Lucida Sans Unicode", -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -71,7 +71,7 @@
   font-family: "Share Tech Mono", "Courier New", Courier, monospace;
 }
 
-/* Flat vintage iTunes-inspired Scrubber Track and Small Circle Thumb */
+/* Flat vintage Scrubber Track and Small Circle Thumb */
 #track-scrubber {
   -webkit-appearance: none;
   appearance: none;

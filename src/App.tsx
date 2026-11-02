@@ -1,30 +1,32 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, Suspense, lazy } from 'react';
 import { flushSync } from 'react-dom';
-import { Track, Album, Playlist, ViewMode } from './types';
+import { Track, Album, Playlist, ViewMode, AppSettings, ThemePreference, OptionsTab, DEFAULT_APP_SETTINGS, AlbumSortField } from './types';
 import { INITIAL_TRACKS, INITIAL_PLAYLISTS } from './data/demoTracks';
 import { audioEngine } from './services/audioEngine';
 import { parseAudioFile, extractID3TagsFromTrack, getAudioDuration } from './services/metadataParser';
-import { HeaderBar } from './components/HeaderBar';
+import { HeaderBar, DeviceSyncProgressInfo } from './components/HeaderBar';
 import { Sidebar } from './components/Sidebar';
-import { ListView } from './components/ListView';
-import { AlbumGridView } from './components/AlbumGridView';
+import { ListView, ColumnId, DEFAULT_VISIBLE } from './components/ListView';
+import { AlbumGridView, sortAlbumsList } from './components/AlbumGridView';
 import { StatusBar } from './components/StatusBar';
-import { EqualizerModal } from './components/EqualizerModal';
-import { VisualizerModal } from './components/VisualizerModal';
-import { GetInfoModal } from './components/GetInfoModal';
-import { NewPlaylistModal } from './components/NewPlaylistModal';
-import { SmartPlaylistModal } from './components/SmartPlaylistModal';
-import { AboutModal } from './components/AboutModal';
-import { UpdateModal } from './components/UpdateModal';
-import { OptionsModal, AppSettings, DEFAULT_APP_SETTINGS, ThemePreference } from './components/OptionsModal';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks } from './utils/tauriWindow';
+import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
-import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata } from './services/mediaStorage';
-import { Upload, Music, Disc } from 'lucide-react';
+import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata, trimArtworkBlobs, internTrackStrings } from './services/mediaStorage';
+import { Upload, Music, Disc, X } from 'lucide-react';
+
+// Lazy-loaded dialogs and views to reduce initial bundle size, memory footprint, and startup latency
+const EqualizerModal = lazy(() => import('./components/EqualizerModal').then(m => ({ default: m.EqualizerModal })));
+const VisualizerModal = lazy(() => import('./components/VisualizerModal').then(m => ({ default: m.VisualizerModal })));
+const GetInfoModal = lazy(() => import('./components/GetInfoModal').then(m => ({ default: m.GetInfoModal })));
+const SmartPlaylistModal = lazy(() => import('./components/SmartPlaylistModal').then(m => ({ default: m.SmartPlaylistModal })));
+const AboutModal = lazy(() => import('./components/AboutModal').then(m => ({ default: m.AboutModal })));
+const OptionsModal = lazy(() => import('./components/OptionsModal').then(m => ({ default: m.OptionsModal })));
+const DeviceManagerView = lazy(() => import('./components/DeviceManagerView').then(m => ({ default: m.DeviceManagerView })));
 
 export default function App() {
+  const isMac = platformInfo.isMacOS;
   // State Initialization with LocalStorage Persistence
   const [tracks, setTracks] = useState<Track[]>(() => {
     try {
@@ -154,7 +156,244 @@ export default function App() {
   // Setup Window Bounds Persistence (Tauri / Web)
   useEffect(() => {
     setupWindowStatePersistence();
+    try {
+      localStorage.removeItem('classitunes_unchecked_tracks');
+    } catch (e) {}
   }, []);
+
+  // Shared visible columns state
+  const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(() => {
+    try {
+      const saved = localStorage.getItem('classitunes_visible_columns') || localStorage.getItem('itunes_visible_columns');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return DEFAULT_VISIBLE;
+  });
+
+  const handleVisibleColumnsChange = useCallback((cols: ColumnId[]) => {
+    setVisibleColumns(cols);
+    try {
+      localStorage.setItem('classitunes_visible_columns', JSON.stringify(cols));
+      window.dispatchEvent(new CustomEvent('classitunes:checked-changed'));
+    } catch (e) {}
+  }, []);
+
+  // Shared checked track IDs state (Track Checkbox column, classic style)
+  const [checkedTrackIds, setCheckedTrackIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('classitunes_checked_tracks');
+      if (saved !== null) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch (e) {}
+    // If not set yet, initial state is empty Set (0 checked until user checks songs or disables column)
+    return new Set<string>();
+  });
+
+  const handleToggleCheckTrack = useCallback((trackId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setCheckedTrackIds(prev => {
+      const next = new Set(prev);
+      if (next.has(trackId)) {
+        next.delete(trackId);
+      } else {
+        next.add(trackId);
+      }
+      try {
+        localStorage.setItem('classitunes_checked_tracks', JSON.stringify(Array.from(next)));
+        window.dispatchEvent(new CustomEvent('classitunes:checked-changed'));
+      } catch (err) {}
+      return next;
+    });
+  }, []);
+
+  const handleToggleCheckAll = useCallback(() => {
+    const allTrackIds = tracks.map(t => t.id);
+    const areAllCurrentlyChecked = allTrackIds.length > 0 && allTrackIds.every(id => checkedTrackIds.has(id));
+
+    setCheckedTrackIds(() => {
+      const next = areAllCurrentlyChecked ? new Set<string>() : new Set(allTrackIds);
+      try {
+        localStorage.setItem('classitunes_checked_tracks', JSON.stringify(Array.from(next)));
+        window.dispatchEvent(new CustomEvent('classitunes:checked-changed'));
+      } catch (err) {}
+      return next;
+    });
+  }, [tracks, checkedTrackIds]);
+
+  // Connected MP3 / iPod Storage Devices
+  const [connectedDevices, setConnectedDevices] = useState<Mp3Device[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<Mp3Device | null>(null);
+  const selectedDeviceRef = useRef<Mp3Device | null>(null);
+  selectedDeviceRef.current = selectedDevice;
+  const [deviceSyncProgress, setDeviceSyncProgress] = useState<DeviceSyncProgressInfo | null>(null);
+
+  // Sync Progress Event Listener for LCD Main Player Display
+  useEffect(() => {
+    const handleCustomSync = (e: Event) => {
+      const customEvent = e as CustomEvent<DeviceSyncProgressInfo | null>;
+      setDeviceSyncProgress(customEvent.detail);
+    };
+    window.addEventListener('classitunes:device-sync-progress', handleCustomSync);
+
+    let unlisten: (() => void) | null = null;
+    if (isTauri()) {
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        listen<SyncProgressEvent>('device-sync-progress', (event) => {
+          const p = event.payload;
+          setDeviceSyncProgress({
+            active: true,
+            current: p.currentIndex,
+            total: p.totalTracks,
+            title: p.currentTitle,
+            deviceName: selectedDeviceRef.current?.name || 'Device',
+            isComplete: p.isComplete,
+          });
+
+          if (p.isComplete) {
+            setTimeout(() => {
+              setDeviceSyncProgress(null);
+            }, 2500);
+          }
+        }).then(un => { unlisten = un; });
+      }).catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener('classitunes:device-sync-progress', handleCustomSync);
+      if (unlisten) unlisten();
+    };
+  }, [selectedDevice?.name]);
+
+  const refreshDevices = useCallback(async () => {
+    if (!isTauri()) return;
+    try {
+      const devs = await listConnectedDevices();
+      setConnectedDevices(prev => {
+        if (
+          prev.length === devs.length &&
+          prev.every((d, i) =>
+            d.id === devs[i].id &&
+            d.availableBytes === devs[i].availableBytes &&
+            d.totalBytes === devs[i].totalBytes &&
+            d.name === devs[i].name
+          )
+        ) {
+          return prev;
+        }
+        return devs;
+      });
+      setSelectedDevice(prev => {
+        if (!prev) return null;
+        const matching = devs.find(d => d.id === prev.id);
+        if (!matching) return null;
+        if (
+          matching.id === prev.id &&
+          matching.availableBytes === prev.availableBytes &&
+          matching.totalBytes === prev.totalBytes &&
+          matching.name === prev.name
+        ) {
+          return prev;
+        }
+        return matching;
+      });
+    } catch (err) {
+      console.warn('Failed to refresh connected devices:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    refreshDevices();
+    const interval = setInterval(refreshDevices, 4000);
+    return () => clearInterval(interval);
+  }, [refreshDevices]);
+
+  const handleEjectDevice = async (mountPoint: string) => {
+    await ejectDevice(mountPoint);
+    await refreshDevices();
+  };
+
+  const handleDropTracksToDevice = async (trackIds: string[], dev: Mp3Device) => {
+    setSelectedDevice(dev);
+    const droppedTracks = tracks.filter(t => trackIds.includes(t.id) && (Boolean(t.filePath) || Boolean(audioEngine.extractFsPathFromUrl(t.audioUrl))));
+    if (droppedTracks.length === 0) return;
+
+    setDeviceSyncProgress({
+      active: true,
+      current: 0,
+      total: droppedTracks.length,
+      title: droppedTracks[0]?.title || 'Starting transfer...',
+      deviceName: dev.name,
+      isComplete: false,
+    });
+
+    // Load device's configured naming template from localStorage
+    const savedTemplate = localStorage.getItem(`classitunes_device_template_${dev.mountPoint}`) || '{Artist}/{Album}/{TrackNumber} - {Title}';
+
+    // Read transcoding preferences
+    let transcodeEnabled = false;
+    let transcodeFormat = 'MP3';
+    let transcodeBitrate = 256;
+    let transcodeDownmixMono = false;
+    let transcodeDownsample44k = true;
+    try {
+      const stored = localStorage.getItem('classitunes_transcode_settings');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.transcodeEnabled !== undefined) transcodeEnabled = Boolean(parsed.transcodeEnabled);
+        if (parsed.transcodeFormat) transcodeFormat = parsed.transcodeFormat;
+        if (parsed.transcodeBitrate) transcodeBitrate = parseInt(parsed.transcodeBitrate, 10) || 256;
+        if (parsed.transcodeDownmixMono !== undefined) transcodeDownmixMono = Boolean(parsed.transcodeDownmixMono);
+        if (parsed.transcodeDownsample44k !== undefined) transcodeDownsample44k = Boolean(parsed.transcodeDownsample44k);
+      }
+    } catch (e) {}
+
+    try {
+      await syncTracksToDevice({
+        mountPoint: dev.mountPoint,
+        tracks: droppedTracks.map(t => ({
+          id: t.id,
+          filePath: t.filePath || audioEngine.extractFsPathFromUrl(t.audioUrl) || '',
+          title: t.title,
+          artist: t.artist,
+          albumArtist: t.albumArtist,
+          album: t.album,
+          genre: t.genre,
+          trackNumber: t.trackNumber,
+          year: t.year,
+          coverUrl: t.coverUrl,
+        })),
+        namingTemplate: savedTemplate,
+        syncPlaylists: false,
+        transcodeEnabled,
+        transcodeFormat,
+        transcodeBitrate,
+        transcodeDownmixMono,
+        transcodeDownsample44k,
+      });
+      setDeviceSyncProgress({
+        active: true,
+        current: droppedTracks.length,
+        total: droppedTracks.length,
+        title: 'Transfer complete',
+        deviceName: dev.name,
+        isComplete: true,
+      });
+      setTimeout(() => {
+        setDeviceSyncProgress(null);
+      }, 2500);
+      refreshDevices();
+    } catch (err) {
+      console.error('Failed to sync dropped tracks to device:', err);
+      setDeviceSyncProgress(null);
+    }
+  };
 
   // Tauri Native Drag-and-Drop listener
   useEffect(() => {
@@ -224,12 +463,62 @@ export default function App() {
     };
   }, [appSettings.organizeMusicFolders, appSettings.defaultMusicPath]);
 
+  const hasRestoredTracksRef = useRef(false);
+
   // Restore tracks from IndexedDB & LocalStorage
   // Artwork is loaded strictly on-demand when a song is played or selected
   useEffect(() => {
     async function restoreTracks() {
-      const dbTracks = await getTracksMetadata();
-      const restoredTracks: Track[] = Array.isArray(dbTracks) ? dbTracks : [];
+      try {
+        const dbTracks = await getTracksMetadata();
+        let restoredTracks: Track[] = Array.isArray(dbTracks) ? dbTracks : [];
+
+        // If native db was wiped or empty, attempt recovery from localStorage or legacy keys
+        if (restoredTracks.length === 0) {
+          try {
+            const saved = localStorage.getItem('classitunes_tracks') || localStorage.getItem('itunes_tracks');
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                const recovered = parsed.filter((t: Track) => !t.id.startsWith('demo_') && !t.id.startsWith('sample_'));
+                if (recovered.length > 0) {
+                  restoredTracks = recovered;
+                  // Restore into native db so future launches are instant
+                  saveTracksMetadata(recovered);
+                }
+              }
+            }
+          } catch (e) {}
+        }
+
+        // 1. Immediately display authoritative restored tracks on screen
+        if (restoredTracks.length > 0) {
+          setTracks(prev => {
+            const map = new Map<string, Track>();
+            restoredTracks.forEach((t: Track) => {
+              const interned = internTrackStrings(t);
+              const resolvedCover = interned.coverUrl ? (resolveNativeCoverUrlSync(interned.coverUrl) || interned.coverUrl) : interned.coverUrl;
+              const hydratedTrack = resolvedCover && resolvedCover !== interned.coverUrl ? { ...interned, coverUrl: resolvedCover } : interned;
+              if (resolvedCover) {
+                setCachedArtwork(t.id, resolvedCover);
+                const albumKey = (t.album || '').trim().toLowerCase();
+                if (albumKey && !getCachedArtwork(albumKey)) {
+                  setCachedArtwork(albumKey, resolvedCover);
+                }
+              }
+              map.set(t.id, hydratedTrack);
+            });
+            // Keep any runtime-added tracks in prev that are not in restoredTracks
+            prev.forEach(t => {
+              if (!map.has(t.id)) {
+                map.set(t.id, t);
+              }
+            });
+            return Array.from(map.values());
+          });
+        }
+
+      // 2. Asynchronously in the background, check if any albums need artwork backfilling
       if (isTauri() && restoredTracks.length > 0) {
         const albumsWithCover = new Set<string>();
         for (const t of restoredTracks) {
@@ -280,35 +569,64 @@ export default function App() {
             }
           })();
         }
-      }
 
-      setTracks(prev => {
-        const map = new Map<string, Track>();
-        prev.forEach(t => map.set(t.id, t));
-        if (Array.isArray(dbTracks)) {
-          dbTracks.forEach((t: Track) => {
-            if (true) {
-            const resolvedCover = t.coverUrl ? (resolveNativeCoverUrlSync(t.coverUrl) || t.coverUrl) : t.coverUrl;
-            const hydratedTrack = resolvedCover && resolvedCover !== t.coverUrl ? { ...t, coverUrl: resolvedCover } : t;
-            if (resolvedCover) {
-              setCachedArtwork(t.id, resolvedCover);
-              const albumKey = (t.album || '').trim().toLowerCase();
-              if (albumKey && !getCachedArtwork(albumKey)) {
-                setCachedArtwork(albumKey, resolvedCover);
+        // Background backfill for missing or default bitrate / sampleRate / duration
+        const tracksNeedingMetadata = restoredTracks.filter(
+          t => t.filePath && (!t.bitrate || !t.sampleRate || !t.duration || t.duration <= 0) && !t.id.startsWith('demo_') && !t.id.startsWith('sample_')
+        );
+        if (tracksNeedingMetadata.length > 0 && isTauri()) {
+          void (async () => {
+            const BATCH = 64;
+            const metaUpdateMap = new Map<string, { bitrate?: number; sampleRate?: number; duration?: number; format?: string }>();
+            for (let i = 0; i < tracksNeedingMetadata.length; i += BATCH) {
+              const slice = tracksNeedingMetadata.slice(i, i + BATCH);
+              const paths = slice.map(t => t.filePath!);
+              const metaMap = await readTauriMusicMetadataBatch(paths);
+              for (const tr of slice) {
+                if (tr.filePath && metaMap[tr.filePath]) {
+                  const m = metaMap[tr.filePath];
+                  if (m.bitrate || m.sampleRate || m.duration) {
+                    metaUpdateMap.set(tr.id, {
+                      bitrate: m.bitrate,
+                      sampleRate: m.sampleRate,
+                      duration: m.duration && m.duration > 0 ? Math.round(m.duration * 100) / 100 : undefined,
+                      format: m.format,
+                    });
+                  }
+                }
               }
             }
-            const existing = map.get(t.id);
-            if (!existing || (!existing.coverUrl && hydratedTrack.coverUrl)) {
-              map.set(t.id, hydratedTrack);
+            if (metaUpdateMap.size > 0) {
+              setTracks(prev => {
+                let changed = false;
+                const next = prev.map(t => {
+                  const update = metaUpdateMap.get(t.id);
+                  if (update) {
+                    changed = true;
+                    return {
+                      ...t,
+                      bitrate: update.bitrate ?? t.bitrate,
+                      sampleRate: update.sampleRate ?? t.sampleRate,
+                      duration: (t.duration && t.duration > 0) ? t.duration : (update.duration ?? t.duration),
+                      format: update.format ?? t.format,
+                    };
+                  }
+                  return t;
+                });
+                return changed ? next : prev;
+              });
             }
-            }
-          });
+          })();
         }
-        return Array.from(map.values());
-      });
+      }
+      } catch (err) {
+        console.error('Failed to restore tracks:', err);
+      }
     }
 
-    restoreTracks();
+    restoreTracks().finally(() => {
+      hasRestoredTracksRef.current = true;
+    });
   }, []);
 
   const [systemTheme, setSystemTheme] = useState<'dark' | 'light'>(() => {
@@ -450,6 +768,7 @@ export default function App() {
     }
     return 'lib_music';
   });
+  const [partyShuffleSeed, setPartyShuffleSeed] = useState<number>(() => Date.now());
   const [searchQuery, setSearchQuery] = useState<string>('');
   const handleClearSearch = useCallback(() => {
     setSearchQuery('');
@@ -466,13 +785,56 @@ export default function App() {
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
-  const handleTrackContextMenu = useCallback((track: Track, e: React.MouseEvent) => {
+  const [albumSortField, setAlbumSortField] = useState<AlbumSortField>(() => {
+    try {
+      const saved = localStorage.getItem('classitunes_album_sort');
+      if (saved === 'artist' || saved === 'genre' || saved === 'year' || saved === 'album') {
+        return saved;
+      }
+    } catch {}
+    return 'album';
+  });
+
+  const [isAlbumGrouped, setIsAlbumGrouped] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('classitunes_album_grouped') === 'true';
+    } catch {}
+    return false;
+  });
+
+  const handleAlbumSortChange = useCallback((field: AlbumSortField) => {
+    setAlbumSortField(field);
+    try {
+      localStorage.setItem('classitunes_album_sort', field);
+    } catch {}
+  }, []);
+
+  const handleToggleAlbumGrouped = useCallback((grouped: boolean) => {
+    setIsAlbumGrouped(grouped);
+    try {
+      localStorage.setItem('classitunes_album_grouped', String(grouped));
+    } catch {}
+  }, []);
+
+  const handleTrackContextMenu = useCallback((track: Track, e: React.MouseEvent, navigationTracks?: Track[]) => {
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
       track,
+      navigationTracks,
+    });
+  }, []);
+
+  const handleAlbumBackgroundContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      track: null,
+      isBackground: true,
     });
   }, []);
 
@@ -491,17 +853,21 @@ export default function App() {
   const [isEQOpen, setIsEQOpen] = useState<boolean>(false);
   const [isVisualizerOpen, setIsVisualizerOpen] = useState<boolean>(false);
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
-  const [isUpdateOpen, setIsUpdateOpen] = useState<boolean>(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState<boolean>(false);
+  const [optionsInitialTab, setOptionsInitialTab] = useState<OptionsTab>('general');
   const [editingTracks, setEditingTracks] = useState<Track[] | null>(null);
-  const handleOpenGetInfo = useCallback((trackOrTracks: Track | Track[]) => {
+  const [getInfoNavTracks, setGetInfoNavTracks] = useState<Track[] | undefined>(undefined);
+  const handleOpenGetInfo = useCallback((trackOrTracks: Track | Track[], navigationContextTracks?: Track[]) => {
     const list = Array.isArray(trackOrTracks) ? trackOrTracks : [trackOrTracks];
     if (list.length > 0) {
       setEditingTracks(list);
+      setGetInfoNavTracks(navigationContextTracks);
     }
   }, []);
-  const [isNewPlaylistOpen, setIsNewPlaylistOpen] = useState<boolean>(false);
+  // Playlist inline renaming state (shared with Sidebar for newly created playlists/folders)
+  const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
   const [isSmartPlaylistOpen, setIsSmartPlaylistOpen] = useState<boolean>(false);
+  const [smartPlaylistParentId, setSmartPlaylistParentId] = useState<string | undefined>(undefined);
   const [editingSmartPlaylist, setEditingSmartPlaylist] = useState<Playlist | null>(null);
 
   // Sidebar Resizing State
@@ -575,13 +941,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // CRITICAL: NEVER overwrite database before restoreTracks has finished!
+    if (!hasRestoredTracksRef.current) return;
+
+    const userTracksOnly = tracks.filter(t =>
+      !t.id.startsWith('demo_') && 
+      !t.id.startsWith('sample_') &&
+      !(t.audioUrl && t.audioUrl.startsWith('synth:'))
+    );
+
+    // If tracks is empty, NEVER wipe the user's persistent library
+    if (userTracksOnly.length === 0) return;
+
     const timer = setTimeout(() => {
       try {
-        const userTracksOnly = tracks.filter(t =>
-          !t.id.startsWith('demo_') && 
-          !t.id.startsWith('sample_') &&
-          !(t.audioUrl && t.audioUrl.startsWith('synth:'))
-        );
         const lightweightTracks = userTracksOnly.map(t => {
           const { file, ...rest } = t;
           let coverUrl = rest.coverUrl;
@@ -595,16 +968,16 @@ export default function App() {
           return { ...rest, coverUrl, audioUrl };
         });
 
-
-
-        if (!isTauri()) {
+        try {
           localStorage.setItem('classitunes_tracks', JSON.stringify(lightweightTracks));
+        } catch (e) {
+          console.warn('LocalStorage snapshot write skipped', e);
         }
         saveTracksMetadata(userTracksOnly);
       } catch (e) {
         console.warn('Failed to save tracks to localStorage/IndexedDB', e);
       }
-    }, 300);
+    }, 400);
     return () => clearTimeout(timer);
   }, [tracks]);
 
@@ -775,7 +1148,24 @@ export default function App() {
     // Filter by Playlist / System Library
     const activePlaylist = playlists.find(p => p.id === selectedPlaylistId);
     if (activePlaylist) {
-      if (activePlaylist.isSmart) {
+      if (activePlaylist.isFolder) {
+        // Collect all track IDs in this folder and any nested subfolders
+        const trackIdSet = new Set<string>();
+        const collectFolderTrackIds = (fId: string) => {
+          const children = playlists.filter(p => p.parentId === fId);
+          for (const ch of children) {
+            if (ch.isFolder) {
+              collectFolderTrackIds(ch.id);
+            } else if (ch.isSmart) {
+              evaluateSmartPlaylist(ch, tracks).forEach(t => trackIdSet.add(t.id));
+            } else {
+              ch.trackIds.forEach(id => trackIdSet.add(id));
+            }
+          }
+        };
+        collectFolderTrackIds(activePlaylist.id);
+        list = list.filter(t => trackIdSet.has(t.id));
+      } else if (activePlaylist.isSmart) {
         list = evaluateSmartPlaylist(activePlaylist, list);
       } else if (activePlaylist.systemType === 'all') {
         // All music
@@ -790,10 +1180,19 @@ export default function App() {
         const mergedMap: Map<string, Track> | null = playbackMeta.size > 0 ? new Map<string, Track>(list.map(t => [t.id, getDisplayTrack(t)])) : null;
         list = list.filter(t => (mergedMap ? (mergedMap.get(t.id)?.rating ?? t.rating) : t.rating) >= 4);
       } else if (activePlaylist.systemType === 'party_shuffle') {
-        // Keep as is
+        // Shuffled party mix
+        const shuffled = [...list];
+        let seed = partyShuffleSeed;
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          seed = (seed * 9301 + 49297) % 233280;
+          const j = Math.floor((seed / 233280) * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        list = shuffled;
       } else {
-        // Custom Playlist
-        list = list.filter(t => activePlaylist.trackIds.includes(t.id));
+        // Custom Playlist (O(1) Set lookup)
+        const idSet = new Set(activePlaylist.trackIds);
+        list = list.filter(t => idSet.has(t.id));
       }
     }
 
@@ -809,7 +1208,7 @@ export default function App() {
     }
 
     return list;
-  }, [tracks, playlists, selectedPlaylistId, searchQuery]);
+  }, [tracks, playlists, selectedPlaylistId, searchQuery, partyShuffleSeed]);
 
   // Merge playbackMeta into filteredTracks for the actual rendered views.
   // This is cheap: only touches the filtered subset, not the whole library.
@@ -818,34 +1217,63 @@ export default function App() {
     return filteredTracks.map(getDisplayTrack);
   }, [filteredTracks, getDisplayTrack]);
 
-  // Derived Albums for Album Grid View (Grouped strictly by Album Name)
+// Fast 64-bit deterministic string hash used for unique, collision-resistant album keys
+function hashString(str: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c64e6d;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+  // When leaving Album Grid View, proactively trim off-screen artwork blobs to free GPU/heap memory
+  useEffect(() => {
+    if (viewMode === 'list') {
+      trimArtworkBlobs(0);
+    }
+  }, [viewMode]);
+
+  // Derived Albums for Album Grid View
+  // Consolidation rule: tracks consolidate into the same album ONLY if all four attributes match:
+  // (1) Album Artist, (2) Album Name, (3) Year, (4) Album Cover.
+  // If any of these differ, they are treated as distinct albums.
   // NOTE: defined here (before refs) so albumsRef can reference it without use-before-declaration
   const albums = useMemo(() => {
+    if (viewMode !== 'grid') {
+      return [];
+    }
     const albumMap = new Map<string, Album>();
 
     filteredTracks.forEach(t => {
+      const albumArtist = (t.albumArtist || t.artist || 'Unknown Artist').trim();
       const albumName = (t.album || 'Unknown Album').trim();
-      const key = albumName.toLowerCase();
+      const year = t.year != null && !isNaN(t.year) && t.year > 0 ? String(t.year).trim() : '';
+      const rawCover = t.coverUrl ? (resolveNativeCoverUrlSync(t.coverUrl) || t.coverUrl) : (getCachedArtwork(t.id) || '');
+      const trimmedCover = rawCover.trim();
+      const coverKey = trimmedCover.length > 256 ? `${trimmedCover.slice(0, 128)}_${trimmedCover.length}_${hashString(trimmedCover)}` : trimmedCover;
+      const key = `${albumArtist.toLowerCase()}|#|${albumName.toLowerCase()}|#|${year}|#|${coverKey}`;
 
       if (!albumMap.has(key)) {
         albumMap.set(key, {
-          id: `album_${key}`,
+          id: `album_${hashString(key)}`,
           name: albumName,
-          artist: t.albumArtist || t.artist || 'Unknown Artist',
-          year: t.year,
-          coverUrl: t.coverUrl,
+          artist: albumArtist,
+          year: t.year && t.year > 0 ? t.year : undefined,
+          coverUrl: trimmedCover || undefined,
           tracks: [t],
         });
       } else {
         const existing = albumMap.get(key)!;
         existing.tracks.push(t);
-
-        // Keep a valid coverUrl if first track didn't have one
-        if (!existing.coverUrl && t.coverUrl) {
-          existing.coverUrl = t.coverUrl;
+        if (!existing.coverUrl && trimmedCover) {
+          existing.coverUrl = trimmedCover;
         }
-        // Keep year if first track didn't have one
-        if (!existing.year && t.year) {
+        if (!existing.year && t.year && t.year > 0) {
           existing.year = t.year;
         }
       }
@@ -853,15 +1281,15 @@ export default function App() {
 
     // Resolve final album artist & sort tracks properly by disc/track number
     albumMap.forEach((album) => {
-      const artists = new Set(album.tracks.map(t => (t.artist || '').trim()).filter(Boolean));
+      const trackArtists = new Set(album.tracks.map(t => (t.artist || '').trim()).filter(Boolean));
       const albumArtists = new Set(album.tracks.map(t => (t.albumArtist || '').trim()).filter(Boolean));
 
       if (albumArtists.size === 1 && albumArtists.values().next().value) {
         album.artist = albumArtists.values().next().value!;
-      } else if (artists.size > 1) {
+      } else if (trackArtists.size > 1 && albumArtists.size === 0) {
         album.artist = 'Various Artists';
-      } else if (artists.size === 1) {
-        album.artist = artists.values().next().value!;
+      } else if (trackArtists.size === 1) {
+        album.artist = trackArtists.values().next().value!;
       }
 
       // Sort tracks within the album by Disc Number then Track Number
@@ -878,8 +1306,8 @@ export default function App() {
       });
     });
 
-    return Array.from(albumMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [filteredTracks]);
+    return sortAlbumsList(Array.from(albumMap.values()), albumSortField);
+  }, [filteredTracks, albumSortField, viewMode]);
 
   // Determine active playback pool based on view mode and active queue
   // Use displayTracks (filteredTracks + playbackMeta) so next/prev operates on the same
@@ -924,7 +1352,7 @@ export default function App() {
     // At last track of current pool — in Albums view advance to the next album
     if (viewMode === 'grid' && albumPlayQueue) {
       const albumName = (currentTrack.album || '').trim().toLowerCase();
-      const albumIdx = albums.findIndex(a => a.name.trim().toLowerCase() === albumName);
+      const albumIdx = albums.findIndex(a => a.tracks.some(t => t.id === currentTrack.id) || (albumName && a.name.trim().toLowerCase() === albumName));
       if (albumIdx !== -1) {
         const nextIdx = albumIdx < albums.length - 1 ? albumIdx + 1 : 0;
         const nextAlbum = albums[nextIdx];
@@ -1026,7 +1454,39 @@ export default function App() {
         });
       }
     }
+    // Synchronize Windows Taskbar Thumbnail Toolbar
+    updateTaskbarThumbnailToolbar(isPlaying);
   }, [isPlaying, currentTrack]);
+
+  // Windows Taskbar Thumbnail Toolbar Action Listeners (VLC style)
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlistenPlayPause: (() => void) | null = null;
+    let unlistenPrev: (() => void) | null = null;
+    let unlistenNext: (() => void) | null = null;
+
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('taskbar-play-pause', () => {
+        togglePlayRef.current();
+      }).then(un => { unlistenPlayPause = un; });
+
+      listen('taskbar-prev', () => {
+        handlePrevTrackRef.current();
+      }).then(un => { unlistenPrev = un; });
+
+      listen('taskbar-next', () => {
+        handleNextTrackRef.current();
+      }).then(un => { unlistenNext = un; });
+    }).catch(err => {
+      console.warn('Failed to bind taskbar thumbnail listeners:', err);
+    });
+
+    return () => {
+      if (unlistenPlayPause) unlistenPlayPause();
+      if (unlistenPrev) unlistenPrev();
+      if (unlistenNext) unlistenNext();
+    };
+  }, []);
 
   // Synchronize actual audio duration whenever loaded in AudioEngine
   useEffect(() => {
@@ -1152,7 +1612,7 @@ export default function App() {
                 if (viewModeRef.current === 'grid' && albumPlayQueueRef.current) {
                   const albumName = (track.album || '').trim().toLowerCase();
                   const allAlbums = albumsRef.current;
-                  const albumIdx = allAlbums.findIndex(a => a.name.trim().toLowerCase() === albumName);
+                  const albumIdx = allAlbums.findIndex(a => a.tracks.some(t => t.id === track.id) || (albumName && a.name.trim().toLowerCase() === albumName));
                   if (albumIdx !== -1 && albumIdx < allAlbums.length - 1) {
                     const nextAlbum = allAlbums[albumIdx + 1];
                     setAlbumPlayQueue(nextAlbum.tracks);
@@ -1225,7 +1685,7 @@ export default function App() {
             // Albums view: advance to the first track of the next album
             const albumName = (currentTrack.album || '').trim().toLowerCase();
             const allAlbums = albumsRef.current;
-            const albumIdx = allAlbums.findIndex(a => a.name.trim().toLowerCase() === albumName);
+            const albumIdx = allAlbums.findIndex(a => a.tracks.some(t => t.id === currentTrack.id) || (albumName && a.name.trim().toLowerCase() === albumName));
             if (albumIdx !== -1) {
               if (albumIdx < allAlbums.length - 1) {
                 const nextAlbum = allAlbums[albumIdx + 1];
@@ -1268,7 +1728,23 @@ export default function App() {
   const trackCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     playlists.forEach(p => {
-      if (p.isSmart) {
+      if (p.isFolder) {
+        const trackIdSet = new Set<string>();
+        const collectFolderTrackIds = (fId: string) => {
+          const children = playlists.filter(c => c.parentId === fId);
+          for (const ch of children) {
+            if (ch.isFolder) {
+              collectFolderTrackIds(ch.id);
+            } else if (ch.isSmart) {
+              evaluateSmartPlaylist(ch, tracks).forEach(t => trackIdSet.add(t.id));
+            } else {
+              ch.trackIds.forEach(id => trackIdSet.add(id));
+            }
+          }
+        };
+        collectFolderTrackIds(p.id);
+        counts[p.id] = trackIdSet.size;
+      } else if (p.isSmart) {
         counts[p.id] = evaluateSmartPlaylist(p, tracks).length;
       } else if (p.systemType === 'all') {
         counts[p.id] = tracks.length;
@@ -1276,6 +1752,8 @@ export default function App() {
         counts[p.id] = tracks.length;
       } else if (p.systemType === 'top_rated') {
         counts[p.id] = tracks.filter(t => t.rating >= 4).length;
+      } else if (p.systemType === 'party_shuffle') {
+        counts[p.id] = tracks.length;
       } else {
         counts[p.id] = p.trackIds.length;
       }
@@ -1458,26 +1936,117 @@ export default function App() {
     setDeleteRequest(null);
   }, [deleteRequest, removeTracksFromLibrary]);
 
-  // Create Playlist
-  const handleCreatePlaylist = (name: string) => {
+  // Create Playlist & Folder Handlers (Inline creation with immediate inline rename highlight)
+  const handleCreatePlaylist = useCallback((parentId?: string) => {
+    let baseName = 'untitled playlist';
+    let name = baseName;
+    let counter = 2;
+    const existingNames = new Set(playlists.map(p => p.name.toLowerCase()));
+    while (existingNames.has(name.toLowerCase())) {
+      name = `${baseName} ${counter++}`;
+    }
+
     const newPl: Playlist = {
       id: `pl_${Date.now()}`,
       name,
+      parentId,
       systemType: 'user',
       trackIds: [],
     };
-    setPlaylists(prev => [...prev, newPl]);
+
+    setPlaylists(prev => {
+      let updated = [...prev, newPl];
+      if (parentId) {
+        updated = updated.map(p => p.id === parentId ? { ...p, collapsed: false } : p);
+      }
+      return updated;
+    });
+    setSelectedDevice(null);
     setSelectedPlaylistId(newPl.id);
-  };
+    setEditingPlaylistId(newPl.id);
+    return newPl.id;
+  }, [playlists]);
+
+  const handleCreatePlaylistFolder = useCallback((parentId?: string) => {
+    let baseName = 'untitled folder';
+    let name = baseName;
+    let counter = 2;
+    const existingNames = new Set(playlists.map(p => p.name.toLowerCase()));
+    while (existingNames.has(name.toLowerCase())) {
+      name = `${baseName} ${counter++}`;
+    }
+
+    const newFolder: Playlist = {
+      id: `folder_${Date.now()}`,
+      name,
+      isFolder: true,
+      parentId,
+      collapsed: false,
+      systemType: 'user',
+      trackIds: [],
+    };
+
+    setPlaylists(prev => {
+      let updated = [...prev, newFolder];
+      if (parentId) {
+        updated = updated.map(p => p.id === parentId ? { ...p, collapsed: false } : p);
+      }
+      return updated;
+    });
+    setSelectedDevice(null);
+    setSelectedPlaylistId(newFolder.id);
+    setEditingPlaylistId(newFolder.id);
+    return newFolder.id;
+  }, [playlists]);
+
+  // Global Keyboard Shortcuts for Playlist/Folder creation (Cmd+N / Ctrl+N)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        const activePl = playlists.find(p => p.id === selectedPlaylistId);
+        const parentId = activePl?.isFolder ? activePl.id : activePl?.parentId;
+        if (e.shiftKey) {
+          handleCreatePlaylistFolder(parentId);
+        } else {
+          handleCreatePlaylist(parentId);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [playlists, selectedPlaylistId, handleCreatePlaylist, handleCreatePlaylistFolder]);
+
+  const handleToggleFolderCollapse = useCallback((folderId: string) => {
+    setPlaylists(prev => prev.map(p => p.id === folderId ? { ...p, collapsed: !p.collapsed } : p));
+  }, []);
+
+  const handleMovePlaylistToFolder = useCallback((playlistId: string, parentId?: string) => {
+    setPlaylists(prev => {
+      let updated = prev.map(p => p.id === playlistId ? { ...p, parentId } : p);
+      if (parentId) {
+        updated = updated.map(p => p.id === parentId ? { ...p, collapsed: false } : p);
+      }
+      return updated;
+    });
+  }, []);
 
   // Smart Playlist Handlers
-  const handleCreateSmartPlaylist = () => {
+  const handleCreateSmartPlaylist = (parentId?: string) => {
     setEditingSmartPlaylist(null);
+    setSmartPlaylistParentId(parentId);
     setIsSmartPlaylistOpen(true);
   };
 
   const handleEditSmartPlaylist = (playlist: Playlist) => {
     setEditingSmartPlaylist(playlist);
+    setSmartPlaylistParentId(playlist.parentId);
     setIsSmartPlaylistOpen(true);
   };
 
@@ -1489,6 +2058,7 @@ export default function App() {
       const newPl: Playlist = {
         id: smartData.id || `smart_pl_${Date.now()}`,
         name: smartData.name || 'Smart Playlist',
+        parentId: smartPlaylistParentId,
         isSmart: true,
         matchType: smartData.matchType || 'all',
         rules: smartData.rules || [],
@@ -1496,14 +2066,25 @@ export default function App() {
         systemType: 'user',
         trackIds: [],
       };
-      setPlaylists(prev => [...prev, newPl]);
+      setPlaylists(prev => {
+        let updated = [...prev, newPl];
+        if (smartPlaylistParentId) {
+          updated = updated.map(p => p.id === smartPlaylistParentId ? { ...p, collapsed: false } : p);
+        }
+        return updated;
+      });
       setSelectedPlaylistId(newPl.id);
     }
   };
 
-  // Delete Playlist
+  // Delete Playlist / Folder
   const handleDeletePlaylist = (playlistId: string) => {
-    setPlaylists(prev => prev.filter(p => p.id !== playlistId));
+    setPlaylists(prev => {
+      // If deleting a folder, un-nest its children back to root level so playlists are preserved
+      return prev
+        .map(p => p.parentId === playlistId ? { ...p, parentId: undefined } : p)
+        .filter(p => p.id !== playlistId);
+    });
     if (selectedPlaylistId === playlistId) {
       setSelectedPlaylistId('lib_music');
     }
@@ -1520,14 +2101,52 @@ export default function App() {
   };
 
   const handleDropTracksToPlaylist = (trackIds: string[], playlistId: string) => {
-    setPlaylists(prev => prev.map(p => {
-      if (p.id === playlistId) {
-        const unique = Array.from(new Set([...p.trackIds, ...trackIds]));
-        return { ...p, trackIds: unique };
+    setPlaylists(prev => {
+      const target = prev.find(p => p.id === playlistId);
+      if (!target) return prev;
+
+      if (target.isFolder) {
+        // If the folder contains an existing standard playlist, add to the first one
+        const childPl = prev.find(p => p.parentId === target.id && !p.isFolder && !p.isSmart);
+        if (childPl) {
+          return prev.map(p => {
+            if (p.id === childPl.id) {
+              const unique = Array.from(new Set([...p.trackIds, ...trackIds]));
+              return { ...p, trackIds: unique };
+            }
+            if (p.id === target.id) {
+              return { ...p, collapsed: false };
+            }
+            return p;
+          });
+        } else {
+          // If the folder has no standard playlist, create a new playlist inside this folder
+          const newChild: Playlist = {
+            id: `pl_${Date.now()}`,
+            name: 'New Playlist',
+            parentId: target.id,
+            systemType: 'user',
+            trackIds: trackIds,
+          };
+          return [...prev.map(p => p.id === target.id ? { ...p, collapsed: false } : p), newChild];
+        }
       }
-      return p;
-    }));
+
+      return prev.map(p => {
+        if (p.id === playlistId) {
+          const unique = Array.from(new Set([...p.trackIds, ...trackIds]));
+          return { ...p, trackIds: unique };
+        }
+        return p;
+      });
+    });
   };
+
+  const handleReorderPlaylists = useCallback((reordered: Playlist[]) => {
+    setPlaylists(reordered);
+  }, []);
+
+
 
   // Helper to extract files from dropped items (handles directories recursively)
   const extractFilesFromDataTransfer = async (dataTransfer: DataTransfer): Promise<File[]> => {
@@ -1611,7 +2230,10 @@ export default function App() {
   };
 
   // Import Audio Files (Fast Concurrent Batching)
-  const handleImportFiles = async (inputFiles: FileList | File[] | string[] | null | undefined) => {
+  const handleImportFiles = async (
+    inputFiles: FileList | File[] | string[] | null | undefined,
+    targetPlaylistId?: string
+  ) => {
     if (!inputFiles) return;
 
     // Immediately trigger importing UI so screen doesn't freeze
@@ -1831,16 +2453,68 @@ export default function App() {
       let finalSortedLibrary: Track[] = [];
       setTracks(prev => {
         const map = new Map<string, Track>();
-        [...allNewlyParsed, ...prev].forEach(t => map.set(t.id, t));
+        [...allNewlyParsed, ...prev].forEach(t => map.set(t.id, internTrackStrings(t)));
         const merged = Array.from(map.values());
         merged.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base', numeric: true }));
         finalSortedLibrary = merged;
         return merged;
       });
 
+      if (targetPlaylistId) {
+        const newIds = allNewlyParsed.map(t => t.id);
+        if (targetPlaylistId === 'new') {
+          const first = allNewlyParsed[0];
+          const plName = first?.artist && first.artist !== 'Unknown Artist' ? `${first.artist} Selection` : `New Playlist ${Date.now().toString().slice(-4)}`;
+          const newPl: Playlist = {
+            id: `pl_${Date.now()}`,
+            name: plName,
+            trackIds: newIds,
+            systemType: 'user',
+          };
+          setPlaylists(prev => [...prev, newPl]);
+          setSelectedDevice(null);
+          setSelectedPlaylistId(newPl.id);
+        } else {
+          setPlaylists(prev => {
+            const target = prev.find(p => p.id === targetPlaylistId);
+            if (target?.isFolder) {
+              const childPl = prev.find(p => p.parentId === target.id && !p.isFolder && !p.isSmart);
+              if (childPl) {
+                return prev.map(p => {
+                  if (p.id === childPl.id) {
+                    const unique = Array.from(new Set([...p.trackIds, ...newIds]));
+                    return { ...p, trackIds: unique };
+                  }
+                  if (p.id === target.id) {
+                    return { ...p, collapsed: false };
+                  }
+                  return p;
+                });
+              } else {
+                const newChild: Playlist = {
+                  id: `pl_${Date.now()}`,
+                  name: 'New Playlist',
+                  parentId: target.id,
+                  systemType: 'user',
+                  trackIds: newIds,
+                };
+                return [...prev.map(p => p.id === target.id ? { ...p, collapsed: false } : p), newChild];
+              }
+            }
+            return prev.map(p => {
+              if (p.id === targetPlaylistId) {
+                const unique = Array.from(new Set([...p.trackIds, ...newIds]));
+                return { ...p, trackIds: unique };
+              }
+              return p;
+            });
+          });
+        }
+      }
+
       // Once music is imported, play the top song (index 0 of sorted library)
       const topSong = finalSortedLibrary[0] || allNewlyParsed[0];
-      if (topSong) {
+      if (topSong && !currentTrack) {
         playTrack(topSong);
       }
     }
@@ -2249,10 +2923,9 @@ export default function App() {
   // Global Drag and Drop Event Handlers
   const handleDragOverApp = (e: React.DragEvent) => {
     e.preventDefault();
-    if (isTauri()) return;
     if (e.dataTransfer && e.dataTransfer.types) {
       const types = Array.from(e.dataTransfer.types);
-      if (types.includes('application/itunes-tracks')) {
+      if (types.includes('application/classiplayer-tracks') || types.includes('application/classiplayer-playlist-id')) {
         return;
       }
       if (types.includes('Files')) {
@@ -2262,7 +2935,6 @@ export default function App() {
   };
 
   const handleDragLeaveApp = (e: React.DragEvent) => {
-    if (isTauri()) return;
     if (e.clientX === 0 || e.clientY === 0) {
       setIsDraggingOverApp(false);
     }
@@ -2270,12 +2942,11 @@ export default function App() {
 
   const handleDropApp = async (e: React.DragEvent) => {
     e.preventDefault();
-    if (isTauri()) return;
     setIsDraggingOverApp(false);
 
     if (e.dataTransfer) {
       const types = Array.from(e.dataTransfer.types || []);
-      if (types.includes('application/itunes-tracks')) {
+      if (types.includes('application/classiplayer-tracks') || types.includes('application/classiplayer-playlist-id')) {
         return;
       }
 
@@ -2343,6 +3014,9 @@ export default function App() {
         onUpdateRating={handleUpdateRating}
         theme={theme}
         onToggleTheme={toggleTheme}
+        deviceSyncProgress={deviceSyncProgress}
+        importProgress={importProgress}
+        isImporting={isImportingFiles}
       />
 
       {/* Main Content Area: Sidebar + Active View */}
@@ -2350,14 +3024,28 @@ export default function App() {
         <div style={{ width: `${sidebarWidth}px` }} className="flex shrink-0 h-full relative">
           <Sidebar
             playlists={playlists}
-            selectedPlaylistId={selectedPlaylistId}
-            onSelectPlaylist={setSelectedPlaylistId}
-            onCreatePlaylist={() => setIsNewPlaylistOpen(true)}
-            onCreateSmartPlaylist={handleCreateSmartPlaylist}
+            selectedPlaylistId={selectedDevice ? '' : selectedPlaylistId}
+            onSelectPlaylist={(id) => {
+              setSelectedDevice(null);
+              setSelectedPlaylistId(id);
+              if (id === 'lib_party_shuffle') {
+                setPartyShuffleSeed(Date.now());
+              }
+            }}
+            onCreatePlaylist={handleCreatePlaylist}
+            onCreatePlaylistFolder={handleCreatePlaylistFolder}
+            onCreatePlaylistInFolder={(pId) => handleCreatePlaylist(pId)}
+            onCreateSmartPlaylistInFolder={(pId) => handleCreateSmartPlaylist(pId)}
+            editingPlaylistId={editingPlaylistId}
+            onSetEditingPlaylistId={setEditingPlaylistId}
+            onToggleFolderCollapse={handleToggleFolderCollapse}
+            onMovePlaylistToFolder={handleMovePlaylistToFolder}
+            onCreateSmartPlaylist={() => handleCreateSmartPlaylist()}
             onEditSmartPlaylist={handleEditSmartPlaylist}
             onRenamePlaylist={handleRenamePlaylist}
             onDeletePlaylist={handleDeletePlaylist}
             onDropTracksToPlaylist={handleDropTracksToPlaylist}
+            onReorderPlaylists={handleReorderPlaylists}
             onImportFiles={handleImportFiles}
             onStartImporting={handleStartImporting}
             trackCounts={trackCounts}
@@ -2367,6 +3055,11 @@ export default function App() {
             onOpenGetInfo={handleOpenGetInfo}
             theme={theme}
             sidebarWidth={sidebarWidth}
+            devices={connectedDevices}
+            selectedDeviceId={selectedDevice?.id}
+            onSelectDevice={(dev) => setSelectedDevice(dev)}
+            onEjectDevice={handleEjectDevice}
+            onDropTracksToDevice={handleDropTracksToDevice}
           />
           {/* Resize handle */}
           <div
@@ -2379,44 +3072,81 @@ export default function App() {
         <main className={`flex-1 flex flex-col overflow-hidden relative transition-colors duration-200 ${
           theme === 'light' ? 'bg-white' : 'bg-[#121212]'
         }`}>
-          {viewMode === 'list' && (
-            <ListView
-              tracks={displayTracks}
-              currentTrack={currentTrack}
-              isPlaying={isPlaying}
-              playlists={playlists}
-              onPlayTrack={playTrack}
-              onUpdateRating={handleUpdateRating}
-              onOpenGetInfo={handleOpenGetInfo}
-              onDeleteTrack={handleDeleteTrack}
-              onDeleteTracks={handleDeleteTracks}
-              onAddTrackToPlaylist={handleAddTrackToPlaylist}
-              onTrackContextMenu={handleTrackContextMenu}
-              onImportFiles={handleImportFiles}
-              onStartImporting={handleStartImporting}
-              theme={theme}
-              selectedTrackIds={selectedTrackIds}
-              onSelectionChange={handleSelectionChange}
-              searchQuery={searchQuery}
-              onClearSearch={handleClearSearch}
-            />
-          )}
+          {selectedDevice ? (
+            <Suspense fallback={null}>
+              <DeviceManagerView
+                device={selectedDevice}
+                tracks={tracks}
+                playlists={playlists}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                onPlayTrack={playTrack}
+                onTogglePlay={togglePlay}
+                onOpenGetInfo={handleOpenGetInfo}
+                onTrackContextMenu={handleTrackContextMenu}
+                onAddTrackToPlaylist={handleAddTrackToPlaylist}
+                onEjectDevice={handleEjectDevice}
+                onRefreshDevices={refreshDevices}
+                theme={theme}
+                checkedTrackIds={checkedTrackIds}
+                isCheckboxColumnVisible={visibleColumns.includes('checkbox')}
+              />
+            </Suspense>
+          ) : (
+            <>
+              {viewMode === 'list' && (
+                <ListView
+                  tracks={displayTracks}
+                  currentTrack={currentTrack}
+                  isPlaying={isPlaying}
+                  playlists={playlists}
+                  onPlayTrack={playTrack}
+                  onUpdateRating={handleUpdateRating}
+                  onOpenGetInfo={handleOpenGetInfo}
+                  onDeleteTrack={handleDeleteTrack}
+                  onDeleteTracks={handleDeleteTracks}
+                  onAddTrackToPlaylist={handleAddTrackToPlaylist}
+                  onTrackContextMenu={handleTrackContextMenu}
+                  onImportFiles={handleImportFiles}
+                  onStartImporting={handleStartImporting}
+                  theme={theme}
+                  selectedTrackIds={selectedTrackIds}
+                  onSelectionChange={handleSelectionChange}
+                  searchQuery={searchQuery}
+                  onClearSearch={handleClearSearch}
+                  checkedTrackIds={checkedTrackIds}
+                  onToggleCheckTrack={handleToggleCheckTrack}
+                  onToggleCheckAll={handleToggleCheckAll}
+                  visibleColumns={visibleColumns}
+                  onVisibleColumnsChange={handleVisibleColumnsChange}
+                  selectedPlaylist={playlists.find(p => p.id === selectedPlaylistId) || null}
+                />
+              )}
 
-          {viewMode === 'grid' && (
-            <AlbumGridView
-              albums={albums}
-              currentTrack={currentTrack}
-              isPlaying={isPlaying}
-              onPlayTrack={playTrack}
-              onUpdateRating={handleUpdateRating}
-              onOpenGetInfo={handleOpenGetInfo}
-              onTrackContextMenu={handleTrackContextMenu}
-              onImportFiles={handleImportFiles}
-              onStartImporting={handleStartImporting}
-              theme={theme}
-              searchQuery={searchQuery}
-              onClearSearch={handleClearSearch}
-            />
+              {viewMode === 'grid' && (
+                <AlbumGridView
+                  albums={albums}
+                  currentTrack={currentTrack}
+                  isPlaying={isPlaying}
+                  onPlayTrack={playTrack}
+                  onUpdateRating={handleUpdateRating}
+                  onOpenGetInfo={handleOpenGetInfo}
+                  onTrackContextMenu={handleTrackContextMenu}
+                  onBackgroundContextMenu={handleAlbumBackgroundContextMenu}
+                  onImportFiles={handleImportFiles}
+                  onStartImporting={handleStartImporting}
+                  theme={theme}
+                  searchQuery={searchQuery}
+                  onClearSearch={handleClearSearch}
+                  selectedTrackIds={selectedTrackIds}
+                  onSelectionChange={handleSelectionChange}
+                  albumSortField={albumSortField}
+                  onAlbumSortChange={handleAlbumSortChange}
+                  isAlbumGrouped={isAlbumGrouped}
+                  onToggleAlbumGrouped={handleToggleAlbumGrouped}
+                />
+              )}
+            </>
           )}
         </main>
       </div>
@@ -2428,6 +3158,8 @@ export default function App() {
         isPlaying={isPlaying}
         currentTrack={currentTrack}
         playlists={playlists}
+        devices={connectedDevices}
+        onImportToDevice={handleDropTracksToDevice}
         onPlayTrack={playTrack}
         onTogglePlay={togglePlay}
         onOpenGetInfo={handleOpenGetInfo}
@@ -2439,6 +3171,33 @@ export default function App() {
         selectedTrackIds={selectedTrackIds}
         tracks={displayTracks}
         theme={theme}
+        isDeviceContext={!!selectedDevice}
+        isAlbumView={viewMode === 'grid'}
+        albumSortField={albumSortField}
+        onAlbumSortChange={handleAlbumSortChange}
+        isAlbumGrouped={isAlbumGrouped}
+        onToggleAlbumGrouped={handleToggleAlbumGrouped}
+        onPlayAllAlbums={() => {
+          if (albums.length > 0 && albums[0].tracks.length > 0) {
+            const allTracks = albums.flatMap(a => a.tracks);
+            playTrack(allTracks[0], allTracks);
+          }
+        }}
+        onShuffleAllAlbums={() => {
+          if (albums.length > 0) {
+            const allTracks = albums.flatMap(a => a.tracks);
+            const shuffled = [...allTracks].sort(() => Math.random() - 0.5);
+            if (shuffled.length > 0) {
+              playTrack(shuffled[0], shuffled);
+            }
+          }
+        }}
+        onSelectAllAlbums={() => {
+          if (viewMode === 'grid') {
+            const allTrackIds = albums.flatMap(a => a.tracks.map(t => t.id));
+            handleSelectionChange(allTrackIds);
+          }
+        }}
       />
 
       {/* Bottom Status Bar */}
@@ -2448,8 +3207,10 @@ export default function App() {
         onOpenEQ={() => setIsEQOpen(true)}
         onOpenVisualizer={() => setIsVisualizerOpen(true)}
         onOpenAbout={() => setIsAboutOpen(true)}
-        onOpenOptions={() => setIsOptionsOpen(true)}
-        onOpenUpdate={() => setIsUpdateOpen(true)}
+        onOpenOptions={() => {
+          setOptionsInitialTab('general');
+          setIsOptionsOpen(true);
+        }}
         isShuffle={isShuffle}
         onToggleShuffle={() => setIsShuffle(!isShuffle)}
         repeatMode={repeatMode}
@@ -2459,14 +3220,13 @@ export default function App() {
           else setRepeatMode('off');
         }}
         theme={theme}
-        onToggleTheme={toggleTheme}
       />
 
       {/* Global Drag & Drop Overlay */}
       {isDraggingOverApp && (
         <div className="absolute inset-0 z-50 bg-indigo-950/90 backdrop-blur-md flex flex-col items-center justify-center text-white p-8 pointer-events-none animate-in fade-in duration-150">
           <Upload className="w-16 h-16 mb-4 text-indigo-400 animate-bounce" />
-          <h2 className="text-2xl font-bold tracking-tight">Drop Audio Files to Import into ClassiTunes</h2>
+          <h2 className="text-2xl font-bold tracking-tight">Drop Audio Files to Import into Library</h2>
           <p className="text-sm text-indigo-200 mt-2">Supports MP3, WAV, FLAC, M4A, AAC, OGG files</p>
         </div>
       )}
@@ -2516,23 +3276,101 @@ export default function App() {
         </div>
       )}
 
-      {/* Dialog Modals */}
-      <EqualizerModal
-        isOpen={isEQOpen}
-        onClose={() => setIsEQOpen(false)}
-      />
+      {/* Dialog Modals (Lazy Loaded on demand with zero memory overhead when idle) */}
+      <Suspense fallback={null}>
+        {isEQOpen && (
+          <EqualizerModal
+            isOpen={isEQOpen}
+            onClose={() => setIsEQOpen(false)}
+          />
+        )}
 
-      <VisualizerModal
-        isOpen={isVisualizerOpen}
-        onClose={() => setIsVisualizerOpen(false)}
-        trackTitle={currentTrack?.title}
-        artistName={currentTrack?.artist}
-      />
+        {isVisualizerOpen && (
+          <VisualizerModal
+            isOpen={isVisualizerOpen}
+            onClose={() => setIsVisualizerOpen(false)}
+            trackTitle={currentTrack?.title}
+            artistName={currentTrack?.artist}
+          />
+        )}
+
+        {!!editingTracks && editingTracks.length > 0 && (
+          <GetInfoModal
+            track={editingTracks?.[0] || null}
+            tracks={editingTracks}
+            navigationTracks={getInfoNavTracks || displayTracks}
+            isOpen={!!editingTracks && editingTracks.length > 0}
+            onClose={() => {
+              setEditingTracks(null);
+              setGetInfoNavTracks(undefined);
+            }}
+            onSaveTrack={handleSaveTrack}
+            onSaveTracks={handleSaveTracks}
+            theme={theme}
+          />
+        )}
+
+        {isSmartPlaylistOpen && (
+          <SmartPlaylistModal
+            isOpen={isSmartPlaylistOpen}
+            onClose={() => setIsSmartPlaylistOpen(false)}
+            onSave={handleSaveSmartPlaylist}
+            initialPlaylist={editingSmartPlaylist}
+          />
+        )}
+
+        {isAboutOpen && (
+          <AboutModal
+            isOpen={isAboutOpen}
+            onClose={() => setIsAboutOpen(false)}
+            theme={theme}
+          />
+        )}
+
+        {isOptionsOpen && (
+          <OptionsModal
+            isOpen={isOptionsOpen}
+            onClose={() => setIsOptionsOpen(false)}
+            initialTab={optionsInitialTab}
+            settings={appSettings}
+            onSave={handleSaveSettings}
+            theme={theme}
+            trackCount={tracks.length}
+            onScanMusic={handleScanMusic}
+            onRefreshLibrary={handleRefreshLibrary}
+            onResetLibrary={handleResetLibrary}
+          />
+        )}
+      </Suspense>
 
       {deleteRequest && (
         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => finishDeleteRequest('cancel')}>
           <div className={`w-full max-w-md rounded-xl border shadow-2xl p-5 ${theme === 'light' ? 'bg-white border-gray-300 text-gray-900' : 'bg-[#1c1c1c] border-[#3a3a3a] text-gray-100'}`} onClick={e => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold mb-2">Delete {deleteRequest.ids.length === 1 ? 'Song' : 'Songs'}</h3>
+            <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-black/10 dark:border-white/10">
+              <div className="flex items-center gap-2">
+                {isMac && (
+                  <button
+                    type="button"
+                    onClick={() => finishDeleteRequest('cancel')}
+                    className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] hover:bg-[#ff3b30] flex items-center justify-center group cursor-pointer mr-1 shrink-0 transition-opacity"
+                    title="Cancel"
+                  >
+                    <X className="w-2 h-2 text-black/70 opacity-0 group-hover:opacity-100" />
+                  </button>
+                )}
+                <h3 className="text-sm font-semibold">Delete {deleteRequest.ids.length === 1 ? 'Song' : 'Songs'}</h3>
+              </div>
+              {!isMac && (
+                <button
+                  type="button"
+                  onClick={() => finishDeleteRequest('cancel')}
+                  className={`p-1 rounded transition-colors ${theme === 'light' ? 'hover:bg-gray-200 text-gray-500' : 'hover:bg-white/10 text-gray-400 hover:text-white'}`}
+                  title="Cancel"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
             <p className={`text-xs leading-5 mb-4 ${theme === 'light' ? 'text-gray-600' : 'text-gray-400'}`}>
               What would you like to delete? You can remove the {deleteRequest.ids.length === 1 ? 'song' : 'songs'} from the ClassiTunes library only, or delete the physical file{deleteRequest.ids.length === 1 ? '' : 's'} as well.
             </p>
@@ -2544,55 +3382,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      <GetInfoModal
-        track={editingTracks?.[0] || null}
-        tracks={editingTracks}
-        navigationTracks={displayTracks}
-        isOpen={!!editingTracks && editingTracks.length > 0}
-        onClose={() => setEditingTracks(null)}
-        onSaveTrack={handleSaveTrack}
-        onSaveTracks={handleSaveTracks}
-        theme={theme}
-      />
-
-      <NewPlaylistModal
-        isOpen={isNewPlaylistOpen}
-        onClose={() => setIsNewPlaylistOpen(false)}
-        onCreate={handleCreatePlaylist}
-      />
-
-      <SmartPlaylistModal
-        isOpen={isSmartPlaylistOpen}
-        onClose={() => setIsSmartPlaylistOpen(false)}
-        onSave={handleSaveSmartPlaylist}
-        initialPlaylist={editingSmartPlaylist}
-      />
-
-      <AboutModal
-        isOpen={isAboutOpen}
-        onClose={() => setIsAboutOpen(false)}
-        onOpenUpdate={() => setIsUpdateOpen(true)}
-        theme={theme}
-      />
-
-      <UpdateModal
-        isOpen={isUpdateOpen}
-        onClose={() => setIsUpdateOpen(false)}
-        theme={theme}
-      />
-
-      <OptionsModal
-        isOpen={isOptionsOpen}
-        onClose={() => setIsOptionsOpen(false)}
-        settings={appSettings}
-        onSave={handleSaveSettings}
-        theme={theme}
-        trackCount={tracks.length}
-        onScanMusic={handleScanMusic}
-        onRefreshLibrary={handleRefreshLibrary}
-        onResetLibrary={handleResetLibrary}
-      />
     </div>
   );
 }
