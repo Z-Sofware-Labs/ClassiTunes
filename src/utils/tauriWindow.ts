@@ -1244,6 +1244,8 @@ export interface SyncTrackItem {
   year?: number;
   coverUrl?: string;
   lyrics?: string;
+  duration?: number;
+  bitrate?: number;
 }
 
 export interface DeviceSyncPayload {
@@ -1273,6 +1275,7 @@ export interface SyncProgressEvent {
   bytesCopied: number;
   totalBytes: number;
   isComplete: boolean;
+  syncedTrack?: DeviceTrackItem | null;
 }
 
 export async function listConnectedDevices(): Promise<Mp3Device[]> {

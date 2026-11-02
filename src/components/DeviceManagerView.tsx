@@ -154,15 +154,15 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     } catch (e) {}
   }, [device.mountPoint]);
 
-  const fetchContents = async () => {
-    setIsLoadingContents(true);
+  const fetchContents = async (showSpinner = true) => {
+    if (showSpinner) setIsLoadingContents(true);
     try {
       const items = await listDeviceContents(device.mountPoint);
       setDeviceContents(items);
     } catch (err) {
       console.warn('Failed to load device contents:', err);
     } finally {
-      setIsLoadingContents(false);
+      if (showSpinner) setIsLoadingContents(false);
     }
   };
 
@@ -344,21 +344,45 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     let unlisten: (() => void) | null = null;
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<SyncProgressEvent>('device-sync-progress', (event) => {
-        setSyncProgress(event.payload);
+        const payload = event.payload;
+        setSyncProgress(payload);
+        if (!payload.isComplete) {
+          setIsSyncing(true);
+        }
+
+        // Live real-time addition to Contents tab as each track finishes syncing!
+        if (payload.syncedTrack) {
+          const trackItem = payload.syncedTrack;
+          setDeviceContents(prev => {
+            const existingIdx = prev.findIndex(item => 
+              item.fullPath === trackItem.fullPath ||
+              (item.fileName.toLowerCase() === trackItem.fileName.toLowerCase() &&
+               (item.title || '').trim().toLowerCase() === (trackItem.title || '').trim().toLowerCase())
+            );
+            if (existingIdx >= 0) {
+              const updated = [...prev];
+              updated[existingIdx] = trackItem;
+              return updated;
+            }
+            return [...prev, trackItem];
+          });
+        }
+
         window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', {
           detail: {
             active: true,
-            current: event.payload.currentIndex,
-            total: event.payload.totalTracks,
-            title: event.payload.currentTitle,
+            current: payload.currentIndex,
+            total: payload.totalTracks,
+            title: payload.currentTitle,
             deviceName: device.name,
-            isComplete: event.payload.isComplete,
+            isComplete: payload.isComplete,
           }
         }));
 
-        if (event.payload.isComplete) {
+        if (payload.isComplete) {
           setIsSyncing(false);
-          fetchContents();
+          setIsStopping(false);
+          fetchContents(false);
           setTimeout(() => {
             window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', { detail: null }));
           }, 2500);
@@ -369,7 +393,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     return () => {
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [device.mountPoint, device.name]);
 
   const handleStartSync = async () => {
     if (syncMode === 'playlists' && selectedPlaylistIds.length === 0) {
@@ -436,6 +460,8 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
           year: t.year,
           coverUrl: cover,
           lyrics: t.lyrics,
+          duration: t.duration,
+          bitrate: t.bitrate,
         };
       })
     );
@@ -456,7 +482,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     try {
       const res = await syncTracksToDevice(payload);
       setSyncResult(res);
-      fetchContents();
+      fetchContents(false);
       if (onRefreshDevices) onRefreshDevices();
     } catch (err: any) {
       setErrorMessage(err?.message || String(err));
@@ -1018,6 +1044,34 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         {/* TAB 2: CONTENTS (Reusing the full native ClassiTunes ListView!) */}
         {activeTab === 'contents' && (
           <div className="flex-1 min-h-0 flex flex-col h-full">
+            {/* Live Progress Banner during Active Transfer */}
+            {isSyncing && syncProgress && (
+              <div className={`px-4 py-2 border-b flex items-center justify-between shrink-0 shadow-sm transition-colors ${
+                isLight ? 'bg-blue-50/90 border-blue-200 text-blue-900' : 'bg-blue-950/50 border-blue-500/30 text-blue-200'
+              }`}>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-500 shrink-0" />
+                  <span className="text-xs font-semibold shrink-0">
+                    Transferring to {device.name} ({syncProgress.currentIndex} of {syncProgress.totalTracks}):
+                  </span>
+                  <span className="text-xs truncate opacity-80 font-mono">
+                    {syncProgress.currentTitle}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0 ml-4">
+                  <div className="w-28 bg-black/20 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-blue-500 h-full transition-all duration-300 rounded-full"
+                      style={{ width: `${Math.round((syncProgress.currentIndex / Math.max(1, syncProgress.totalTracks)) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] font-mono font-medium opacity-75">
+                    {Math.round((syncProgress.currentIndex / Math.max(1, syncProgress.totalTracks)) * 100)}%
+                  </span>
+                </div>
+              </div>
+            )}
+
             {isLoadingContents ? (
               <div className="p-16 text-center text-xs text-gray-400 flex flex-col items-center justify-center gap-2">
                 <RefreshCw className="w-6 h-6 animate-spin text-blue-500" />
@@ -1025,11 +1079,23 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
               </div>
             ) : deviceTracks.length === 0 ? (
               <div className="p-16 text-center text-xs text-gray-400 flex flex-col items-center justify-center gap-2">
-                <FileAudio className="w-12 h-12 opacity-30 text-gray-400" />
-                <span className="text-sm font-semibold">No audio tracks found on this device.</span>
-                <span className="text-xs opacity-70">
-                  Switch to the Summary tab to sync your music library, or drag and drop songs/playlists directly onto this device in the sidebar.
-                </span>
+                {isSyncing ? (
+                  <>
+                    <RefreshCw className="w-8 h-8 animate-spin text-blue-500 mb-2" />
+                    <span className="text-sm font-semibold">Transferring songs to {device.name}...</span>
+                    <span className="text-xs opacity-70">
+                      {syncProgress ? `${syncProgress.currentIndex} of ${syncProgress.totalTracks} completed` : 'Preparing transfer...'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <FileAudio className="w-12 h-12 opacity-30 text-gray-400" />
+                    <span className="text-sm font-semibold">No audio tracks found on this device.</span>
+                    <span className="text-xs opacity-70">
+                      Switch to the Summary tab to sync your music library, or drag and drop songs/playlists directly onto this device in the sidebar.
+                    </span>
+                  </>
+                )}
               </div>
             ) : (
               <div className="flex-1 min-h-0 flex flex-col h-full">

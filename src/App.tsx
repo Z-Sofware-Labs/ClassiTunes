@@ -398,6 +398,8 @@ export default function App() {
           trackNumber: t.trackNumber,
           year: t.year,
           coverUrl: t.coverUrl || getCachedArtwork(t.id) || (t.album ? getCachedArtwork(t.album.trim().toLowerCase()) : undefined),
+          duration: t.duration,
+          bitrate: t.bitrate,
         })),
         namingTemplate: savedTemplate,
         syncPlaylists: false,

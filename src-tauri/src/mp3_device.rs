@@ -51,6 +51,10 @@ pub struct SyncTrackItem {
     pub cover_url: Option<String>,
     #[serde(default)]
     pub lyrics: Option<String>,
+    #[serde(default)]
+    pub duration: Option<f64>,
+    #[serde(default)]
+    pub bitrate: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +81,8 @@ pub struct SyncProgressEvent {
     pub bytes_copied: u64,
     pub total_bytes: u64,
     pub is_complete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synced_track: Option<DeviceTrackItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1166,6 +1172,12 @@ pub fn sync_tracks_to_device_impl(
                 if enriched_track.lyrics.is_none() {
                     enriched_track.lyrics = src_meta.lyrics;
                 }
+                if enriched_track.duration.is_none() {
+                    enriched_track.duration = src_meta.duration;
+                }
+                if enriched_track.bitrate.is_none() {
+                    enriched_track.bitrate = src_meta.bitrate;
+                }
             }
         }
 
@@ -1301,7 +1313,29 @@ pub fn sync_tracks_to_device_impl(
             }
         }
 
-        synced_relative_paths.push(rel_path_for_list);
+        synced_relative_paths.push(rel_path_for_list.clone());
+
+        let item_size = fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(src_size);
+        let synced_item = DeviceTrackItem {
+            file_name: dest_path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| track_title.clone()),
+            relative_path: rel_path_for_list.to_string_lossy().to_string(),
+            full_path: dest_path.to_string_lossy().to_string(),
+            size_bytes: item_size,
+            format: ext.to_string(),
+            title: enriched_track.title.clone(),
+            artist: enriched_track.artist.clone(),
+            album: enriched_track.album.clone(),
+            genre: enriched_track.genre.clone(),
+            year: enriched_track.year,
+            track_number: enriched_track.track_number,
+            duration_secs: enriched_track.duration,
+            cover_url: enriched_track.cover_url.clone(),
+            bitrate: enriched_track.bitrate,
+            sample_rate: None,
+        };
 
         let _ = app.emit(
             "device-sync-progress",
@@ -1312,6 +1346,7 @@ pub fn sync_tracks_to_device_impl(
                 bytes_copied: total_bytes_transferred,
                 total_bytes: total_bytes_transferred,
                 is_complete: false,
+                synced_track: Some(synced_item),
             },
         );
     }
@@ -1351,6 +1386,7 @@ pub fn sync_tracks_to_device_impl(
             bytes_copied: total_bytes_transferred,
             total_bytes: total_bytes_transferred,
             is_complete: true,
+            synced_track: None,
         },
     );
 
