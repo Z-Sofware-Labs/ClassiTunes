@@ -91,7 +91,12 @@ export function getInitialColumnOrder(storageScope: string = 'classitunes'): Col
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed) && parsed.length > 0) {
         const validSet = new Set<string>(ALL_COLUMN_IDS);
-        const filtered = parsed.filter((id: any): id is ColumnId => validSet.has(id));
+        let filtered = parsed.filter((id: any): id is ColumnId => validSet.has(id));
+        if (filtered.includes('checkbox')) {
+          filtered = ['checkbox', ...filtered.filter(id => id !== 'checkbox')];
+        } else {
+          filtered = ['checkbox', ...filtered];
+        }
         ALL_COLUMN_IDS.forEach(id => {
           if (!filtered.includes(id)) filtered.push(id);
         });
@@ -104,7 +109,12 @@ export function getInitialColumnOrder(storageScope: string = 'classitunes'): Col
       const parsed = JSON.parse(savedVisible);
       if (Array.isArray(parsed) && parsed.length > 0) {
         const validSet = new Set<string>(ALL_COLUMN_IDS);
-        const order: ColumnId[] = parsed.filter((id: any): id is ColumnId => validSet.has(id));
+        let order: ColumnId[] = parsed.filter((id: any): id is ColumnId => validSet.has(id));
+        if (order.includes('checkbox')) {
+          order = ['checkbox', ...order.filter(id => id !== 'checkbox')];
+        } else {
+          order = ['checkbox', ...order];
+        }
         ALL_COLUMN_IDS.forEach(id => {
           if (!order.includes(id)) order.push(id);
         });
@@ -770,9 +780,11 @@ const ListViewComponent: React.FC<ListViewProps> = ({
           // If the user's saved list does not have 'checkbox' recorded yet (e.g. from older version),
           // ensure 'checkbox' is placed at the front so it is visible by default
           const validIds = ALL_COLUMNS.map(c => c.id);
-          const filtered = parsed.filter((id: any) => validIds.includes(id));
+          let filtered = parsed.filter((id: any) => validIds.includes(id));
           if (!filtered.includes('checkbox')) {
-            filtered.unshift('checkbox');
+            filtered = ['checkbox', ...filtered];
+          } else if (filtered[0] !== 'checkbox') {
+            filtered = ['checkbox', ...filtered.filter(id => id !== 'checkbox')];
           }
           return filtered;
         }
@@ -1148,6 +1160,9 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       // Re-enabling column: restore it at its exact relative position from columnOrder
       const visibleSet = new Set([...visibleColumns, colId]);
       updated = columnOrder.filter(id => visibleSet.has(id));
+      if (colId === 'checkbox' && updated[0] !== 'checkbox') {
+        updated = ['checkbox', ...updated.filter(id => id !== 'checkbox')];
+      }
     }
 
     setVisibleColumns(updated);

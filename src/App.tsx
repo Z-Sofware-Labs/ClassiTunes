@@ -161,14 +161,23 @@ export default function App() {
     } catch (e) {}
   }, []);
 
-  // Shared visible columns state
+  // Shared visible columns state (Checkbox column is enabled by default as leftmost column)
   const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(() => {
     try {
       const saved = localStorage.getItem('classitunes_visible_columns') || localStorage.getItem('itunes_visible_columns');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          let cols: ColumnId[] = [...parsed];
+          if (!cols.includes('checkbox')) {
+            cols = ['checkbox', ...cols];
+          } else if (cols[0] !== 'checkbox') {
+            cols = ['checkbox', ...cols.filter(id => id !== 'checkbox')];
+          }
+          try {
+            localStorage.setItem('classitunes_visible_columns', JSON.stringify(cols));
+          } catch (e) {}
+          return cols;
         }
       }
     } catch (e) {}
