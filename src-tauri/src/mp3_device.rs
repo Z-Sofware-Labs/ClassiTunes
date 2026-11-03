@@ -20,6 +20,989 @@ fn device_track_cache() -> &'static Mutex<HashMap<(String, u64), DeviceTrackItem
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(target_os = "windows")]
+fn mtp_devices_cache() -> &'static Mutex<Option<(std::time::Instant, Vec<Mp3Device>)>> {
+    static CACHE: OnceLock<Mutex<Option<(std::time::Instant, Vec<Mp3Device>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn is_mtp_mount(path_or_mount: &str) -> bool {
+    let trimmed = path_or_mount
+        .trim()
+        .trim_matches('"')
+        .trim_start_matches("dev_");
+    let upper = trimmed.to_ascii_uppercase();
+    upper.starts_with("MTP:\\")
+        || upper.starts_with("MTP:/")
+        || trimmed.starts_with("::{")
+        || trimmed.contains("#{6ac27878-a6fa-4155-ba85-f98f491d4f33}")
+}
+
+#[cfg(target_os = "windows")]
+fn parse_mtp_mount(mount_point: &str) -> Option<(String, String)> {
+    let clean = mount_point
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\");
+    let stripped = if let Some(s) = clean.strip_prefix("MTP:\\") {
+        s
+    } else if let Some(s) = clean.strip_prefix("mtp:\\") {
+        s
+    } else {
+        return None;
+    };
+    let mut parts = stripped.splitn(3, '\\');
+    let dev_name = parts.next()?.trim().to_string();
+    let storage_name = parts.next().unwrap_or("Internal storage").trim().to_string();
+    if dev_name.is_empty() {
+        return None;
+    }
+    Some((
+        dev_name,
+        if storage_name.is_empty() {
+            "Internal storage".to_string()
+        } else {
+            storage_name
+        },
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn parse_mtp_file_path(file_path: &str) -> Option<(String, String, String)> {
+    let clean = file_path
+        .trim()
+        .trim_matches('"')
+        .trim_start_matches("dev_")
+        .replace('/', "\\");
+    let stripped = if let Some(s) = clean.strip_prefix("MTP:\\") {
+        s
+    } else if let Some(s) = clean.strip_prefix("mtp:\\") {
+        s
+    } else {
+        return None;
+    };
+    let mut parts = stripped.splitn(3, '\\');
+    let dev_name = parts.next()?.trim().to_string();
+    let storage_name = parts.next()?.trim().to_string();
+    let rel_path = parts.next()?.trim_matches('\\').to_string();
+    if dev_name.is_empty() || storage_name.is_empty() || rel_path.is_empty() {
+        return None;
+    }
+    Some((dev_name, storage_name, rel_path))
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMtpStorageEntry {
+    device_name: String,
+    #[allow(dead_code)]
+    device_type: String,
+    device_path: String,
+    storage_name: String,
+    total_bytes: u64,
+    available_bytes: u64,
+}
+
+#[cfg(target_os = "windows")]
+fn list_windows_mtp_devices() -> Vec<Mp3Device> {
+    if let Ok(guard) = mtp_devices_cache().lock() {
+        if let Some((ts, ref cached)) = *guard {
+            if ts.elapsed() < std::time::Duration::from_secs(4) {
+                return cached.clone();
+            }
+        }
+    }
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let ps_script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$sh = New-Object -ComObject Shell.Application
+$items = @($sh.Namespace(17).Items() | Where-Object {
+  -not $_.IsFileSystem -and $_.IsFolder -and (
+    $_.Path -match 'usb#|ms_comp_mtp|6ac27878-a6fa-4155-ba85-f98f491d4f33' -or
+    $_.Type -match 'Phone|Player|Portable'
+  )
+})
+$out = @()
+foreach ($d in $items) {
+  $subs = @($d.GetFolder.Items())
+  if ($subs.Count -gt 0) {
+    foreach ($s in $subs) {
+      $cap = 0; $free = 0
+      $c = $s.ExtendedProperty('System.Capacity')
+      $f = $s.ExtendedProperty('System.FreeSpace')
+      if ($c) { $cap = [uint64]$c }
+      if ($f) { $free = [uint64]$f }
+      $out += [PSCustomObject]@{
+        deviceName = [string]$d.Name
+        deviceType = [string]$d.Type
+        devicePath = [string]$d.Path
+        storageName = [string]$s.Name
+        totalBytes = $cap
+        availableBytes = $free
+      }
+    }
+  } else {
+    $out += [PSCustomObject]@{
+      deviceName = [string]$d.Name
+      deviceType = [string]$d.Type
+      devicePath = [string]$d.Path
+      storageName = 'Internal storage'
+      totalBytes = [uint64]0
+      availableBytes = [uint64]0
+    }
+  }
+}
+if ($out.Count -eq 0) {
+  Write-Output '[]'
+} else {
+  ConvertTo-Json -InputObject @($out) -Compress
+}
+"#;
+
+    let mut result = Vec::new();
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let parsed: Vec<RawMtpStorageEntry> = if stdout.starts_with('[') {
+                serde_json::from_str(&stdout).unwrap_or_default()
+            } else if stdout.starts_with('{') {
+                serde_json::from_str::<RawMtpStorageEntry>(&stdout)
+                    .map(|single| vec![single])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            for entry in &parsed {
+                let same_dev_storages = parsed
+                    .iter()
+                    .filter(|e| e.device_name == entry.device_name)
+                    .count();
+                let lower_name = entry.device_name.to_lowercase();
+                let lower_path = entry.device_path.to_lowercase();
+
+                let (category, fs_label, base_desc) = if lower_name.contains("iphone")
+                    || lower_name.contains("ipad")
+                    || lower_path.contains("vid_05ac")
+                {
+                    (
+                        DeviceCategory::Iphone,
+                        "MTP / Apple Mobile Device",
+                        "Apple iOS Portable Device",
+                    )
+                } else if lower_name.contains("walkman")
+                    || lower_name.contains("sansa")
+                    || lower_name.contains("fiio")
+                    || lower_name.contains("zune")
+                    || lower_name.contains("zen")
+                {
+                    (
+                        DeviceCategory::Mp3Player,
+                        "MTP Audio Player",
+                        "MTP Digital Audio Player",
+                    )
+                } else {
+                    (
+                        DeviceCategory::Android,
+                        "MTP (Android)",
+                        "Android Smartphone / MTP Media Device",
+                    )
+                };
+
+                let mount_str = format!("MTP:\\{}\\{}", entry.device_name, entry.storage_name);
+                let display_name = if same_dev_storages > 1 {
+                    format!("{} - {}", entry.device_name, entry.storage_name)
+                } else {
+                    match category {
+                        DeviceCategory::Android => format!("{} (Android)", entry.device_name),
+                        DeviceCategory::Iphone => format!("{} (iPhone)", entry.device_name),
+                        _ => entry.device_name.clone(),
+                    }
+                };
+
+                let model_desc = if entry.total_bytes == 0 {
+                    format!(
+                        "{} ({}) — Unlock phone & allow File Transfer",
+                        base_desc, entry.storage_name
+                    )
+                } else {
+                    format!("{} ({})", base_desc, entry.storage_name)
+                };
+
+                result.push(Mp3Device {
+                    id: mount_str.clone(),
+                    name: display_name,
+                    mount_point: mount_str,
+                    total_bytes: entry.total_bytes,
+                    available_bytes: entry.available_bytes,
+                    used_bytes: entry.total_bytes.saturating_sub(entry.available_bytes),
+                    filesystem: fs_label.to_string(),
+                    category,
+                    is_ipod: false,
+                    is_audio_player: true,
+                    model_description: Some(model_desc),
+                });
+            }
+        }
+    }
+
+    if let Ok(mut guard) = mtp_devices_cache().lock() {
+        *guard = Some((std::time::Instant::now(), result.clone()));
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn list_mtp_device_contents(mount_point: &str) -> Vec<DeviceTrackItem> {
+    let Some((dev_name, storage_name)) = parse_mtp_mount(mount_point) else {
+        return Vec::new();
+    };
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let ps_script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$devName = $env:CT_MTP_DEV
+$storName = $env:CT_MTP_STOR
+$sh = New-Object -ComObject Shell.Application
+$d = $sh.Namespace(17).Items() | Where-Object { $_.Name -eq $devName } | Select-Object -First 1
+if (-not $d) { Write-Output '[]'; exit 0 }
+$s = $d.GetFolder.Items() | Where-Object { $_.Name -eq $storName } | Select-Object -First 1
+if (-not $s) { $s = @($d.GetFolder.Items())[0] }
+if (-not $s) { Write-Output '[]'; exit 0 }
+
+$validExts = @('mp3','m4a','flac','wav','aac','ogg','wma','aiff','alac')
+$results = [System.Collections.Generic.List[object]]::new()
+
+function Scan-MtpFolder($folderItem, $relPrefix, $depth) {
+  if ($depth -gt 5 -or -not $folderItem) { return }
+  $f = $folderItem.GetFolder
+  if (-not $f) { return }
+  foreach ($it in @($f.Items())) {
+    $name = [string]$it.Name
+    if ([string]::IsNullOrEmpty($name) -or $name.StartsWith('.')) { continue }
+    if ($it.IsFolder) {
+      $nextRel = if ($relPrefix) { "$relPrefix\$name" } else { $name }
+      Scan-MtpFolder $it $nextRel ($depth + 1)
+    } else {
+      $fullFileName = [string]$it.ExtendedProperty('System.FileName')
+      if ([string]::IsNullOrEmpty($fullFileName)) { $fullFileName = $name }
+      $extProp = [string]$it.ExtendedProperty('System.FileExtension')
+      if (-not [string]::IsNullOrEmpty($extProp) -and -not $fullFileName.ToLower().EndsWith($extProp.ToLower())) {
+        $fullFileName = "$fullFileName$extProp"
+      }
+      $dotIdx = $fullFileName.LastIndexOf('.')
+      if ($dotIdx -lt 0) { continue }
+      $ext = $fullFileName.Substring($dotIdx + 1).ToLower()
+      if ($validExts -notcontains $ext) { continue }
+
+      $relPath = if ($relPrefix) { "$relPrefix\$fullFileName" } else { $fullFileName }
+      $fullMtpPath = "MTP:\$devName\$storName\$relPath"
+      $sz = $it.ExtendedProperty('System.Size')
+      $sizeBytes = if ($sz) { [uint64]$sz } else { [uint64]0 }
+
+      $title = [string]$it.ExtendedProperty('System.Title')
+      if ([string]::IsNullOrWhiteSpace($title)) { $title = $fullFileName.Substring(0, $dotIdx) }
+
+      $artistRaw = $it.ExtendedProperty('System.Music.Artist')
+      $artist = if ($artistRaw -is [array]) { ($artistRaw -join ', ') } else { [string]$artistRaw }
+
+      $album = [string]$it.ExtendedProperty('System.Music.AlbumTitle')
+
+      $genreRaw = $it.ExtendedProperty('System.Music.Genre')
+      $genre = if ($genreRaw -is [array]) { ($genreRaw -join ', ') } else { [string]$genreRaw }
+
+      $yr = $it.ExtendedProperty('System.Media.Year')
+      $year = if ($yr) { [int]$yr } else { $null }
+
+      $trk = $it.ExtendedProperty('System.Music.TrackNumber')
+      $trackNumber = if ($trk) { [int]$trk } else { $null }
+
+      $durRaw = $it.ExtendedProperty('System.Media.Duration')
+      $durationSecs = if ($durRaw) { [math]::Round(([double]$durRaw / 10000000.0), 2) } else { $null }
+
+      $brRaw = $it.ExtendedProperty('System.Audio.EncodingBitrate')
+      $bitrate = if ($brRaw) { [uint32][math]::Round(([double]$brRaw / 1000.0)) } else { $null }
+
+      $results.Add([PSCustomObject]@{
+        fileName = $fullFileName
+        relativePath = $relPath
+        fullPath = $fullMtpPath
+        sizeBytes = $sizeBytes
+        format = $ext.ToUpper()
+        title = $title
+        artist = if ([string]::IsNullOrWhiteSpace($artist)) { $null } else { $artist }
+        album = if ([string]::IsNullOrWhiteSpace($album)) { $null } else { $album }
+        genre = if ([string]::IsNullOrWhiteSpace($genre)) { $null } else { $genre }
+        year = $year
+        trackNumber = $trackNumber
+        durationSecs = $durationSecs
+        coverUrl = $null
+        bitrate = $bitrate
+        sampleRate = $null
+      })
+    }
+  }
+}
+
+$rootFolder = $s.GetFolder
+if ($rootFolder) {
+  foreach ($rootSub in @($rootFolder.Items())) {
+    $rn = [string]$rootSub.Name
+    if ($rootSub.IsFolder -and ($rn -ieq 'Music' -or $rn -ieq 'Audio' -or $rn -ieq 'MP3' -or $rn -ieq 'Podcasts')) {
+      Scan-MtpFolder $rootSub $rn 0
+    }
+  }
+}
+
+if ($results.Count -eq 0) {
+  Write-Output '[]'
+} else {
+  ConvertTo-Json -InputObject $results.ToArray() -Compress
+}
+"#;
+
+    let mut items: Vec<DeviceTrackItem> = Vec::new();
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
+        .env("CT_MTP_DEV", &dev_name)
+        .env("CT_MTP_STOR", &storage_name)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            items = if stdout.starts_with('[') {
+                serde_json::from_str(&stdout).unwrap_or_default()
+            } else if stdout.starts_with('{') {
+                serde_json::from_str::<DeviceTrackItem>(&stdout)
+                    .map(|single| vec![single])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        }
+    }
+
+    // Enrich with any cached artwork/metadata from device_track_cache
+    if let Ok(guard) = device_track_cache().lock() {
+        for item in &mut items {
+            if let Some(cached) = guard.get(&(item.full_path.clone(), item.size_bytes)) {
+                if item.cover_url.is_none() {
+                    item.cover_url = cached.cover_url.clone();
+                }
+                if item.artist.is_none() {
+                    item.artist = cached.artist.clone();
+                }
+                if item.album.is_none() {
+                    item.album = cached.album.clone();
+                }
+            }
+        }
+    }
+
+    items
+}
+
+#[cfg(target_os = "windows")]
+fn delete_mtp_device_file(file_path: &str) -> Result<bool, String> {
+    let Some((dev_name, storage_name, rel_path)) = parse_mtp_file_path(file_path) else {
+        return Err(format!("Invalid MTP file path: {file_path}"));
+    };
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let ps_script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$devName = $env:CT_MTP_DEV
+$storName = $env:CT_MTP_STOR
+$relPath = $env:CT_MTP_REL
+$sh = New-Object -ComObject Shell.Application
+$d = $sh.Namespace(17).Items() | Where-Object { $_.Name -eq $devName } | Select-Object -First 1
+if (-not $d) { exit 2 }
+$s = $d.GetFolder.Items() | Where-Object { $_.Name -eq $storName } | Select-Object -First 1
+if (-not $s) { $s = @($d.GetFolder.Items())[0] }
+if (-not $s) { exit 2 }
+
+$parts = $relPath -split '[\\/]' | Where-Object { $_ -ne '' }
+$currFolder = $s.GetFolder
+for ($i = 0; $i -lt ($parts.Count - 1); $i++) {
+  $seg = $parts[$i]
+  $nextItem = $currFolder.Items() | Where-Object { $_.IsFolder -and $_.Name -ieq $seg } | Select-Object -First 1
+  if (-not $nextItem) { exit 3 }
+  $currFolder = $nextItem.GetFolder
+}
+$leafName = $parts[$parts.Count - 1]
+$leafNoExt = if ($leafName.Contains('.')) { $leafName.Substring(0, $leafName.LastIndexOf('.')) } else { $leafName }
+$target = $currFolder.Items() | Where-Object {
+  -not $_.IsFolder -and (
+    $_.Name -ieq $leafName -or
+    $_.Name -ieq $leafNoExt -or
+    [string]$_.ExtendedProperty('System.FileName') -ieq $leafName
+  )
+} | Select-Object -First 1
+if (-not $target) { exit 4 }
+$target.InvokeVerb('delete')
+Start-Sleep -Milliseconds 250
+exit 0
+"#;
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
+        .env("CT_MTP_DEV", &dev_name)
+        .env("CT_MTP_STOR", &storage_name)
+        .env("CT_MTP_REL", &rel_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Failed to invoke MTP delete: {e}"))?;
+
+    if output.status.success() {
+        if let Ok(mut guard) = device_track_cache().lock() {
+            guard.retain(|(k_path, _), _| !k_path.eq_ignore_ascii_case(file_path));
+        }
+        Ok(true)
+    } else {
+        Err(format!("Could not delete MTP file: {file_path}"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn copy_staged_file_to_mtp(
+    dev_name: &str,
+    storage_name: &str,
+    rel_music_path: &Path,
+    local_staged_file: &Path,
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    // Ensure local staged file has the exact target filename expected on the MTP device,
+    // because Shell.Application.CopyHere uses the source file's own filename!
+    let target_file_name = rel_music_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Track.mp3");
+    let named_temp_dir = local_staged_file
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("mtp_named_{}", std::process::id()));
+    let _ = fs::create_dir_all(&named_temp_dir);
+    let named_src_path = named_temp_dir.join(target_file_name);
+    let _ = fs::remove_file(&named_src_path);
+    fs::copy(local_staged_file, &named_src_path)
+        .map_err(|e| format!("Failed to prepare MTP transfer file: {e}"))?;
+
+    let rel_parent = rel_music_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Music".to_string());
+
+    let ps_script = r#"
+$ErrorActionPreference = 'Stop'
+$devName = $env:CT_MTP_DEV
+$storName = $env:CT_MTP_STOR
+$relDir = $env:CT_MTP_DIR
+$srcFile = $env:CT_MTP_SRC
+$targetName = $env:CT_MTP_NAME
+$targetStem = if ($targetName.Contains('.')) { $targetName.Substring(0, $targetName.LastIndexOf('.')) } else { $targetName }
+
+$sh = New-Object -ComObject Shell.Application
+$d = $sh.Namespace(17).Items() | Where-Object { $_.Name -eq $devName } | Select-Object -First 1
+if (-not $d) { throw "MTP device not connected: $devName" }
+$s = $d.GetFolder.Items() | Where-Object { $_.Name -eq $storName } | Select-Object -First 1
+if (-not $s) { $s = @($d.GetFolder.Items())[0] }
+if (-not $s) { throw "Phone storage is locked. Unlock your phone and tap Allow / File Transfer." }
+
+$currFolder = $s.GetFolder
+$parts = $relDir -split '[\\/]' | Where-Object { $_ -ne '' }
+foreach ($seg in $parts) {
+  $existing = $currFolder.Items() | Where-Object { $_.IsFolder -and $_.Name -ieq $seg } | Select-Object -First 1
+  if (-not $existing) {
+    $currFolder.NewFolder($seg)
+    for ($w = 0; $w -lt 20; $w++) {
+      Start-Sleep -Milliseconds 100
+      $existing = $currFolder.Items() | Where-Object { $_.IsFolder -and $_.Name -ieq $seg } | Select-Object -First 1
+      if ($existing) { break }
+    }
+  }
+  if (-not $existing) { throw "Failed to create folder '$seg' on MTP device" }
+  $currFolder = $existing.GetFolder
+}
+
+# If an older copy exists in the destination folder, remove it first so CopyHere doesn't prompt
+$oldItem = $currFolder.Items() | Where-Object {
+  -not $_.IsFolder -and (
+    $_.Name -ieq $targetName -or
+    $_.Name -ieq $targetStem -or
+    [string]$_.ExtendedProperty('System.FileName') -ieq $targetName
+  )
+} | Select-Object -First 1
+if ($oldItem) {
+  $oldItem.InvokeVerb('delete')
+  Start-Sleep -Milliseconds 150
+}
+
+# 16 (Respond "Yes to All") + 4 (Do not display progress dialog) = 20
+$currFolder.CopyHere($srcFile, 20)
+
+# Wait until the file finishes appearing on the MTP folder
+for ($w = 0; $w -lt 150; $w++) {
+  $landed = $currFolder.Items() | Where-Object {
+    -not $_.IsFolder -and (
+      $_.Name -ieq $targetName -or
+      $_.Name -ieq $targetStem -or
+      [string]$_.ExtendedProperty('System.FileName') -ieq $targetName
+    )
+  } | Select-Object -First 1
+  if ($landed) { break }
+  Start-Sleep -Milliseconds 100
+}
+"#;
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
+        .env("CT_MTP_DEV", dev_name)
+        .env("CT_MTP_STOR", storage_name)
+        .env("CT_MTP_DIR", &rel_parent)
+        .env("CT_MTP_SRC", &named_src_path.to_string_lossy().to_string())
+        .env("CT_MTP_NAME", target_file_name)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    let _ = fs::remove_file(&named_src_path);
+
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                "MTP file copy failed".to_string()
+            } else {
+                stderr
+            })
+        }
+        Err(e) => Err(format!("Failed to execute MTP copy: {e}")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sync_tracks_to_mtp_device(
+    app: &AppHandle,
+    payload: DeviceSyncPayload,
+) -> Result<DeviceSyncResult, String> {
+    let Some((dev_name, storage_name)) = parse_mtp_mount(&payload.mount_point) else {
+        return Err(format!("Invalid MTP mount point: {}", payload.mount_point));
+    };
+
+    let stage_dir = std::env::temp_dir().join("classitunes_mtp_stage");
+    let _ = fs::create_dir_all(&stage_dir);
+
+    let mut tracks_synced = 0;
+    let mut tracks_skipped = 0;
+    let tracks_updated = 0;
+    let mut tracks_deleted = 0;
+    let mut total_bytes_transferred = 0u64;
+    let mut errors = Vec::new();
+
+    let total_tracks = payload.tracks.len();
+    let naming_tmpl = payload
+        .naming_template
+        .as_deref()
+        .unwrap_or("{Artist}/{Album}/{TrackNumber} - {Title}.{ext}");
+    let should_transcode = payload.transcode_enabled.unwrap_or(false);
+    let mirror_sync = payload.mirror_sync.unwrap_or(false);
+    let transcode_target_format = crate::transcoder::TranscodeTargetFormat::from_str(
+        payload.transcode_format.as_deref().unwrap_or("MP3"),
+    );
+    let transcode_opts = crate::transcoder::TranscodeOptions {
+        format: transcode_target_format,
+        bitrate_kbps: payload.transcode_bitrate.unwrap_or(256),
+        downmix_mono: payload.transcode_downmix_mono.unwrap_or(false),
+        downsample_44k: payload.transcode_downsample_44k.unwrap_or(true),
+    };
+
+    // 1. Pre-inspect existing audio files on the MTP device FIRST before touching or transcoding!
+    let existing_mtp_items = list_mtp_device_contents(&payload.mount_point);
+    let mut existing_by_rel_key: HashMap<String, DeviceTrackItem> = HashMap::new();
+    for item in existing_mtp_items {
+        let key = item.relative_path.replace('\\', "/").to_lowercase();
+        existing_by_rel_key.insert(key, item);
+    }
+
+    use rayon::prelude::*;
+
+    // 2. If mirror_sync is true (Sync button pressed), delete any obsolete audio files on the MTP device
+    if mirror_sync && !SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+        let expected_rel_keys: std::collections::HashSet<String> = payload
+            .tracks
+            .par_iter()
+            .filter_map(|track| {
+                let src_path = Path::new(&track.file_path);
+                if !src_path.exists() {
+                    return None;
+                }
+                let ext = if should_transcode {
+                    transcode_target_format.extension().to_string()
+                } else {
+                    src_path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("mp3")
+                        .to_lowercase()
+                };
+                let mut enriched = track.clone();
+                if enriched.title.is_none() || enriched.artist.is_none() || enriched.album.is_none() {
+                    if let Ok(m) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
+                        if enriched.title.is_none() {
+                            enriched.title = m.title;
+                        }
+                        if enriched.artist.is_none() {
+                            enriched.artist = m.artist;
+                        }
+                        if enriched.album.is_none() {
+                            enriched.album = m.album;
+                        }
+                    }
+                }
+                let rel = render_naming_template(naming_tmpl, &enriched, &ext);
+                let rel_music = Path::new("Music").join(&rel);
+                Some(rel_music.to_string_lossy().replace('\\', "/").to_lowercase())
+            })
+            .collect();
+
+        for (rel_key, existing_item) in &existing_by_rel_key {
+            if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+            if !expected_rel_keys.contains(rel_key) {
+                if delete_mtp_device_file(&existing_item.full_path).is_ok() {
+                    tracks_deleted += 1;
+                }
+            }
+        }
+    }
+
+    let artwork_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
+
+    struct PreparedMtpItem {
+        global_index: usize,
+        enriched_track: SyncTrackItem,
+        track_title: String,
+        ext: String,
+        src_size: u64,
+        rel_path_for_list: PathBuf,
+        skip: bool,
+        staged_file: Option<PathBuf>,
+        stage_error: Option<String>,
+    }
+
+    for (chunk_idx, chunk) in payload.tracks.chunks(4).enumerate() {
+        if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+            errors.push("Sync stopped by user".to_string());
+            break;
+        }
+        let base_idx = chunk_idx * 4;
+
+        let staged_batch: Vec<Result<PreparedMtpItem, String>> = chunk
+            .par_iter()
+            .enumerate()
+            .map(|(offset, track)| {
+                let index = base_idx + offset;
+                if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+                    return Err("Sync stopped by user".to_string());
+                }
+                let src_path = Path::new(&track.file_path);
+                if !src_path.exists() {
+                    return Err(format!("Source track not found: {}", track.file_path));
+                }
+                let src_ext = src_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("mp3")
+                    .to_lowercase();
+                let ext = if should_transcode {
+                    transcode_target_format.extension().to_string()
+                } else {
+                    src_ext.clone()
+                };
+
+                let src_meta_opt = crate::read_music_metadata_internal(&src_path.to_string_lossy()).ok();
+                let mut enriched_track = track.clone();
+                if let Some(ref src_meta) = src_meta_opt {
+                    if enriched_track.title.is_none() {
+                        enriched_track.title = src_meta.title.clone();
+                    }
+                    if enriched_track.artist.is_none() {
+                        enriched_track.artist = src_meta.artist.clone();
+                    }
+                    if enriched_track.album_artist.is_none() {
+                        enriched_track.album_artist = src_meta.album_artist.clone();
+                    }
+                    if enriched_track.album.is_none() {
+                        enriched_track.album = src_meta.album.clone();
+                    }
+                    if enriched_track.genre.is_none() {
+                        enriched_track.genre = src_meta.genre.clone();
+                    }
+                    if enriched_track.year.is_none() {
+                        enriched_track.year = src_meta.year;
+                    }
+                    if enriched_track.track_number.is_none() {
+                        enriched_track.track_number = src_meta.track_number;
+                    }
+                    if enriched_track.cover_url.is_none() {
+                        enriched_track.cover_url = src_meta.cover_url.clone();
+                    }
+                    if enriched_track.lyrics.is_none() {
+                        enriched_track.lyrics = src_meta.lyrics.clone();
+                    }
+                    if enriched_track.comments.is_none() {
+                        enriched_track.comments = src_meta.comments.clone();
+                    }
+                    if enriched_track.duration.is_none() {
+                        enriched_track.duration = src_meta.duration;
+                    }
+                    if enriched_track.bitrate.is_none() {
+                        enriched_track.bitrate = src_meta.bitrate;
+                    }
+                }
+                if let Some(ref cmt) = enriched_track.comments {
+                    if crate::is_technical_comment("", cmt) {
+                        enriched_track.comments = None;
+                    }
+                }
+
+                let rel = render_naming_template(naming_tmpl, &enriched_track, &ext);
+                let rel_path_for_list = Path::new("Music").join(&rel);
+                let rel_key = rel_path_for_list.to_string_lossy().replace('\\', "/").to_lowercase();
+                let src_size = fs::metadata(src_path).map(|m| m.len()).unwrap_or(0);
+                let track_title = enriched_track.title.clone().unwrap_or_else(|| "Track".to_string());
+
+                // Check if file already exists on MTP device before touching or transcoding!
+                if let Some(existing_item) = existing_by_rel_key.get(&rel_key) {
+                    if existing_item.size_bytes > 0 {
+                        let already_valid = if !should_transcode {
+                            existing_item.size_bytes == src_size || existing_item.size_bytes > 1024
+                        } else {
+                            existing_item.size_bytes > 1024
+                        };
+                        if already_valid {
+                            return Ok(PreparedMtpItem {
+                                global_index: index,
+                                enriched_track,
+                                track_title,
+                                ext,
+                                src_size,
+                                rel_path_for_list,
+                                skip: true,
+                                staged_file: None,
+                                stage_error: None,
+                            });
+                        }
+                    }
+                }
+
+                let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, &artwork_cache);
+                let has_artwork = artwork_data_url.as_ref().map_or(false, |s| !s.trim().is_empty());
+
+                // If transcoding is disabled and source file already has complete tags & artwork,
+                // we can transfer the source file directly without modifying it!
+                if !should_transcode {
+                    if let Some(ref src_meta) = src_meta_opt {
+                        if file_metadata_is_complete(src_meta, &enriched_track, has_artwork, src_path) {
+                            return Ok(PreparedMtpItem {
+                                global_index: index,
+                                enriched_track,
+                                track_title,
+                                ext,
+                                src_size,
+                                rel_path_for_list,
+                                skip: false,
+                                staged_file: Some(src_path.to_path_buf()),
+                                stage_error: None,
+                            });
+                        }
+                    }
+                }
+
+                let temp_file = stage_dir.join(format!("mtp_stage_{}_{}.{}", std::process::id(), index, ext));
+                let mut stage_error = None;
+                let stage_ok = if should_transcode {
+                    match crate::transcoder::transcode_audio_file(src_path, &temp_file, &transcode_opts) {
+                        Ok(()) => true,
+                        Err(err) => match fs::copy(src_path, &temp_file) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                stage_error = Some(format!("Failed to sync {}: transcode ({err}), copy ({e})", track_title));
+                                false
+                            }
+                        },
+                    }
+                } else {
+                    match fs::copy(src_path, &temp_file) {
+                        Ok(_) => true,
+                        Err(e) => {
+                            stage_error = Some(format!("Failed to stage {}: {e}", track_title));
+                            false
+                        }
+                    }
+                };
+
+                if stage_ok && temp_file.exists() {
+                    if let Ok(m) = fs::metadata(&temp_file) {
+                        let mut perms = m.permissions();
+                        if perms.readonly() {
+                            perms.set_readonly(false);
+                            let _ = fs::set_permissions(&temp_file, perms);
+                        }
+                    }
+                    let tag_payload = build_sync_tag_payload(&enriched_track, &rel_path_for_list, artwork_data_url);
+                    let _ = crate::write_music_metadata_internal(&temp_file.to_string_lossy(), tag_payload);
+                }
+
+                Ok(PreparedMtpItem {
+                    global_index: index,
+                    enriched_track,
+                    track_title,
+                    ext,
+                    src_size,
+                    rel_path_for_list,
+                    skip: false,
+                    staged_file: Some(temp_file),
+                    stage_error,
+                })
+            })
+            .collect();
+
+        for item_res in staged_batch {
+            if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
+                errors.push("Sync stopped by user".to_string());
+                break;
+            }
+            let item = match item_res {
+                Ok(it) => it,
+                Err(e) => {
+                    if e != "Sync stopped by user" {
+                        errors.push(e);
+                    }
+                    continue;
+                }
+            };
+            if let Some(err) = item.stage_error {
+                errors.push(err);
+                continue;
+            }
+
+            let mut item_size = item.src_size;
+            if item.skip {
+                tracks_skipped += 1;
+            } else if let Some(ref staged_path) = item.staged_file {
+                item_size = fs::metadata(staged_path).map(|m| m.len()).unwrap_or(item.src_size);
+                let is_temp_staged = staged_path.starts_with(&stage_dir);
+                match copy_staged_file_to_mtp(&dev_name, &storage_name, &item.rel_path_for_list, staged_path) {
+                    Ok(()) => {
+                        tracks_synced += 1;
+                        total_bytes_transferred += item_size;
+                    }
+                    Err(e) => {
+                        errors.push(format!("Failed to write {} to {}: {e}", item.track_title, dev_name));
+                        if is_temp_staged {
+                            let _ = fs::remove_file(staged_path);
+                        }
+                        continue;
+                    }
+                }
+                if is_temp_staged {
+                    let _ = fs::remove_file(staged_path);
+                }
+            }
+
+            let full_mtp_path = format!(
+                "MTP:\\{}\\{}\\{}",
+                dev_name,
+                storage_name,
+                item.rel_path_for_list.to_string_lossy()
+            );
+            let synced_item = DeviceTrackItem {
+                file_name: item
+                    .rel_path_for_list
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| item.track_title.clone()),
+                relative_path: item.rel_path_for_list.to_string_lossy().to_string(),
+                full_path: full_mtp_path.clone(),
+                size_bytes: item_size,
+                format: item.ext.to_uppercase(),
+                title: item.enriched_track.title.clone(),
+                artist: item.enriched_track.artist.clone(),
+                album: item.enriched_track.album.clone(),
+                genre: item.enriched_track.genre.clone(),
+                year: item.enriched_track.year,
+                track_number: item.enriched_track.track_number,
+                duration_secs: item.enriched_track.duration,
+                cover_url: item.enriched_track.cover_url.clone(),
+                bitrate: if should_transcode && item.ext != "wav" {
+                    Some(transcode_opts.bitrate_kbps)
+                } else {
+                    item.enriched_track.bitrate
+                },
+                sample_rate: None,
+            };
+
+            if let Ok(mut guard) = device_track_cache().lock() {
+                guard.insert((full_mtp_path, item_size), synced_item.clone());
+            }
+
+            let _ = app.emit(
+                "device-sync-progress",
+                SyncProgressEvent {
+                    current_index: item.global_index + 1,
+                    total_tracks,
+                    current_title: item.track_title,
+                    bytes_copied: total_bytes_transferred,
+                    total_bytes: total_bytes_transferred,
+                    is_complete: false,
+                    synced_track: Some(synced_item),
+                },
+            );
+        }
+    }
+
+    let _ = fs::remove_dir_all(&stage_dir);
+
+    let _ = app.emit(
+        "device-sync-progress",
+        SyncProgressEvent {
+            current_index: total_tracks,
+            total_tracks,
+            current_title: "Sync completed".to_string(),
+            bytes_copied: total_bytes_transferred,
+            total_bytes: total_bytes_transferred,
+            is_complete: true,
+            synced_track: None,
+        },
+    );
+
+    Ok(DeviceSyncResult {
+        tracks_synced,
+        tracks_skipped,
+        tracks_updated,
+        tracks_deleted,
+        total_bytes_transferred,
+        errors,
+    })
+}
+
 fn copy_file_buffered(src: &Path, dest: &Path) -> Result<u64, std::io::Error> {
     let mut reader = fs::File::open(src)?;
     let mut writer = fs::File::create(dest)?;
@@ -531,6 +1514,14 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
         }
     }
 
+    // Also include connected MTP / Windows Portable Devices (e.g. Samsung Galaxy A06, Android phones, MTP Walkmans)
+    let mtp_devices = list_windows_mtp_devices();
+    for mtp_dev in mtp_devices {
+        if !devices.iter().any(|d| d.id == mtp_dev.id) {
+            devices.push(mtp_dev);
+        }
+    }
+
     if let Ok(mut guard) = last_known_devices_cache().lock() {
         *guard = Some(devices.clone());
     }
@@ -705,6 +1696,9 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
 
 #[cfg(target_os = "windows")]
 pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
+    if is_mtp_mount(mount_point) {
+        return Ok(true);
+    }
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
     use windows::core::PCWSTR;
@@ -842,6 +1836,11 @@ pub fn eject_device_native(_mount_point: &str) -> Result<bool, String> {
 
 /// Recursively scans for audio tracks on the device for the "Contents" tab.
 pub fn list_device_contents_native(mount_point: &str) -> Vec<DeviceTrackItem> {
+    #[cfg(target_os = "windows")]
+    if is_mtp_mount(mount_point) {
+        return list_mtp_device_contents(mount_point);
+    }
+
     let root = Path::new(mount_point);
     if !root.exists() {
         return Vec::new();
@@ -1050,6 +2049,11 @@ fn decode_percent_path(s: &str) -> String {
 }
 
 pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if is_mtp_mount(file_path) {
+        return delete_mtp_device_file(file_path);
+    }
+
     let clean = file_path.trim().trim_matches('"');
     let unfile = if let Some(stripped) = clean.strip_prefix("file:///") {
         stripped
@@ -1321,6 +2325,11 @@ pub fn sync_tracks_to_device_impl(
     SYNC_ABORT_REQUESTED.store(false, Ordering::SeqCst);
     SYNC_IN_PROGRESS.store(true, Ordering::SeqCst);
     let _sync_guard = SyncActiveGuard;
+
+    #[cfg(target_os = "windows")]
+    if is_mtp_mount(&payload.mount_point) {
+        return sync_tracks_to_mtp_device(app, payload);
+    }
 
     let clean_mount = payload.mount_point.trim_end_matches(['\\', '/']);
     let mount_dir_buf = if clean_mount.len() == 1 && clean_mount.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {

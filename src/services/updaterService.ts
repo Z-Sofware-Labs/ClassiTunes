@@ -25,11 +25,11 @@ export async function getCurrentVersion(): Promise<string> {
       // ignore
     }
   }
-  _resolvedVersion = '2.0.2';
+  _resolvedVersion = '2.0.3';
   return _resolvedVersion;
 }
 
-export let CURRENT_VERSION = '2.0.2';
+export let CURRENT_VERSION = '2.0.3';
 getCurrentVersion().then((v) => { CURRENT_VERSION = v; });
 
 // Module-level cached handle to active update

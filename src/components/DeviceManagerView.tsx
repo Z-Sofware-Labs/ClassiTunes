@@ -845,7 +845,9 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   </div>
 
                   <div className="flex justify-between sm:justify-start sm:gap-4">
-                    <span className={`font-semibold ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>Drive Letter:</span>
+                    <span className={`font-semibold ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                      {device.mountPoint.toUpperCase().startsWith('MTP:') ? 'Connection:' : 'Drive Letter:'}
+                    </span>
                     <span className="font-mono font-bold text-current">{device.mountPoint}</span>
                   </div>
                 </div>
