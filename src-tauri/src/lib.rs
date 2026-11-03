@@ -2010,6 +2010,248 @@ async fn resolve_playable_file_path(file_path: String) -> Result<String, String>
     .map_err(|e| format!("Resolve playable file path failed: {e}"))?
 }
 
+/// Native clipboard reader for image or text data.
+/// Bypasses the Webview permission prompt (such as WebView2 / WebKit "Allow ClassiTunes to see text and images copied to the clipboard?")
+/// because this runs natively in the backend with full OS privileges.
+#[tauri::command]
+async fn read_clipboard_native() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::System::DataExchange::{
+                OpenClipboard, CloseClipboard, GetClipboardData,
+            };
+            use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock, GlobalSize};
+            use windows::Win32::Foundation::{HGLOBAL, HWND};
+            use std::io::Cursor;
+
+            const CF_UNICODETEXT: u32 = 13;
+            const CF_TEXT: u32 = 1;
+            const CF_DIB: u32 = 8;
+            const CF_DIBV5: u32 = 17;
+
+            // 1. Try opening clipboard
+            unsafe {
+                if OpenClipboard(Some(HWND::default())).is_err() {
+                    return Ok(None);
+                }
+            }
+
+            struct ClipGuard;
+            impl Drop for ClipGuard {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = CloseClipboard();
+                    }
+                }
+            }
+            let _guard = ClipGuard;
+
+            // 2. Try DIBV5 / DIB image first
+            unsafe {
+                let dib_handle = GetClipboardData(CF_DIBV5)
+                    .or_else(|_| GetClipboardData(CF_DIB));
+
+                if let Ok(handle) = dib_handle {
+                    if !handle.0.is_null() {
+                        let hglobal = HGLOBAL(handle.0);
+                        let ptr = GlobalLock(hglobal);
+                        if !ptr.is_null() {
+                            let size = GlobalSize(hglobal);
+                            if size > 40 {
+                                let slice = std::slice::from_raw_parts(ptr as *const u8, size);
+                                let bi_size = u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]);
+                                
+                                // Synthesize standard BMP file header (14 bytes) + DIB data
+                                let mut bmp_bytes = Vec::with_capacity(14 + size);
+                                bmp_bytes.extend_from_slice(b"BM");
+                                let file_size = (14 + size) as u32;
+                                bmp_bytes.extend_from_slice(&file_size.to_le_bytes());
+                                bmp_bytes.extend_from_slice(&[0u8; 4]); // reserved
+
+                                // Calculate pixel data offset
+                                let mut clr_used = 0u32;
+                                if slice.len() >= 36 {
+                                    clr_used = u32::from_le_bytes([slice[32], slice[33], slice[34], slice[35]]);
+                                }
+                                let bit_count = if slice.len() >= 16 {
+                                    u16::from_le_bytes([slice[14], slice[15]])
+                                } else {
+                                    0
+                                };
+                                let palette_colors = if clr_used > 0 {
+                                    clr_used
+                                } else if bit_count <= 8 && bit_count > 0 {
+                                    1u32 << bit_count
+                                } else {
+                                    0
+                                };
+                                let off_bits = 14 + bi_size + (palette_colors * 4);
+                                bmp_bytes.extend_from_slice(&off_bits.to_le_bytes());
+                                bmp_bytes.extend_from_slice(slice);
+
+                                let _ = GlobalUnlock(hglobal);
+
+                                if let Ok(dyn_img) = image::load_from_memory(&bmp_bytes) {
+                                    let mut png_buf = Cursor::new(Vec::new());
+                                    if dyn_img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
+                                        let b64 = crate::encode_base64(&png_buf.into_inner());
+                                        return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                    }
+                                }
+                            } else {
+                                let _ = GlobalUnlock(hglobal);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Try Unicode text / plain text
+            unsafe {
+                if let Ok(handle) = GetClipboardData(CF_UNICODETEXT) {
+                    if !handle.0.is_null() {
+                        let hglobal = HGLOBAL(handle.0);
+                        let ptr = GlobalLock(hglobal);
+                        if !ptr.is_null() {
+                            let u16_slice = std::slice::from_raw_parts(ptr as *const u16, 65536);
+                            let len = u16_slice.iter().position(|&c| c == 0).unwrap_or(u16_slice.len());
+                            let text = String::from_utf16_lossy(&u16_slice[..len]);
+                            let _ = GlobalUnlock(hglobal);
+                            return Ok(Some(text));
+                        }
+                    }
+                }
+
+                if let Ok(handle) = GetClipboardData(CF_TEXT) {
+                    if !handle.0.is_null() {
+                        let hglobal = HGLOBAL(handle.0);
+                        let ptr = GlobalLock(hglobal);
+                        if !ptr.is_null() {
+                            let u8_slice = std::slice::from_raw_parts(ptr as *const u8, 65536);
+                            let len = u8_slice.iter().position(|&c| c == 0).unwrap_or(u8_slice.len());
+                            let text = String::from_utf8_lossy(&u8_slice[..len]).to_string();
+                            let _ = GlobalUnlock(hglobal);
+                            return Ok(Some(text));
+                        }
+                    }
+                }
+            }
+
+            Ok(None)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, osascript can read image data or text directly from NSPasteboard
+            // without requiring any webview clipboard permission prompt.
+            let script = r#"
+                set imgData to ""
+                try
+                    set imgData to (the clipboard as «class PNGf»)
+                end try
+                if imgData is not "" then
+                    return "IMG_PNG"
+                end if
+                try
+                    return (the clipboard as text)
+                end try
+                return ""
+            "#;
+            if let Ok(output) = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .output()
+            {
+                let res = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if res == "IMG_PNG" {
+                    // Export clipboard PNG to a temporary file via osascript/python/screencapture or osascript write
+                    let export_script = r#"
+                        set pngData to (the clipboard as «class PNGf»)
+                        set tmpPath to (POSIX path of (path to temporary items)) & "classitunes_clip.png"
+                        set f to open for access (POSIX file tmpPath) with write permission
+                        set eof f to 0
+                        write pngData to f
+                        close access f
+                        return tmpPath
+                    "#;
+                    if let Ok(export_out) = std::process::Command::new("osascript")
+                        .arg("-e")
+                        .arg(export_script)
+                        .output()
+                    {
+                        let path = String::from_utf8_lossy(&export_out.stdout).trim().to_string();
+                        if !path.is_empty() {
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                let _ = std::fs::remove_file(&path);
+                                if !bytes.is_empty() {
+                                    let b64 = crate::encode_base64(&bytes);
+                                    return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                }
+                            }
+                        }
+                    }
+                } else if !res.is_empty() {
+                    return Ok(Some(res));
+                }
+            }
+
+            Ok(None)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // On Linux (X11 / Wayland), check common clipboard utilities (wl-paste, xclip, xsel)
+            // 1. Check Wayland (wl-paste)
+            if let Ok(out) = std::process::Command::new("wl-paste")
+                .args(["--type", "image/png"])
+                .output()
+            {
+                if out.status.success() && !out.stdout.is_empty() {
+                    let b64 = crate::encode_base64(&out.stdout);
+                    return Ok(Some(format!("data:image/png;base64,{b64}")));
+                }
+            }
+
+            // 2. Check X11 (xclip)
+            if let Ok(out) = std::process::Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+                .output()
+            {
+                if out.status.success() && !out.stdout.is_empty() {
+                    let b64 = crate::encode_base64(&out.stdout);
+                    return Ok(Some(format!("data:image/png;base64,{b64}")));
+                }
+            }
+
+            // 3. Fallback to text on Linux via wl-paste or xclip
+            if let Ok(out) = std::process::Command::new("wl-paste")
+                .args(["--no-newline"])
+                .output()
+            {
+                if out.status.success() && !out.stdout.is_empty() {
+                    return Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()));
+                }
+            }
+
+            if let Ok(out) = std::process::Command::new("xclip")
+                .args(["-selection", "clipboard", "-o"])
+                .output()
+            {
+                if out.status.success() && !out.stdout.is_empty() {
+                    return Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()));
+                }
+            }
+
+            Ok(None)
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            Ok(None)
+        }
+    })
+    .await
+    .map_err(|e| format!("Clipboard read task error: {e}"))?
+}
+
 
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -2103,7 +2345,8 @@ pub fn run() {
             list_device_contents,
             delete_device_file,
             reveal_file_in_explorer,
-            resolve_playable_file_path
+            resolve_playable_file_path,
+            read_clipboard_native
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

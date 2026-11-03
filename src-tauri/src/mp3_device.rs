@@ -385,6 +385,7 @@ if ($out.Count -eq 0) {
 #[cfg(target_os = "windows")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct RawMtpTrackEntry {
     file_name: String,
     relative_path: String,

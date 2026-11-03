@@ -3,6 +3,7 @@ import { X, Info, Image as ImageIcon, FileText, Sparkles, RefreshCw, CheckCircle
 import { Track } from '../types';
 import { extractID3TagsFromTrack, ExtractedID3Tags } from '../services/metadataParser';
 import { platformInfo } from '../utils/platform';
+import { isTauri } from '../utils/tauriWindow';
 
 type EditableTrack = Track & { artworkDataUrl?: string; artworkRemoved?: boolean };
 
@@ -579,6 +580,33 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
   const handlePasteFromClipboardButton = useCallback(async () => {
     try {
+      // 1. In Tauri desktop mode, read via native OS clipboard command.
+      // This completely bypasses the browser/WebView2 clipboard permission prompt dialog
+      // ("Allow ClassiTunes to see text and images copied to the clipboard?")
+      // making paste completely seamless and transparent to the user.
+      if (isTauri()) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          const clipData = await invoke<string | null>('read_clipboard_native');
+          if (clipData) {
+            const trimmed = clipData.trim();
+            if (trimmed.startsWith('data:image/')) {
+              setCustomCoverUrl(trimmed);
+              setArtworkChanged(true);
+              setArtworkRemoved(false);
+              setIsDirty(true);
+              return;
+            }
+            if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+              await applyArtworkUrlOrText(trimmed);
+              return;
+            }
+          }
+        } catch (nativeErr) {
+          console.warn('Native clipboard read error, falling back:', nativeErr);
+        }
+      }
+
       if (navigator.clipboard?.read) {
         try {
           const clipboardItems = await navigator.clipboard.read();
