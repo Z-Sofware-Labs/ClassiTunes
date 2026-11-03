@@ -116,6 +116,7 @@ export interface AppSettings {
   crossfadeSeconds: number;
   audioNormalization: boolean;
   defaultTheme: ThemePreference;
+  disableTransparency: boolean;
   transcodeOnSync: boolean;
   transcodeFormat: TranscodeFormat;
   transcodeBitrate: TranscodeBitrate;
@@ -131,6 +132,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   crossfadeSeconds: 5,
   audioNormalization: false,
   defaultTheme: 'system',
+  disableTransparency: false,
   transcodeOnSync: false,
   transcodeFormat: 'MP3',
   transcodeBitrate: '256',

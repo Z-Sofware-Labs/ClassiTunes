@@ -797,7 +797,13 @@ export default function App() {
       root.style.backgroundColor = '#121212';
       root.style.colorScheme = 'dark';
     }
-  }, [theme]);
+
+    if (appSettings.disableTransparency) {
+      root.classList.add('no-transparency');
+    } else {
+      root.classList.remove('no-transparency');
+    }
+  }, [theme, appSettings.disableTransparency]);
 
   const handleSaveSettings = useCallback((nextSettings: AppSettings) => {
     setAppSettings(nextSettings);

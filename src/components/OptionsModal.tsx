@@ -609,6 +609,24 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                   Select <b>System</b> to follow your operating system appearance, or lock ClassiTunes into Classic Dark or Silver Light mode.
                 </p>
               </div>
+
+              {/* Transparency Settings */}
+              <div className={`rounded-lg border p-3.5 ${isLight ? 'bg-white border-gray-300' : 'bg-[#202020] border-[#333]'}`}>
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(draft.disableTransparency)}
+                    onChange={(e) => update('disableTransparency', e.target.checked)}
+                    className="mt-0.5 rounded accent-blue-600 cursor-pointer"
+                  />
+                  <div>
+                    <span className="font-semibold block text-xs">Disable transparency and blur effects</span>
+                    <span className={`text-[10px] block mt-0.5 leading-relaxed ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                      Replaces transparent backdrops, modals, popups, and translucent UI overlays with solid opaque surfaces for increased contrast and lower GPU usage.
+                    </span>
+                  </div>
+                </label>
+              </div>
             </div>
           )}
 
