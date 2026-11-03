@@ -258,16 +258,25 @@ export async function setupWindowStatePersistence(): Promise<void> {
 
 export async function openFileLocation(filePath: string): Promise<boolean> {
   if (!filePath) return false;
+  const cleanPath = filePath.startsWith('dev_') ? filePath.slice(4) : filePath;
 
-
-  // 2. Try Tauri v2 if running in Tauri
   if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
     try {
-      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-      await revealItemInDir(filePath);
-      return true;
-    } catch (e) {
-      console.error('Tauri revealItemInDir failed:', e);
+      const { invoke } = await import('@tauri-apps/api/core');
+      const ok = await invoke<boolean>('reveal_file_in_explorer', { filePath: cleanPath });
+      if (ok) return true;
+    } catch (err) {
+      console.warn('Native reveal_file_in_explorer fallback notice:', err);
+    }
+
+    if (!/^mtp:[/\\]/i.test(cleanPath)) {
+      try {
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        await revealItemInDir(cleanPath);
+        return true;
+      } catch (e) {
+        console.error('Tauri revealItemInDir failed:', e);
+      }
     }
   }
 

@@ -81,13 +81,19 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const isLight = theme === 'light';
   const track = contextMenu?.track;
 
-  const isCheckboxEngaged = Boolean(isCheckboxVisible && checkedTrackIds && checkedTrackIds.size > 0);
+  const isCheckboxEngaged = Boolean(!isDeviceContext && isCheckboxVisible && checkedTrackIds && checkedTrackIds.size > 0);
   const effectiveTrackIds = useMemo(() => {
+    if (selectedTrackIds.length > 0 && (!track || selectedTrackIds.includes(track.id))) {
+      return selectedTrackIds;
+    }
     if (isCheckboxEngaged && checkedTrackIds) {
-      return Array.from(checkedTrackIds);
+      const validChecked = tracks.length > 0
+        ? tracks.filter(t => checkedTrackIds.has(t.id)).map(t => t.id)
+        : Array.from(checkedTrackIds);
+      if (validChecked.length > 0) return validChecked;
     }
     return selectedTrackIds.length > 0 ? selectedTrackIds : (track ? [track.id] : []);
-  }, [isCheckboxEngaged, checkedTrackIds, selectedTrackIds, track?.id]);
+  }, [isCheckboxEngaged, checkedTrackIds, selectedTrackIds, track?.id, tracks]);
 
   const effectiveSelectedTracks = useMemo(() => {
     if (tracks.length === 0) return track ? [track] : [];

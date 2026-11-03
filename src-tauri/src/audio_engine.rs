@@ -214,7 +214,8 @@ struct DeckDecoder {
 
 impl DeckDecoder {
     fn open(file_path: &str, replay_gain_db: Option<f64>, normalization_enabled: bool) -> Result<Self, String> {
-        let path = Path::new(file_path);
+        let resolved_path = crate::mp3_device::resolve_device_or_local_file_path(file_path)?;
+        let path = Path::new(&resolved_path);
         let file = File::open(path).map_err(|e| format!("Failed to open audio file: {e}"))?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
 

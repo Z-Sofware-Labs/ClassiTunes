@@ -181,7 +181,22 @@ export class AudioEngine {
    */
   public extractFsPathFromUrl(url: string): string | null {
     if (!url) return null;
-    if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http:') || url.startsWith('https:')) {
+    if (url.startsWith('blob:') || url.startsWith('data:')) {
+      return null;
+    }
+    if (url.startsWith('http://asset.localhost/') || url.startsWith('https://asset.localhost/')) {
+      try {
+        const stripped = url.replace(/^https?:\/\/asset\.localhost\//, '');
+        let decoded = decodeURIComponent(stripped);
+        if (/^\/[A-Za-z]:[/\\]/.test(decoded)) {
+          decoded = decoded.slice(1);
+        }
+        return decoded;
+      } catch {
+        return null;
+      }
+    }
+    if (url.startsWith('http:') || url.startsWith('https:')) {
       return null;
     }
     let fsPath = url;
@@ -298,6 +313,22 @@ export class AudioEngine {
     }
 
     if (!this.isTauriEnv()) return url;
+
+    const candidateMtpPath = (filePathHint && /^mtp:[/\\]/i.test(filePathHint))
+      ? filePathHint
+      : (/^mtp:[/\\]/i.test(url) ? url : null);
+    if (candidateMtpPath) {
+      try {
+        const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
+        const resolvedLocal = await invoke<string>('resolve_playable_file_path', { filePath: candidateMtpPath });
+        if (resolvedLocal) {
+          return convertFileSrc(resolvedLocal);
+        }
+      } catch (e) {
+        console.warn('[AudioEngine] Failed to resolve MTP playable path:', e);
+      }
+    }
+
     const platform = this.getPlatformSync();
     if (platform === 'linux') {
       const fsPath = this.extractFsPathFromUrl(url);

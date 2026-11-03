@@ -648,7 +648,9 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
     use id3::TagLike;
     use std::path::Path;
 
-    let path = Path::new(file_path);
+    let resolved_path = crate::mp3_device::resolve_device_or_local_file_path(file_path)
+        .unwrap_or_else(|_| file_path.to_string());
+    let path = Path::new(&resolved_path);
     if !path.is_file() {
         return Err(format!("File does not exist: {file_path}"));
     }
@@ -1992,6 +1994,22 @@ async fn delete_device_file(file_path: String) -> Result<bool, String> {
         .map_err(|e| format!("Device delete task failed: {e}"))?
 }
 
+#[tauri::command]
+async fn reveal_file_in_explorer(file_path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || mp3_device::reveal_device_file_native(&file_path))
+        .await
+        .map_err(|e| format!("Reveal file task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn resolve_playable_file_path(file_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mp3_device::resolve_device_or_local_file_path(&file_path)
+    })
+    .await
+    .map_err(|e| format!("Resolve playable file path failed: {e}"))?
+}
+
 
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -2083,7 +2101,9 @@ pub fn run() {
             cancel_device_sync,
             eject_device,
             list_device_contents,
-            delete_device_file
+            delete_device_file,
+            reveal_file_in_explorer,
+            resolve_playable_file_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

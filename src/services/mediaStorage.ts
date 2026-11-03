@@ -611,8 +611,8 @@ export async function hydrateTrackMedia(track: any): Promise<any> {
 
   if (isTauriEnv && track.filePath) {
     try {
-      const syncAudio = resolveNativeCoverUrlSync(track.filePath);
-      if (syncAudio && (syncAudio.startsWith('asset:') || syncAudio.startsWith('http://') || syncAudio.startsWith('https://'))) {
+      const syncAudio = /^mtp:[/\\]/i.test(track.filePath) ? track.filePath : resolveNativeCoverUrlSync(track.filePath);
+      if (syncAudio && (syncAudio.startsWith('asset:') || syncAudio.startsWith('http://') || syncAudio.startsWith('https://') || /^mtp:[/\\]/i.test(syncAudio))) {
         updatedTrack.audioUrl = syncAudio;
       } else {
         const { convertFileSrc } = await import('@tauri-apps/api/core');

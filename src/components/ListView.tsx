@@ -815,9 +815,16 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         const allIds = tracks.map(t => t.id);
         updateSelectedTrackIds(allIds);
       }
-      // Ctrl+I or Cmd+I
+      // Ctrl+I or Cmd+I / Delete or Backspace
+      // Prioritize highlighted row selection (selectedTrackIdsRef.current);
+      // only fall back to checked checkboxes that actually exist in the current `tracks` list.
       const isCheckboxEngaged = (visibleColumns || []).includes('checkbox') && checkedTrackIds && checkedTrackIds.size > 0;
-      const targetIds = isCheckboxEngaged ? Array.from(checkedTrackIds!) : selectedTrackIdsRef.current;
+      const validCheckedIds = isCheckboxEngaged
+        ? tracks.filter(t => checkedTrackIds!.has(t.id)).map(t => t.id)
+        : [];
+      const targetIds = selectedTrackIdsRef.current.length > 0
+        ? selectedTrackIdsRef.current
+        : validCheckedIds;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'i' && targetIds.length > 0) {
         e.preventDefault();
         const selected = sortedTracksRef.current.filter(t => targetIds.includes(t.id));
@@ -832,6 +839,21 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         e.preventDefault();
         const idsToDelete = [...targetIds];
         updateSelectedTrackIds([]);
+        if (!propCheckedTrackIds) {
+          setInternalCheckedTrackIds(prev => {
+            const next = new Set(prev);
+            let changed = false;
+            for (const id of idsToDelete) {
+              if (next.delete(id)) changed = true;
+            }
+            if (changed) {
+              try {
+                localStorage.setItem(`${storageScope}_checked_tracks`, JSON.stringify(Array.from(next)));
+              } catch {}
+            }
+            return changed ? next : prev;
+          });
+        }
         if (onDeleteTracks) {
           onDeleteTracks(idsToDelete);
         } else {
@@ -841,7 +863,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [tracks, onDeleteTracks, onDeleteTrack, onOpenGetInfo, checkedTrackIds, visibleColumns]);
+  }, [tracks, onDeleteTracks, onDeleteTrack, onOpenGetInfo, checkedTrackIds, propCheckedTrackIds, storageScope, visibleColumns]);
 
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() => getInitialColumnOrder(storageScope));
 

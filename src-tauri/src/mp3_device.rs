@@ -261,6 +261,389 @@ if ($out.Count -eq 0) {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMtpTrackEntry {
+    file_name: String,
+    relative_path: String,
+    full_path: String,
+    shell_path: String,
+    size_bytes: u64,
+    format: String,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    genre: Option<String>,
+    year: Option<i32>,
+    track_number: Option<i32>,
+    duration_secs: Option<f64>,
+    bitrate: Option<u32>,
+}
+
+#[cfg(target_os = "windows")]
+fn mtp_cache_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("classitunes_mtp_cache");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+#[cfg(target_os = "windows")]
+fn mtp_cache_key_str(full_mtp_path: &str, size_bytes: u64) -> String {
+    format!(
+        "{}|{}",
+        full_mtp_path.trim().replace('/', "\\").to_lowercase(),
+        size_bytes
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn mtp_local_cached_audio_path(full_mtp_path: &str, size_bytes: u64) -> PathBuf {
+    let norm = full_mtp_path.trim().replace('/', "\\").to_lowercase();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in norm.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let ext = Path::new(full_mtp_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mp3")
+        .to_lowercase();
+    if size_bytes > 0 {
+        mtp_cache_dir().join(format!("mtp_{:016x}_{}.{}", hash, size_bytes, ext))
+    } else {
+        mtp_cache_dir().join(format!("mtp_{:016x}.{}", hash, ext))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn load_persistent_mtp_meta_cache() -> HashMap<String, DeviceTrackItem> {
+    let path = mtp_cache_dir().join("mtp_meta_index.json");
+    if let Ok(data) = fs::read_to_string(&path) {
+        if let Ok(map) = serde_json::from_str::<HashMap<String, DeviceTrackItem>>(&data) {
+            return map;
+        }
+    }
+    HashMap::new()
+}
+
+#[cfg(target_os = "windows")]
+fn save_persistent_mtp_meta_cache(map: &HashMap<String, DeviceTrackItem>) {
+    let path = mtp_cache_dir().join("mtp_meta_index.json");
+    if let Ok(json) = serde_json::to_string(map) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn shell_item_name(
+    item: &windows::Win32::UI::Shell::IShellItem,
+    sigdn: windows::Win32::UI::Shell::SIGDN,
+) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    unsafe {
+        let pwstr = item.GetDisplayName(sigdn).ok()?;
+        let s = pwstr.to_string().ok();
+        CoTaskMemFree(Some(pwstr.0 as *const core::ffi::c_void));
+        s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_child_shell_item<F>(
+    parent: &windows::Win32::UI::Shell::IShellItem,
+    mut predicate: F,
+) -> Option<windows::Win32::UI::Shell::IShellItem>
+where
+    F: FnMut(&windows::Win32::UI::Shell::IShellItem, &str, Option<&str>) -> bool,
+{
+    use windows::Win32::UI::Shell::{
+        BHID_EnumItems, IEnumShellItems, IShellItem, SIGDN_NORMALDISPLAY,
+        SIGDN_PARENTRELATIVEEDITING, SIGDN_PARENTRELATIVEPARSING,
+    };
+    unsafe {
+        let enumerator: IEnumShellItems = parent.BindToHandler(None, &BHID_EnumItems).ok()?;
+        loop {
+            let mut batch: [Option<IShellItem>; 1] = [None];
+            let mut fetched = 0u32;
+            if enumerator.Next(&mut batch, Some(&mut fetched)).is_err() || fetched == 0 {
+                break;
+            }
+            if let Some(child) = batch[0].take() {
+                let disp = shell_item_name(&child, SIGDN_NORMALDISPLAY)
+                    .or_else(|| shell_item_name(&child, SIGDN_PARENTRELATIVEEDITING))
+                    .unwrap_or_default();
+                let parsing = shell_item_name(&child, SIGDN_PARENTRELATIVEPARSING);
+                if predicate(&child, &disp, parsing.as_deref()) {
+                    return Some(child);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn find_mtp_shell_items_native(
+    dev_name: &str,
+    storage_name: &str,
+    rel_path: &str,
+) -> Result<
+    (
+        windows::Win32::UI::Shell::IShellItem,
+        Option<windows::Win32::UI::Shell::IShellItem>,
+    ),
+    String,
+> {
+    use windows::core::w;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName};
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let pc_item: IShellItem = SHCreateItemFromParsingName(
+            w!("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"),
+            None,
+        )
+        .map_err(|e| format!("Failed to open This PC shell folder: {e}"))?;
+
+        let dev_trimmed = dev_name.trim();
+        let dev_item = find_child_shell_item(&pc_item, |_, disp, _| {
+            disp.eq_ignore_ascii_case(dev_trimmed)
+        })
+        .ok_or_else(|| format!("MTP device not found in Windows Shell: {dev_trimmed}"))?;
+
+        let stor_trimmed = storage_name.trim();
+        let stor_item = find_child_shell_item(&dev_item, |_, disp, _| {
+            disp.eq_ignore_ascii_case(stor_trimmed)
+        })
+        .or_else(|| find_child_shell_item(&dev_item, |_, _, _| true))
+        .ok_or_else(|| format!("MTP storage not accessible (is phone unlocked?): {stor_trimmed}"))?;
+
+        let parts: Vec<&str> = rel_path
+            .split(['\\', '/'])
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if parts.is_empty() {
+            return Ok((stor_item, None));
+        }
+
+        let mut curr_folder = stor_item;
+        for seg in &parts[..parts.len() - 1] {
+            if let Some(next_folder) = find_child_shell_item(&curr_folder, |_, disp, parsing| {
+                disp.eq_ignore_ascii_case(seg)
+                    || parsing.map_or(false, |p| p.eq_ignore_ascii_case(seg))
+            }) {
+                curr_folder = next_folder;
+            } else {
+                return Ok((curr_folder, None));
+            }
+        }
+
+        let leaf_name = parts[parts.len() - 1];
+        let leaf_no_ext = leaf_name
+            .rfind('.')
+            .map(|idx| &leaf_name[..idx])
+            .unwrap_or(leaf_name);
+
+        let file_item = find_child_shell_item(&curr_folder, |_, disp, parsing| {
+            disp.eq_ignore_ascii_case(leaf_name)
+                || disp.eq_ignore_ascii_case(leaf_no_ext)
+                || parsing.map_or(false, |p| {
+                    p.eq_ignore_ascii_case(leaf_name) || p.eq_ignore_ascii_case(leaf_no_ext)
+                })
+        });
+
+        Ok((curr_folder, file_item))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn delete_mtp_shell_item_silently(
+    item: &windows::Win32::UI::Shell::IShellItem,
+) -> Result<(), String> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOperation, IFileOperation, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let file_op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)
+            .map_err(|e| format!("CoCreateInstance(FileOperation) failed: {e}"))?;
+        file_op
+            .SetOperationFlags(FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI)
+            .map_err(|e| format!("SetOperationFlags failed: {e}"))?;
+        file_op
+            .DeleteItem(item, None)
+            .map_err(|e| format!("DeleteItem failed: {e}"))?;
+        file_op
+            .PerformOperations()
+            .map_err(|e| format!("PerformOperations failed: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn copy_mtp_shell_item_to_local(
+    src_item: &windows::Win32::UI::Shell::IShellItem,
+    dest_path: &Path,
+) -> Result<u64, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, IStream, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        BHID_Stream, FileOperation, IFileOperation, IShellItem, SHCreateItemFromParsingName,
+        FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+    };
+
+    if let Some(parent) = dest_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+        // 1. Primary fast path: stream directly over COM IStream (BHID_Stream)
+        if let Ok(stream) = src_item.BindToHandler::<_, IStream>(None, &BHID_Stream) {
+            if let Ok(mut out_file) = fs::File::create(dest_path) {
+                let mut buf = vec![0u8; 256 * 1024];
+                let mut total_written = 0u64;
+                loop {
+                    let mut bytes_read = 0u32;
+                    let hr = stream.Read(
+                        buf.as_mut_ptr() as *mut core::ffi::c_void,
+                        buf.len() as u32,
+                        Some(&mut bytes_read),
+                    );
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    if out_file.write_all(&buf[..bytes_read as usize]).is_err() {
+                        break;
+                    }
+                    total_written += bytes_read as u64;
+                    if hr.is_err() {
+                        break;
+                    }
+                }
+                let _ = out_file.flush();
+                if total_written > 0 {
+                    return Ok(total_written);
+                }
+            }
+        }
+
+        // 2. Fallback: synchronous silent IFileOperation::CopyItem
+        let dest_dir = dest_path
+            .parent()
+            .ok_or_else(|| "Invalid destination directory".to_string())?;
+        let dest_name = dest_path
+            .file_name()
+            .ok_or_else(|| "Invalid destination filename".to_string())?;
+        let dir_wide: Vec<u16> = dest_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let name_wide: Vec<u16> = dest_name
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let dest_folder_item: IShellItem =
+            SHCreateItemFromParsingName(PCWSTR(dir_wide.as_ptr()), None)
+                .map_err(|e| format!("SHCreateItemFromParsingName(dest_dir) failed: {e}"))?;
+        let file_op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)
+            .map_err(|e| format!("CoCreateInstance(FileOperation) failed: {e}"))?;
+        file_op
+            .SetOperationFlags(FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI)
+            .map_err(|e| format!("SetOperationFlags failed: {e}"))?;
+        file_op
+            .CopyItem(src_item, &dest_folder_item, PCWSTR(name_wide.as_ptr()), None)
+            .map_err(|e| format!("CopyItem failed: {e}"))?;
+        file_op
+            .PerformOperations()
+            .map_err(|e| format!("PerformOperations(CopyItem) failed: {e}"))?;
+
+        let len = fs::metadata(dest_path).map(|m| m.len()).unwrap_or(0);
+        if len > 0 {
+            Ok(len)
+        } else {
+            Err("Copied MTP file is empty".to_string())
+        }
+    }
+}
+
+pub fn resolve_device_or_local_file_path(file_path: &str) -> Result<String, String> {
+    let trimmed = file_path
+        .trim()
+        .trim_matches('"')
+        .trim_start_matches("dev_");
+
+    #[cfg(target_os = "windows")]
+    if is_mtp_mount(trimmed) {
+        let Some((dev_name, storage_name, rel_path)) = parse_mtp_file_path(trimmed) else {
+            return Err(format!("Invalid MTP file path: {trimmed}"));
+        };
+        let norm_mtp = format!("MTP:\\{}\\{}\\{}", dev_name, storage_name, rel_path);
+
+        // 1. Check if we already have a cached local copy for this MTP path in mtp_cache_dir
+        let zero_key_path = mtp_local_cached_audio_path(&norm_mtp, 0);
+        if zero_key_path.is_file() && fs::metadata(&zero_key_path).map(|m| m.len()).unwrap_or(0) > 0 {
+            return Ok(zero_key_path.to_string_lossy().to_string());
+        }
+
+        // Also check device_track_cache for known size_bytes
+        if let Ok(guard) = device_track_cache().lock() {
+            for ((k_path, k_size), _) in guard.iter() {
+                if k_path.eq_ignore_ascii_case(&norm_mtp) && *k_size > 0 {
+                    let sized_path = mtp_local_cached_audio_path(&norm_mtp, *k_size);
+                    if sized_path.is_file() && fs::metadata(&sized_path).map(|m| m.len()).unwrap_or(0) > 0 {
+                        return Ok(sized_path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        // 2. Walk live IShellItem hierarchy and stream/copy to local cache
+        let (_, Some(file_item)) = find_mtp_shell_items_native(&dev_name, &storage_name, &rel_path)? else {
+            return Err(format!("MTP file not found on device: {norm_mtp}"));
+        };
+
+        let len = copy_mtp_shell_item_to_local(&file_item, &zero_key_path)?;
+        if len > 0 {
+            let sized_dest = mtp_local_cached_audio_path(&norm_mtp, len);
+            let _ = fs::copy(&zero_key_path, &sized_dest);
+        }
+        return Ok(zero_key_path.to_string_lossy().to_string());
+    }
+
+    let unfile = if let Some(stripped) = trimmed.strip_prefix("file:///") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_prefix("file://") {
+        stripped
+    } else {
+        trimmed
+    };
+
+    if Path::new(unfile).exists() {
+        return Ok(unfile.to_string());
+    }
+    let dec = decode_percent_path(unfile);
+    if Path::new(&dec).exists() {
+        return Ok(dec);
+    }
+    Ok(unfile.to_string())
+}
+
+#[cfg(target_os = "windows")]
 fn list_mtp_device_contents(mount_point: &str) -> Vec<DeviceTrackItem> {
     let Some((dev_name, storage_name)) = parse_mtp_mount(mount_point) else {
         return Vec::new();
@@ -311,7 +694,6 @@ function Scan-MtpFolder($folderItem, $relPrefix, $depth) {
       $sizeBytes = if ($sz) { [uint64]$sz } else { [uint64]0 }
 
       $title = [string]$it.ExtendedProperty('System.Title')
-      if ([string]::IsNullOrWhiteSpace($title)) { $title = $fullFileName.Substring(0, $dotIdx) }
 
       $artistRaw = $it.ExtendedProperty('System.Music.Artist')
       $artist = if ($artistRaw -is [array]) { ($artistRaw -join ', ') } else { [string]$artistRaw }
@@ -337,18 +719,17 @@ function Scan-MtpFolder($folderItem, $relPrefix, $depth) {
         fileName = $fullFileName
         relativePath = $relPath
         fullPath = $fullMtpPath
+        shellPath = [string]$it.Path
         sizeBytes = $sizeBytes
         format = $ext.ToUpper()
-        title = $title
+        title = if ([string]::IsNullOrWhiteSpace($title)) { $null } else { $title }
         artist = if ([string]::IsNullOrWhiteSpace($artist)) { $null } else { $artist }
         album = if ([string]::IsNullOrWhiteSpace($album)) { $null } else { $album }
         genre = if ([string]::IsNullOrWhiteSpace($genre)) { $null } else { $genre }
         year = $year
         trackNumber = $trackNumber
         durationSecs = $durationSecs
-        coverUrl = $null
         bitrate = $bitrate
-        sampleRate = $null
       })
     }
   }
@@ -371,7 +752,7 @@ if ($results.Count -eq 0) {
 }
 "#;
 
-    let mut items: Vec<DeviceTrackItem> = Vec::new();
+    let mut raw_entries: Vec<RawMtpTrackEntry> = Vec::new();
     if let Ok(output) = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
         .env("CT_MTP_DEV", &dev_name)
@@ -381,10 +762,10 @@ if ($results.Count -eq 0) {
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            items = if stdout.starts_with('[') {
+            raw_entries = if stdout.starts_with('[') {
                 serde_json::from_str(&stdout).unwrap_or_default()
             } else if stdout.starts_with('{') {
-                serde_json::from_str::<DeviceTrackItem>(&stdout)
+                serde_json::from_str::<RawMtpTrackEntry>(&stdout)
                     .map(|single| vec![single])
                     .unwrap_or_default()
             } else {
@@ -393,21 +774,116 @@ if ($results.Count -eq 0) {
         }
     }
 
-    // Enrich with any cached artwork/metadata from device_track_cache
-    if let Ok(guard) = device_track_cache().lock() {
-        for item in &mut items {
-            if let Some(cached) = guard.get(&(item.full_path.clone(), item.size_bytes)) {
-                if item.cover_url.is_none() {
-                    item.cover_url = cached.cover_url.clone();
-                }
-                if item.artist.is_none() {
-                    item.artist = cached.artist.clone();
-                }
-                if item.album.is_none() {
-                    item.album = cached.album.clone();
-                }
+    let mut persistent_cache = load_persistent_mtp_meta_cache();
+    let mut cache_dirty = false;
+    let mut items: Vec<DeviceTrackItem> = Vec::with_capacity(raw_entries.len());
+
+    for raw in raw_entries {
+        let p_key = mtp_cache_key_str(&raw.full_path, raw.size_bytes);
+        if let Some(cached) = persistent_cache.get(&p_key) {
+            if let Ok(mut guard) = device_track_cache().lock() {
+                guard.insert((raw.full_path.clone(), raw.size_bytes), cached.clone());
             }
+            items.push(cached.clone());
+            continue;
         }
+
+        // Pull file into local MTP cache so we can read genuine ID3 tags AND enable instant playback!
+        let local_cache_file = mtp_local_cached_audio_path(&raw.full_path, raw.size_bytes);
+        let has_local = if local_cache_file.is_file()
+            && fs::metadata(&local_cache_file).map(|m| m.len()).unwrap_or(0) > 0
+        {
+            true
+        } else if let Ok((_, Some(file_item))) =
+            find_mtp_shell_items_native(&dev_name, &storage_name, &raw.relative_path)
+        {
+            if copy_mtp_shell_item_to_local(&file_item, &local_cache_file).is_ok() {
+                let zero_path = mtp_local_cached_audio_path(&raw.full_path, 0);
+                let _ = fs::copy(&local_cache_file, &zero_path);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let meta = if has_local {
+            crate::read_music_metadata_internal(&local_cache_file.to_string_lossy()).ok()
+        } else {
+            None
+        };
+
+        let mut file_stem = raw.file_name.clone();
+        if let Some(dot_idx) = file_stem.rfind('.') {
+            file_stem.truncate(dot_idx);
+        }
+
+        // Priority for Name column: 1. ID3 Title tag, 2. WPD System.Title, 3. Fallback to file name
+        let title = meta
+            .as_ref()
+            .and_then(|m| m.title.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| raw.title.filter(|s| !s.trim().is_empty()))
+            .unwrap_or(file_stem);
+
+        let artist = meta
+            .as_ref()
+            .and_then(|m| m.artist.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or(raw.artist);
+
+        let album = meta
+            .as_ref()
+            .and_then(|m| m.album.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or(raw.album);
+
+        let genre = meta
+            .as_ref()
+            .and_then(|m| m.genre.clone())
+            .filter(|s| !s.trim().is_empty())
+            .or(raw.genre);
+
+        let year = meta.as_ref().and_then(|m| m.year).or(raw.year);
+        let track_number = meta.as_ref().and_then(|m| m.track_number).or(raw.track_number);
+        let duration_secs = meta.as_ref().and_then(|m| m.duration).or(raw.duration_secs);
+        let cover_url = meta.as_ref().and_then(|m| m.cover_url.clone());
+        let bitrate = meta.as_ref().and_then(|m| m.bitrate).or(raw.bitrate);
+        let sample_rate = meta.as_ref().and_then(|m| m.sample_rate);
+        let format = meta
+            .as_ref()
+            .and_then(|m| m.format.clone())
+            .unwrap_or(raw.format);
+
+        let item = DeviceTrackItem {
+            file_name: raw.file_name,
+            relative_path: raw.relative_path,
+            full_path: raw.full_path.clone(),
+            size_bytes: raw.size_bytes,
+            format,
+            title: Some(title),
+            artist,
+            album,
+            genre,
+            year,
+            track_number,
+            duration_secs,
+            cover_url,
+            bitrate,
+            sample_rate,
+        };
+
+        if let Ok(mut guard) = device_track_cache().lock() {
+            guard.insert((raw.full_path, raw.size_bytes), item.clone());
+        }
+        persistent_cache.insert(p_key, item.clone());
+        cache_dirty = true;
+        items.push(item);
+    }
+
+    if cache_dirty {
+        save_persistent_mtp_meta_cache(&persistent_cache);
     }
 
     items
@@ -419,61 +895,46 @@ fn delete_mtp_device_file(file_path: &str) -> Result<bool, String> {
         return Err(format!("Invalid MTP file path: {file_path}"));
     };
 
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let (_, Some(file_item)) = find_mtp_shell_items_native(&dev_name, &storage_name, &rel_path)?
+    else {
+        return Err(format!("MTP file not found on device: {file_path}"));
+    };
 
-    let ps_script = r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$devName = $env:CT_MTP_DEV
-$storName = $env:CT_MTP_STOR
-$relPath = $env:CT_MTP_REL
-$sh = New-Object -ComObject Shell.Application
-$d = $sh.Namespace(17).Items() | Where-Object { $_.Name -eq $devName } | Select-Object -First 1
-if (-not $d) { exit 2 }
-$s = $d.GetFolder.Items() | Where-Object { $_.Name -eq $storName } | Select-Object -First 1
-if (-not $s) { $s = @($d.GetFolder.Items())[0] }
-if (-not $s) { exit 2 }
+    delete_mtp_shell_item_silently(&file_item)?;
 
-$parts = $relPath -split '[\\/]' | Where-Object { $_ -ne '' }
-$currFolder = $s.GetFolder
-for ($i = 0; $i -lt ($parts.Count - 1); $i++) {
-  $seg = $parts[$i]
-  $nextItem = $currFolder.Items() | Where-Object { $_.IsFolder -and $_.Name -ieq $seg } | Select-Object -First 1
-  if (-not $nextItem) { exit 3 }
-  $currFolder = $nextItem.GetFolder
-}
-$leafName = $parts[$parts.Count - 1]
-$leafNoExt = if ($leafName.Contains('.')) { $leafName.Substring(0, $leafName.LastIndexOf('.')) } else { $leafName }
-$target = $currFolder.Items() | Where-Object {
-  -not $_.IsFolder -and (
-    $_.Name -ieq $leafName -or
-    $_.Name -ieq $leafNoExt -or
-    [string]$_.ExtendedProperty('System.FileName') -ieq $leafName
-  )
-} | Select-Object -First 1
-if (-not $target) { exit 4 }
-$target.InvokeVerb('delete')
-Start-Sleep -Milliseconds 250
-exit 0
-"#;
+    let norm_mtp = format!("MTP:\\{}\\{}\\{}", dev_name, storage_name, rel_path);
+    let _ = fs::remove_file(mtp_local_cached_audio_path(&norm_mtp, 0));
 
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
-        .env("CT_MTP_DEV", &dev_name)
-        .env("CT_MTP_STOR", &storage_name)
-        .env("CT_MTP_REL", &rel_path)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("Failed to invoke MTP delete: {e}"))?;
-
-    if output.status.success() {
-        if let Ok(mut guard) = device_track_cache().lock() {
-            guard.retain(|(k_path, _), _| !k_path.eq_ignore_ascii_case(file_path));
+    let mut known_sizes = Vec::new();
+    if let Ok(mut guard) = device_track_cache().lock() {
+        for ((k_path, k_size), _) in guard.iter() {
+            if k_path.eq_ignore_ascii_case(file_path) || k_path.eq_ignore_ascii_case(&norm_mtp) {
+                known_sizes.push(*k_size);
+            }
         }
-        Ok(true)
-    } else {
-        Err(format!("Could not delete MTP file: {file_path}"))
+        guard.retain(|(k_path, _), _| {
+            !k_path.eq_ignore_ascii_case(file_path) && !k_path.eq_ignore_ascii_case(&norm_mtp)
+        });
     }
+    let mut persistent_cache = load_persistent_mtp_meta_cache();
+    let norm_prefix = format!("{}|", norm_mtp.trim().replace('/', "\\").to_lowercase());
+    let before_len = persistent_cache.len();
+    persistent_cache.retain(|k, v| {
+        if k.starts_with(&norm_prefix) || v.full_path.eq_ignore_ascii_case(&norm_mtp) {
+            known_sizes.push(v.size_bytes);
+            false
+        } else {
+            true
+        }
+    });
+    if persistent_cache.len() != before_len {
+        save_persistent_mtp_meta_cache(&persistent_cache);
+    }
+    for sz in known_sizes {
+        let _ = fs::remove_file(mtp_local_cached_audio_path(&norm_mtp, sz));
+    }
+
+    Ok(true)
 }
 
 #[cfg(target_os = "windows")]
@@ -507,6 +968,14 @@ fn copy_staged_file_to_mtp(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "Music".to_string());
 
+    // If an older copy already exists on the MTP device, delete it silently via IFileOperation first
+    let rel_str = rel_music_path.to_string_lossy().to_string();
+    if let Ok((_, Some(existing_file_item))) =
+        find_mtp_shell_items_native(dev_name, storage_name, &rel_str)
+    {
+        let _ = delete_mtp_shell_item_silently(&existing_file_item);
+    }
+
     let ps_script = r#"
 $ErrorActionPreference = 'Stop'
 $devName = $env:CT_MTP_DEV
@@ -537,19 +1006,6 @@ foreach ($seg in $parts) {
   }
   if (-not $existing) { throw "Failed to create folder '$seg' on MTP device" }
   $currFolder = $existing.GetFolder
-}
-
-# If an older copy exists in the destination folder, remove it first so CopyHere doesn't prompt
-$oldItem = $currFolder.Items() | Where-Object {
-  -not $_.IsFolder -and (
-    $_.Name -ieq $targetName -or
-    $_.Name -ieq $targetStem -or
-    [string]$_.ExtendedProperty('System.FileName') -ieq $targetName
-  )
-} | Select-Object -First 1
-if ($oldItem) {
-  $oldItem.InvokeVerb('delete')
-  Start-Sleep -Milliseconds 150
 }
 
 # 16 (Respond "Yes to All") + 4 (Do not display progress dialog) = 20
@@ -903,9 +1359,26 @@ fn sync_tracks_to_mtp_device(
                 continue;
             }
 
+            let full_mtp_path = format!(
+                "MTP:\\{}\\{}\\{}",
+                dev_name,
+                storage_name,
+                item.rel_path_for_list.to_string_lossy()
+            );
+            let rel_key_lookup = item
+                .rel_path_for_list
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_lowercase();
+
             let mut item_size = item.src_size;
             if item.skip {
                 tracks_skipped += 1;
+                if let Some(existing_it) = existing_by_rel_key.get(&rel_key_lookup) {
+                    if existing_it.size_bytes > 0 {
+                        item_size = existing_it.size_bytes;
+                    }
+                }
             } else if let Some(ref staged_path) = item.staged_file {
                 item_size = fs::metadata(staged_path).map(|m| m.len()).unwrap_or(item.src_size);
                 let is_temp_staged = staged_path.starts_with(&stage_dir);
@@ -913,6 +1386,9 @@ fn sync_tracks_to_mtp_device(
                     Ok(()) => {
                         tracks_synced += 1;
                         total_bytes_transferred += item_size;
+                        // Cache local playable copy for instant playback & ID3 metadata
+                        let _ = fs::copy(staged_path, mtp_local_cached_audio_path(&full_mtp_path, item_size));
+                        let _ = fs::copy(staged_path, mtp_local_cached_audio_path(&full_mtp_path, 0));
                     }
                     Err(e) => {
                         errors.push(format!("Failed to write {} to {}: {e}", item.track_title, dev_name));
@@ -927,12 +1403,6 @@ fn sync_tracks_to_mtp_device(
                 }
             }
 
-            let full_mtp_path = format!(
-                "MTP:\\{}\\{}\\{}",
-                dev_name,
-                storage_name,
-                item.rel_path_for_list.to_string_lossy()
-            );
             let synced_item = DeviceTrackItem {
                 file_name: item
                     .rel_path_for_list
@@ -960,8 +1430,11 @@ fn sync_tracks_to_mtp_device(
             };
 
             if let Ok(mut guard) = device_track_cache().lock() {
-                guard.insert((full_mtp_path, item_size), synced_item.clone());
+                guard.insert((full_mtp_path.clone(), item_size), synced_item.clone());
             }
+            let mut persistent_cache = load_persistent_mtp_meta_cache();
+            persistent_cache.insert(mtp_cache_key_str(&full_mtp_path, item_size), synced_item.clone());
+            save_persistent_mtp_meta_cache(&persistent_cache);
 
             let _ = app.emit(
                 "device-sync-progress",
@@ -2148,6 +2621,242 @@ pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
     }
 
     Ok(true)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_mtp_device_file(file_path: &str) -> Result<bool, String> {
+    let (dev_name, storage_name, rel_path) = if let Some(parsed) = parse_mtp_file_path(file_path) {
+        parsed
+    } else if let Some((d, s)) = parse_mtp_mount(file_path) {
+        (d, s, String::new())
+    } else {
+        return Err(format!("Invalid MTP path: {file_path}"));
+    };
+
+    let (folder_item, file_item) =
+        find_mtp_shell_items_native(&dev_name, &storage_name, &rel_path)?;
+
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{
+        ILFindLastID, ILFree, SHGetIDListFromObject, SHOpenFolderAndSelectItems,
+        ShellExecuteExW, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let mut opened = false;
+
+        let folder_pidl = SHGetIDListFromObject(&folder_item).ok();
+        let file_pidl = file_item
+            .as_ref()
+            .and_then(|fi| SHGetIDListFromObject(fi).ok());
+
+        if let (Some(f_pidl), Some(it_pidl)) = (folder_pidl, file_pidl) {
+            if !f_pidl.is_null() && !it_pidl.is_null() {
+                let child_pidl = ILFindLastID(it_pidl as *const _);
+                if !child_pidl.is_null() {
+                    let child_items = [child_pidl as *const _];
+                    if SHOpenFolderAndSelectItems(f_pidl as *const _, Some(&child_items), 0).is_ok()
+                    {
+                        opened = true;
+                    }
+                }
+                if !opened {
+                    let full_items = [it_pidl as *const _];
+                    if SHOpenFolderAndSelectItems(f_pidl as *const _, Some(&full_items), 0).is_ok()
+                    {
+                        opened = true;
+                    }
+                }
+                if !opened {
+                    if SHOpenFolderAndSelectItems(it_pidl as *const _, None, 0).is_ok() {
+                        opened = true;
+                    }
+                }
+            }
+        }
+
+        if !opened {
+            if let Some(f_pidl) = folder_pidl {
+                if !f_pidl.is_null() {
+                    let mut sei = SHELLEXECUTEINFOW {
+                        cbSize: core::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+                        fMask: SEE_MASK_INVOKEIDLIST,
+                        lpIDList: f_pidl as *mut core::ffi::c_void,
+                        nShow: SW_SHOWNORMAL.0,
+                        ..Default::default()
+                    };
+                    if ShellExecuteExW(&mut sei).is_ok() {
+                        opened = true;
+                    }
+                }
+            }
+        }
+
+        if let Some(it_pidl) = file_pidl {
+            if !it_pidl.is_null() {
+                ILFree(Some(it_pidl as *const _));
+            }
+        }
+        if let Some(f_pidl) = folder_pidl {
+            if !f_pidl.is_null() {
+                ILFree(Some(f_pidl as *const _));
+            }
+        }
+
+        if opened {
+            return Ok(true);
+        }
+    }
+
+    Err(format!("Failed to open MTP folder in Explorer: {file_path}"))
+}
+
+pub fn reveal_device_file_native(file_path: &str) -> Result<bool, String> {
+    let trimmed = file_path
+        .trim()
+        .trim_matches('"')
+        .trim_start_matches("dev_");
+
+    #[cfg(target_os = "windows")]
+    if is_mtp_mount(trimmed) {
+        return reveal_mtp_device_file(trimmed);
+    }
+
+    let unfile = if let Some(stripped) = trimmed.strip_prefix("file:///") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_prefix("file://") {
+        stripped
+    } else {
+        trimmed
+    };
+
+    let unverbatim = unfile.strip_prefix("\\\\?\\").unwrap_or(unfile);
+
+    let resolved_str = if Path::new(unverbatim).exists() {
+        unverbatim.to_string()
+    } else {
+        let dec = decode_percent_path(unverbatim);
+        if Path::new(&dec).exists() {
+            dec
+        } else {
+            unverbatim.to_string()
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut clean_win = resolved_str.replace('/', "\\");
+        while clean_win.contains("\\\\") && !clean_win.starts_with("\\\\") {
+            clean_win = clean_win.replace("\\\\", "\\");
+        }
+        let p = Path::new(&clean_win);
+        if p.exists() {
+            if p.is_dir() {
+                std::process::Command::new("explorer.exe")
+                    .arg(&clean_win)
+                    .spawn()
+                    .map_err(|e| format!("Failed to open folder in Explorer: {e}"))?;
+            } else {
+                std::process::Command::new("explorer.exe")
+                    .raw_arg(format!("/select,\"{}\"", clean_win))
+                    .spawn()
+                    .map_err(|e| format!("Failed to reveal file in Explorer: {e}"))?;
+            }
+            return Ok(true);
+        }
+
+        let mut anc = p.parent();
+        while let Some(dir) = anc {
+            if dir.exists() {
+                std::process::Command::new("explorer.exe")
+                    .arg(dir.to_string_lossy().to_string())
+                    .spawn()
+                    .map_err(|e| format!("Failed to open parent folder in Explorer: {e}"))?;
+                return Ok(true);
+            }
+            anc = dir.parent();
+        }
+        Err(format!("Location does not exist: {clean_win}"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let p = Path::new(&resolved_str);
+        if p.exists() {
+            if p.is_dir() {
+                std::process::Command::new("open")
+                    .arg(&resolved_str)
+                    .spawn()
+                    .map_err(|e| format!("Failed to open folder in Finder: {e}"))?;
+            } else {
+                std::process::Command::new("open")
+                    .args(["-R", &resolved_str])
+                    .spawn()
+                    .map_err(|e| format!("Failed to reveal file in Finder: {e}"))?;
+            }
+            return Ok(true);
+        }
+        let mut anc = p.parent();
+        while let Some(dir) = anc {
+            if dir.exists() {
+                std::process::Command::new("open")
+                    .arg(dir.to_string_lossy().to_string())
+                    .spawn()
+                    .map_err(|e| format!("Failed to open parent folder in Finder: {e}"))?;
+                return Ok(true);
+            }
+            anc = dir.parent();
+        }
+        Err(format!("Location does not exist: {resolved_str}"))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let p = Path::new(&resolved_str);
+        if p.exists() && p.is_file() {
+            let file_uri = format!("file://{}", resolved_str);
+            let dbus_arg = format!("array:string:{}", file_uri);
+            if let Ok(mut child) = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &dbus_arg,
+                    "string:",
+                ])
+                .spawn()
+            {
+                let _ = child.wait();
+                return Ok(true);
+            }
+        }
+        let target_dir = if p.is_dir() {
+            Some(p)
+        } else {
+            p.parent()
+        };
+        if let Some(dir) = target_dir {
+            if dir.exists() {
+                std::process::Command::new("xdg-open")
+                    .arg(dir.to_string_lossy().to_string())
+                    .spawn()
+                    .map_err(|e| format!("Failed to open folder with xdg-open: {e}"))?;
+                return Ok(true);
+            }
+        }
+        Err(format!("Location does not exist: {resolved_str}"))
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = resolved_str;
+        Ok(false)
+    }
 }
 
 struct SyncActiveGuard;

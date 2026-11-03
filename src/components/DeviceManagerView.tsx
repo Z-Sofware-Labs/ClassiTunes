@@ -543,8 +543,6 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     onEjectDevice(device.mountPoint);
   };
 
-  const [deleteConfirmFiles, setDeleteConfirmFiles] = useState<string[] | null>(null);
-
   const resolveDeviceFilePaths = (ids: string[]): string[] => {
     return ids
       .map(id => {
@@ -555,11 +553,6 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         return undefined;
       })
       .filter((fp): fp is string => Boolean(fp));
-  };
-
-  const promptDeleteDeviceFiles = (filePaths: string[]) => {
-    if (!filePaths || filePaths.length === 0) return;
-    setDeleteConfirmFiles(filePaths);
   };
 
   const executeDeleteDeviceFiles = async (filePaths: string[]) => {
@@ -579,10 +572,18 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         window.dispatchEvent(new CustomEvent('classitunes:stop-playback'));
       }
 
+      // Optimistically remove from UI immediately so Delete key / Context Menu feels instantaneous
+      setDeviceContents(prev => prev.filter(item => !filePaths.includes(item.fullPath)));
+      setDeviceSelectedTrackIds(prev => prev.filter(id => {
+        const item = deviceTracks.find(t => t.id === id);
+        const path = item?.filePath || (id.startsWith('dev_') ? id.slice(4) : id);
+        return !filePaths.includes(path);
+      }));
+
       const deletedPaths: string[] = [];
       for (const fp of filePaths) {
         let ok = await deleteDeviceFile(fp);
-        if (!ok) {
+        if (!ok && !/^mtp:[/\\]/i.test(fp)) {
           try {
             ok = await deleteTauriFile(fp);
           } catch {}
@@ -592,20 +593,20 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         }
       }
 
-      if (deletedPaths.length > 0) {
-        setDeviceContents(prev => prev.filter(item => !deletedPaths.includes(item.fullPath)));
-        setDeviceSelectedTrackIds(prev => prev.filter(id => {
-          const item = deviceTracks.find(t => t.id === id);
-          const path = item?.filePath || (id.startsWith('dev_') ? id.slice(4) : '');
-          return !deletedPaths.includes(path);
-        }));
-        if (onRefreshDevices) onRefreshDevices();
+      if (deletedPaths.length > 0 && onRefreshDevices) {
+        onRefreshDevices();
+      } else if (deletedPaths.length < filePaths.length) {
+        // Reload contents if any deletion failed so UI stays accurate
+        void fetchContents(false);
       }
     } catch (err: any) {
       console.error(`Could not delete file from device: ${err?.message || err}`);
-    } finally {
-      setDeleteConfirmFiles(null);
     }
+  };
+
+  const promptDeleteDeviceFiles = (filePaths: string[]) => {
+    if (!filePaths || filePaths.length === 0) return;
+    void executeDeleteDeviceFiles(filePaths);
   };
 
   const handleDeleteDeviceFiles = async (filePaths: string[]) => {
@@ -1299,48 +1300,6 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
           )}
         </button>
       </div>
-
-      {/* Delete Confirmation Modal for Device Contents */}
-      {deleteConfirmFiles && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setDeleteConfirmFiles(null)}>
-          <div className={`w-full max-w-md rounded-xl border shadow-2xl p-5 ${isLight ? 'bg-white border-gray-300 text-gray-900' : 'bg-[#1c1c1c] border-[#3a3a3a] text-gray-100'}`} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-black/10 dark:border-white/10">
-              <div className="flex items-center gap-2">
-                <Trash2 className="w-4 h-4 text-red-500" />
-                <h3 className="text-sm font-semibold">Delete from {device.name}</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDeleteConfirmFiles(null)}
-                className={`p-1 rounded transition-colors ${isLight ? 'hover:bg-gray-200 text-gray-500' : 'hover:bg-white/10 text-gray-400 hover:text-white'}`}
-                title="Cancel"
-              >
-                <XCircle className="w-4 h-4 opacity-50 hover:opacity-100" />
-              </button>
-            </div>
-            <p className={`text-xs leading-5 mb-4 ${isLight ? 'text-gray-600' : 'text-gray-400'}`}>
-              Are you sure you want to delete {deleteConfirmFiles.length === 1 ? 'this song' : `these ${deleteConfirmFiles.length} songs`} from <span className="font-semibold text-current">{device.name}</span>?
-              The physical audio {deleteConfirmFiles.length === 1 ? 'file' : 'files'} will be permanently removed from the device storage.
-              <br /><br />
-              <span className="text-emerald-500 font-medium">Your computer's ClassiTunes library will not be affected.</span>
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setDeleteConfirmFiles(null)}
-                className={`px-3.5 py-1.5 rounded-md text-xs font-medium border ${isLight ? 'border-gray-300 hover:bg-gray-100' : 'border-[#444] hover:bg-[#2a2a2a]'}`}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => executeDeleteDeviceFiles(deleteConfirmFiles)}
-                className="px-3.5 py-1.5 rounded-md text-xs font-medium bg-red-600 hover:bg-red-500 text-white shadow-sm"
-              >
-                Delete from Device
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );
