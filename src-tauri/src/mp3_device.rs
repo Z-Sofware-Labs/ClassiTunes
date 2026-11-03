@@ -26,6 +26,128 @@ fn mtp_devices_cache() -> &'static Mutex<Option<(std::time::Instant, Vec<Mp3Devi
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+fn ejected_mounts() -> &'static Mutex<std::collections::HashSet<String>> {
+    static EJECTED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    EJECTED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn normalize_mount_key(mount_point: &str) -> String {
+    mount_point
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
+}
+
+fn is_mount_currently_ejected(mount_point: &str) -> bool {
+    let key = normalize_mount_key(mount_point);
+    let Ok(guard) = ejected_mounts().lock() else {
+        return false;
+    };
+    if guard.contains(&key) {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    if let Some((dev_name, _)) = parse_mtp_mount(mount_point) {
+        let dev_key = format!("mtp_dev:{}", dev_name.trim().to_lowercase());
+        if guard.contains(&dev_key) {
+            return true;
+        }
+    }
+    false
+}
+
+fn record_ejected_mount(mount_point: &str) {
+    let key = normalize_mount_key(mount_point);
+    #[cfg(target_os = "windows")]
+    let mtp_dev_opt = parse_mtp_mount(mount_point).map(|(d, _)| d.trim().to_string());
+
+    if let Ok(mut guard) = ejected_mounts().lock() {
+        guard.insert(key.clone());
+        #[cfg(target_os = "windows")]
+        if let Some(ref dev_name) = mtp_dev_opt {
+            guard.insert(format!("mtp_dev:{}", dev_name.to_lowercase()));
+        }
+    }
+
+    if let Ok(mut guard) = last_known_devices_cache().lock() {
+        if let Some(ref mut list) = *guard {
+            list.retain(|d| !is_mount_currently_ejected(&d.mount_point));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(dev_name) = mtp_dev_opt {
+        let dev_key = format!("mtp_dev:{}", dev_name.to_lowercase());
+        std::thread::spawn(move || {
+            use windows::core::w;
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+            use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName};
+
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            }
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let still_ejected = ejected_mounts()
+                    .lock()
+                    .map(|g| g.contains(&key) || g.contains(&dev_key))
+                    .unwrap_or(false);
+                if !still_ejected {
+                    break;
+                }
+
+                let still_connected = unsafe {
+                    if let Ok(pc_item) = SHCreateItemFromParsingName::<_, _, IShellItem>(
+                        w!("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"),
+                        None,
+                    ) {
+                        find_child_shell_item(&pc_item, |_, disp, _| {
+                            disp.eq_ignore_ascii_case(&dev_name)
+                        })
+                        .is_some()
+                    } else {
+                        false
+                    }
+                };
+
+                if !still_connected {
+                    if let Ok(mut guard) = ejected_mounts().lock() {
+                        guard.remove(&key);
+                        guard.remove(&dev_key);
+                    }
+                    if let Ok(mut cache) = mtp_devices_cache().lock() {
+                        *cache = None;
+                    }
+                    break;
+                }
+            }
+        });
+    }
+}
+
+fn reconcile_and_filter_ejected_devices(raw_devices: Vec<Mp3Device>) -> Vec<Mp3Device> {
+    if let Ok(mut guard) = ejected_mounts().lock() {
+        if !guard.is_empty() {
+            let mut present_keys = std::collections::HashSet::new();
+            for d in &raw_devices {
+                present_keys.insert(normalize_mount_key(&d.mount_point));
+                #[cfg(target_os = "windows")]
+                if let Some((dev_name, _)) = parse_mtp_mount(&d.mount_point) {
+                    present_keys.insert(format!("mtp_dev:{}", dev_name.trim().to_lowercase()));
+                }
+            }
+            guard.retain(|k| present_keys.contains(k));
+        }
+    }
+
+    raw_devices
+        .into_iter()
+        .filter(|d| !is_mount_currently_ejected(&d.mount_point))
+        .collect()
+}
+
 pub fn is_mtp_mount(path_or_mount: &str) -> bool {
     let trimmed = path_or_mount
         .trim()
@@ -1995,6 +2117,8 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
         }
     }
 
+    let devices = reconcile_and_filter_ejected_devices(devices);
+
     if let Ok(mut guard) = last_known_devices_cache().lock() {
         *guard = Some(devices.clone());
     }
@@ -2083,6 +2207,8 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
         });
     }
 
+    let devices = reconcile_and_filter_ejected_devices(devices);
+
     if let Ok(mut guard) = last_known_devices_cache().lock() {
         *guard = Some(devices.clone());
     }
@@ -2155,6 +2281,8 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
         }
     }
 
+    let devices = reconcile_and_filter_ejected_devices(devices);
+
     if let Ok(mut guard) = last_known_devices_cache().lock() {
         *guard = Some(devices.clone());
     }
@@ -2169,6 +2297,7 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
 
 #[cfg(target_os = "windows")]
 pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
+    record_ejected_mount(mount_point);
     if is_mtp_mount(mount_point) {
         return Ok(true);
     }
@@ -2264,6 +2393,7 @@ pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
 
 #[cfg(target_os = "macos")]
 pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
+    record_ejected_mount(mount_point);
     use std::process::Command;
     let res = Command::new("diskutil")
         .args(["eject", mount_point])
@@ -2286,6 +2416,7 @@ pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
 
 #[cfg(target_os = "linux")]
 pub fn eject_device_native(mount_point: &str) -> Result<bool, String> {
+    record_ejected_mount(mount_point);
     use std::process::Command;
     // Try udisksctl unmount
     if let Ok(out) = Command::new("udisksctl").args(["unmount", "-p", mount_point]).output() {

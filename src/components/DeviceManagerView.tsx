@@ -755,62 +755,116 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
               {/* Nostalgic iPod / Device Graphic */}
               <div className="shrink-0 flex flex-col items-center">
                 {device.category === 'ipod' ? (
-                  /* Classic White & Chrome iPod */
-                  <div className="w-24 h-40 rounded-2xl bg-gradient-to-b from-gray-100 via-white to-gray-200 p-2.5 border-2 border-gray-300 shadow-xl flex flex-col items-center justify-between relative overflow-hidden">
-                    <div className="absolute inset-0 border border-white/80 rounded-2xl pointer-events-none" />
+                  /* Classic iPod: White & Silver in Light Mode, Anodized Black in Dark Mode */
+                  <div className={`w-24 h-40 rounded-2xl p-2.5 border-2 flex flex-col items-center justify-between relative overflow-hidden ${
+                    isLight
+                      ? 'bg-gradient-to-b from-gray-100 via-white to-gray-200 border-gray-300 shadow-md'
+                      : 'bg-gradient-to-b from-neutral-800 via-neutral-900 to-black border-neutral-600 shadow-xl'
+                  }`}>
+                    <div className={`absolute inset-0 border rounded-2xl pointer-events-none ${
+                      isLight ? 'border-white/80' : 'border-white/10'
+                    }`} />
                     
                     {/* iPod Screen */}
-                    <div className="w-full h-15 rounded-md bg-[#c2d7b5] border border-gray-400 p-1 flex flex-col justify-between shadow-inner">
-                      <div className="text-[7px] font-bold text-gray-800 tracking-wider">ClassiTunes</div>
-                      <div className="text-[8px] font-semibold text-gray-800 text-center truncate">Now Playing</div>
-                      <div className="flex justify-between items-center text-[6px] text-gray-700 font-mono">
+                    <div className={`w-full h-15 rounded-md border p-1 flex flex-col justify-between shadow-inner ${
+                      isLight
+                        ? 'bg-[#c2d7b5] border-gray-400'
+                        : 'bg-[#1a2636] border-neutral-600'
+                    }`}>
+                      <div className={`text-[7px] font-bold tracking-wider ${isLight ? 'text-gray-800' : 'text-sky-300'}`}>ClassiTunes</div>
+                      <div className={`text-[8px] font-semibold text-center truncate ${isLight ? 'text-gray-800' : 'text-sky-100'}`}>Now Playing</div>
+                      <div className={`flex justify-between items-center text-[6px] font-mono ${isLight ? 'text-gray-700' : 'text-sky-300/80'}`}>
                         <span>▶ 1:23</span>
                         <span>-2:45</span>
                       </div>
                     </div>
 
                     {/* Classic Click Wheel */}
-                    <div className="w-16 h-16 rounded-full bg-gradient-to-b from-gray-200 via-gray-100 to-gray-300 border border-gray-300 shadow flex items-center justify-center relative mt-1">
-                      <div className="w-6 h-6 rounded-full bg-gradient-to-b from-white to-gray-200 border border-gray-300 shadow-inner" />
-                      <span className="absolute top-1 text-[7px] font-bold text-gray-500 uppercase tracking-widest">MENU</span>
-                      <span className="absolute bottom-1 text-[7px] font-bold text-gray-500">▶❚❚</span>
-                      <span className="absolute left-1.5 text-[7px] font-bold text-gray-500">|◀◀</span>
-                      <span className="absolute right-1.5 text-[7px] font-bold text-gray-500">▶▶|</span>
+                    <div className={`w-16 h-16 rounded-full border shadow flex items-center justify-center relative mt-1 ${
+                      isLight
+                        ? 'bg-gradient-to-b from-gray-200 via-gray-100 to-gray-300 border-gray-300'
+                        : 'bg-gradient-to-b from-neutral-700 via-neutral-800 to-neutral-900 border-neutral-600'
+                    }`}>
+                      <div className={`w-6 h-6 rounded-full border shadow-inner ${
+                        isLight
+                          ? 'bg-gradient-to-b from-white to-gray-200 border-gray-300'
+                          : 'bg-gradient-to-b from-neutral-800 to-neutral-950 border-neutral-600'
+                      }`} />
+                      <span className={`absolute top-1 text-[7px] font-bold uppercase tracking-widest ${isLight ? 'text-gray-500' : 'text-neutral-300'}`}>MENU</span>
+                      <span className={`absolute bottom-1 text-[7px] font-bold ${isLight ? 'text-gray-500' : 'text-neutral-300'}`}>▶❚❚</span>
+                      <span className={`absolute left-1.5 text-[7px] font-bold ${isLight ? 'text-gray-500' : 'text-neutral-300'}`}>|◀◀</span>
+                      <span className={`absolute right-1.5 text-[7px] font-bold ${isLight ? 'text-gray-500' : 'text-neutral-300'}`}>▶▶|</span>
                     </div>
                   </div>
                 ) : device.category === 'iphone' ? (
-                  <div className="w-22 h-40 rounded-2xl bg-gradient-to-b from-gray-800 to-black p-2 border-2 border-gray-600 shadow-xl flex flex-col items-center justify-between">
-                    <div className="w-8 h-1 bg-gray-600 rounded-full mt-1" />
-                    <div className="w-full flex-1 my-2 rounded-lg bg-indigo-950/40 border border-indigo-500/20 flex flex-col items-center justify-center gap-1">
-                      <Smartphone className="w-8 h-8 text-indigo-400" />
-                      <span className="text-[8px] font-mono text-indigo-300 font-bold uppercase">iOS Media</span>
+                  <div className={`w-22 h-40 rounded-2xl p-2 border-2 flex flex-col items-center justify-between ${
+                    isLight
+                      ? 'bg-gradient-to-b from-[#f8fafc] via-white to-[#e2e8f0] border-[#cbd5e1] shadow-md'
+                      : 'bg-gradient-to-b from-gray-800 to-black border-gray-600 shadow-xl'
+                  }`}>
+                    <div className={`w-8 h-1 rounded-full mt-1 ${isLight ? 'bg-slate-300' : 'bg-gray-600'}`} />
+                    <div className={`w-full flex-1 my-2 rounded-lg border flex flex-col items-center justify-center gap-1 ${
+                      isLight
+                        ? 'bg-indigo-50/90 border-indigo-200'
+                        : 'bg-indigo-950/40 border-indigo-500/20'
+                    }`}>
+                      <Smartphone className={`w-8 h-8 ${isLight ? 'text-indigo-600' : 'text-indigo-400'}`} />
+                      <span className={`text-[8px] font-mono font-bold uppercase ${isLight ? 'text-indigo-700' : 'text-indigo-300'}`}>iOS Media</span>
                     </div>
-                    <div className="w-4 h-4 rounded-full border border-gray-600" />
+                    <div className={`w-4 h-4 rounded-full border ${isLight ? 'border-slate-300 bg-white shadow-inner' : 'border-gray-600'}`} />
                   </div>
                 ) : device.category === 'android' ? (
-                  <div className="w-22 h-40 rounded-2xl bg-gradient-to-b from-emerald-950 to-neutral-900 p-2 border-2 border-emerald-600/60 shadow-xl flex flex-col items-center justify-between">
-                    <div className="w-3 h-3 rounded-full bg-emerald-500/20 border border-emerald-400/40 mt-1" />
-                    <div className="w-full flex-1 my-2 rounded-lg bg-emerald-950/50 border border-emerald-500/30 flex flex-col items-center justify-center gap-1">
-                      <Smartphone className="w-8 h-8 text-emerald-400" />
-                      <span className="text-[8px] font-mono text-emerald-300 font-bold uppercase">Android</span>
+                  <div className={`w-22 h-40 rounded-2xl p-2 border-2 flex flex-col items-center justify-between ${
+                    isLight
+                      ? 'bg-gradient-to-b from-[#f8fafc] via-white to-[#ecfdf5] border-emerald-300 shadow-md'
+                      : 'bg-gradient-to-b from-emerald-950 to-neutral-900 border-emerald-600/60 shadow-xl'
+                  }`}>
+                    <div className={`w-3 h-3 rounded-full border mt-1 ${
+                      isLight
+                        ? 'bg-emerald-100 border-emerald-300'
+                        : 'bg-emerald-500/20 border-emerald-400/40'
+                    }`} />
+                    <div className={`w-full flex-1 my-2 rounded-lg border flex flex-col items-center justify-center gap-1 ${
+                      isLight
+                        ? 'bg-emerald-50/90 border-emerald-200'
+                        : 'bg-emerald-950/50 border-emerald-500/30'
+                    }`}>
+                      <Smartphone className={`w-8 h-8 ${isLight ? 'text-emerald-600' : 'text-emerald-400'}`} />
+                      <span className={`text-[8px] font-mono font-bold uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>Android</span>
                     </div>
-                    <div className="w-6 h-1 bg-emerald-500/40 rounded-full" />
+                    <div className={`w-6 h-1 rounded-full ${isLight ? 'bg-emerald-400/70' : 'bg-emerald-500/40'}`} />
                   </div>
                 ) : device.category === 'mp3Player' ? (
-                  <div className="w-24 h-38 rounded-xl bg-gradient-to-b from-blue-950 via-slate-900 to-neutral-900 p-2.5 border-2 border-blue-500/50 shadow-xl flex flex-col items-center justify-between">
-                    <div className="w-full h-12 rounded bg-cyan-950/60 border border-cyan-500/40 p-1 flex flex-col justify-between">
-                      <div className="text-[7px] font-mono font-bold text-cyan-300">HiFi Audio</div>
-                      <div className="text-[8px] text-cyan-100 font-bold truncate">DAP Player</div>
+                  <div className={`w-24 h-38 rounded-xl p-2.5 border-2 flex flex-col items-center justify-between ${
+                    isLight
+                      ? 'bg-gradient-to-b from-[#f8fafc] via-[#f1f5f9] to-[#e2e8f0] border-blue-300 shadow-md'
+                      : 'bg-gradient-to-b from-blue-950 via-slate-900 to-neutral-900 border-blue-500/50 shadow-xl'
+                  }`}>
+                    <div className={`w-full h-12 rounded border p-1 flex flex-col justify-between ${
+                      isLight
+                        ? 'bg-sky-50 border-sky-200'
+                        : 'bg-cyan-950/60 border-cyan-500/40'
+                    }`}>
+                      <div className={`text-[7px] font-mono font-bold ${isLight ? 'text-sky-700' : 'text-cyan-300'}`}>HiFi Audio</div>
+                      <div className={`text-[8px] font-bold truncate ${isLight ? 'text-slate-800' : 'text-cyan-100'}`}>DAP Player</div>
                     </div>
-                    <div className="w-10 h-10 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center shadow-inner">
-                      <div className="w-3.5 h-3.5 rounded-full bg-blue-500" />
+                    <div className={`w-10 h-10 rounded-full border flex items-center justify-center shadow-inner ${
+                      isLight
+                        ? 'bg-white border-slate-300'
+                        : 'bg-slate-800 border-slate-600'
+                    }`}>
+                      <div className={`w-3.5 h-3.5 rounded-full ${isLight ? 'bg-blue-600' : 'bg-blue-500'}`} />
                     </div>
-                    <div className="text-[8px] font-mono uppercase text-blue-300 font-bold">MP3 / FLAC</div>
+                    <div className={`text-[8px] font-mono uppercase font-bold ${isLight ? 'text-blue-700' : 'text-blue-300'}`}>MP3 / FLAC</div>
                   </div>
                 ) : (
-                  <div className="w-24 h-36 rounded-xl bg-gradient-to-b from-gray-700 to-gray-900 p-3 border-2 border-gray-500 shadow-xl flex flex-col items-center justify-center gap-2">
-                    <HardDrive className="w-12 h-12 text-blue-400" />
-                    <div className="text-[10px] font-mono uppercase text-gray-400 font-semibold">{device.filesystem}</div>
+                  <div className={`w-24 h-36 rounded-xl p-3 border-2 flex flex-col items-center justify-center gap-2 ${
+                    isLight
+                      ? 'bg-gradient-to-b from-[#f8fafc] via-[#edf2f7] to-[#dde4ee] border-[#cbd5e1] shadow-md'
+                      : 'bg-gradient-to-b from-gray-700 to-gray-900 border-gray-500 shadow-xl'
+                  }`}>
+                    <HardDrive className={`w-12 h-12 ${isLight ? 'text-blue-600' : 'text-blue-400'}`} />
+                    <div className={`text-[10px] font-mono uppercase font-semibold ${isLight ? 'text-slate-600' : 'text-gray-400'}`}>{device.filesystem}</div>
                   </div>
                 )}
               </div>
