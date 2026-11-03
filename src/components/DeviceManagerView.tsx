@@ -331,14 +331,14 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     const year = sampleTrack.year ? String(sampleTrack.year) : '2026';
 
     const cleanTmpl = (namingTemplate || '{Artist}/{Album}/{TrackNumber} - {Title}')
-      .replace(/\.?\{ext\}/g, '');
+      .replace(/\.?\{ext\}/gi, '');
 
     const rendered = cleanTmpl
-      .replace('{Artist}', artist)
-      .replace('{Album}', album)
-      .replace('{Title}', title)
-      .replace('{TrackNumber}', trackNum)
-      .replace('{Year}', year);
+      .replaceAll('{Artist}', artist)
+      .replaceAll('{Album}', album)
+      .replaceAll('{Title}', title)
+      .replaceAll('{TrackNumber}', trackNum)
+      .replaceAll('{Year}', year);
 
     let normalized = rendered.replace(/\//g, '\\').trim();
     while (normalized.endsWith('\\')) {
