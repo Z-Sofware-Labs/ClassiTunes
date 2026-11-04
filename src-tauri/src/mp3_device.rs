@@ -10,6 +10,34 @@ use tauri::{AppHandle, Emitter};
 static SYNC_ABORT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SYNC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// RAII Guard that asserts OS power state to prevent computer from sleeping during sync
+struct SyncSleepInhibitGuard;
+
+impl SyncSleepInhibitGuard {
+    fn acquire() -> Self {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows::Win32::System::Power::{
+                SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_AWAYMODE_REQUIRED
+            };
+            // Prevent Windows from sleeping / suspending while transfer is active
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
+        }
+        SyncSleepInhibitGuard
+    }
+}
+
+impl Drop for SyncSleepInhibitGuard {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            use windows::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS};
+            // Restore normal power management
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
+    }
+}
+
 fn last_known_devices_cache() -> &'static Mutex<Option<Vec<Mp3Device>>> {
     static CACHE: OnceLock<Mutex<Option<Vec<Mp3Device>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
@@ -1660,7 +1688,7 @@ fn sync_tracks_to_mtp_device(
 fn copy_file_buffered(src: &Path, dest: &Path) -> Result<u64, std::io::Error> {
     let mut reader = fs::File::open(src)?;
     let mut writer = fs::File::create(dest)?;
-    let mut buf = vec![0u8; 256 * 1024]; // 256 KB sequential buffer optimal for USB 2.0/3.0 flash controllers
+    let mut buf = vec![0u8; 1024 * 1024]; // 1 MB sequential buffer reducing USB controller bus cycle context switches
     let mut total = 0u64;
     loop {
         let n = reader.read(&mut buf)?;
@@ -3265,6 +3293,7 @@ pub fn sync_tracks_to_device_impl(
     SYNC_ABORT_REQUESTED.store(false, Ordering::SeqCst);
     SYNC_IN_PROGRESS.store(true, Ordering::SeqCst);
     let _sync_guard = SyncActiveGuard;
+    let _sleep_guard = SyncSleepInhibitGuard::acquire();
 
     #[cfg(target_os = "windows")]
     if is_mtp_mount(&payload.mount_point) {

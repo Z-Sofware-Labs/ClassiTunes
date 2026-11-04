@@ -466,6 +466,23 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                     </span>
                   </label>
                 </div>
+
+                <div className={`pt-2.5 border-t ${isLight ? 'border-gray-200' : 'border-[#333]'}`}>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.keepAwakeDuringPlayback)}
+                      onChange={e => update('keepAwakeDuringPlayback', e.target.checked)}
+                      className="mt-0.5 accent-blue-600"
+                    />
+                    <span>
+                      <span className="block font-semibold text-xs">Keep computer from sleeping during playback</span>
+                      <span className={`block text-[10px] mt-0.5 leading-relaxed ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                        Prevents your screen or computer from automatically going to sleep or suspending while music is actively playing.
+                      </span>
+                    </span>
+                  </label>
+                </div>
               </div>
             </div>
           )}

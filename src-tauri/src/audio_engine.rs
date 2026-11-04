@@ -595,8 +595,8 @@ fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> 
 
         let sample_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels() as usize;
-        let sample_format = supported_config.sample_format();
-        let config: cpal::StreamConfig = supported_config.into();
+        let _sample_format = supported_config.sample_format();
+        let _config: cpal::StreamConfig = supported_config.into();
 
         let shared = Arc::new(Mutex::new(EngineSharedState::new(sample_rate, channels)));
         let _ = ENGINE_STATE.set(shared.clone());
@@ -606,75 +606,131 @@ fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> 
         std::thread::Builder::new()
             .name("classitunes-cpal-audio".to_string())
             .spawn(move || {
-                let err_fn = |err| eprintln!("[NativeAudioEngine] stream error: {err}");
-                let stream_res = match sample_format {
-                    cpal::SampleFormat::F32 => device.build_output_stream(
-                        &config,
-                        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            if let Ok(mut guard) = shared.lock() {
-                                guard.render_interleaved_f32(data);
-                            } else {
-                                data.fill(0.0);
-                            }
-                        },
-                        err_fn,
-                        None,
-                    ),
-                    cpal::SampleFormat::I16 => {
-                        let mut scratch = Vec::<f32>::new();
-                        device.build_output_stream(
-                            &config,
-                            move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                                scratch.resize(data.len(), 0.0);
-                                if let Ok(mut guard) = shared.lock() {
-                                    guard.render_interleaved_f32(&mut scratch);
-                                } else {
-                                    scratch.fill(0.0);
-                                }
-                                for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
-                                    *dst = i16::from_sample(src);
-                                }
-                            },
-                            err_fn,
-                            None,
-                        )
-                    }
-                    cpal::SampleFormat::U16 => {
-                        let mut scratch = Vec::<f32>::new();
-                        device.build_output_stream(
-                            &config,
-                            move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                                scratch.resize(data.len(), 0.0);
-                                if let Ok(mut guard) = shared.lock() {
-                                    guard.render_interleaved_f32(&mut scratch);
-                                } else {
-                                    scratch.fill(0.0);
-                                }
-                                for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
-                                    *dst = u16::from_sample(src);
-                                }
-                            },
-                            err_fn,
-                            None,
-                        )
-                    }
-                    _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
-                };
+                let err_sender = tx_ready;
+                let mut current_tx = Some(err_sender);
 
-                match stream_res {
-                    Ok(stream) => {
-                        if let Err(e) = stream.play() {
-                            let _ = tx_ready.send(Err(format!("Failed to start output stream: {e}")));
-                            return;
+                loop {
+                    let host = cpal::default_host();
+                    let device_opt = host.default_output_device();
+                    let Some(device) = device_opt else {
+                        eprintln!("[NativeAudioEngine] No default audio output device available, waiting for device...");
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                        continue;
+                    };
+
+                    let supported_config = match device.default_output_config() {
+                        Ok(cfg) => cfg,
+                        Err(e) => {
+                            eprintln!("[NativeAudioEngine] Failed to query default output config: {e}");
+                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                            continue;
                         }
-                        let _ = tx_ready.send(Ok(()));
-                        // Keep stream alive for the lifetime of the application
-                        loop {
-                            std::thread::park();
-                        }
+                    };
+
+                    let sample_rate = supported_config.sample_rate().0;
+                    let channels = supported_config.channels() as usize;
+                    let sample_format = supported_config.sample_format();
+                    let config: cpal::StreamConfig = supported_config.into();
+
+                    if let Ok(mut guard) = shared.lock() {
+                        guard.output_sample_rate = sample_rate;
+                        guard.output_channels = channels;
                     }
-                    Err(e) => {
-                        let _ = tx_ready.send(Err(format!("Failed to build output stream: {e}")));
+
+                    let stream_error_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let err_flag_clone = stream_error_flag.clone();
+                    let err_fn = move |err| {
+                        eprintln!("[NativeAudioEngine] stream error / device change: {err}");
+                        err_flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                    };
+
+                    let stream_res = match sample_format {
+                        cpal::SampleFormat::F32 => {
+                            let shared_clone = shared.clone();
+                            device.build_output_stream(
+                                &config,
+                                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                                    if let Ok(mut guard) = shared_clone.lock() {
+                                        guard.render_interleaved_f32(data);
+                                    } else {
+                                        data.fill(0.0);
+                                    }
+                                },
+                                err_fn,
+                                None,
+                            )
+                        }
+                        cpal::SampleFormat::I16 => {
+                            let shared_clone = shared.clone();
+                            let mut scratch = Vec::<f32>::new();
+                            device.build_output_stream(
+                                &config,
+                                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                                    scratch.resize(data.len(), 0.0);
+                                    if let Ok(mut guard) = shared_clone.lock() {
+                                        guard.render_interleaved_f32(&mut scratch);
+                                    } else {
+                                        scratch.fill(0.0);
+                                    }
+                                    for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
+                                        *dst = i16::from_sample(src);
+                                    }
+                                },
+                                err_fn,
+                                None,
+                            )
+                        }
+                        cpal::SampleFormat::U16 => {
+                            let shared_clone = shared.clone();
+                            let mut scratch = Vec::<f32>::new();
+                            device.build_output_stream(
+                                &config,
+                                move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                                    scratch.resize(data.len(), 0.0);
+                                    if let Ok(mut guard) = shared_clone.lock() {
+                                        guard.render_interleaved_f32(&mut scratch);
+                                    } else {
+                                        scratch.fill(0.0);
+                                    }
+                                    for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
+                                        *dst = u16::from_sample(src);
+                                    }
+                                },
+                                err_fn,
+                                None,
+                            )
+                        }
+                        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+                    };
+
+                    match stream_res {
+                        Ok(stream) => {
+                            if let Err(e) = stream.play() {
+                                if let Some(tx) = current_tx.take() {
+                                    let _ = tx.send(Err(format!("Failed to start output stream: {e}")));
+                                    return;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                continue;
+                            }
+                            if let Some(tx) = current_tx.take() {
+                                let _ = tx.send(Ok(()));
+                            }
+
+                            // Keep stream playing until an output device error / unplug occurs
+                            while !stream_error_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                                std::thread::sleep(std::time::Duration::from_millis(250));
+                            }
+                            eprintln!("[NativeAudioEngine] Reconnecting audio stream to newly designated default audio device...");
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                        }
+                        Err(e) => {
+                            if let Some(tx) = current_tx.take() {
+                                let _ = tx.send(Err(format!("Failed to build output stream: {e}")));
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1000));
+                        }
                     }
                 }
             })

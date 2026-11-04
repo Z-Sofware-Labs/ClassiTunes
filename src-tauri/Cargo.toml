@@ -1,6 +1,6 @@
 [package]
 name = "classitunes"
-version = "3.0.9"
+version = "2.0.9"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
 edition = "2021"
@@ -58,4 +58,5 @@ windows = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Power",
 ] }

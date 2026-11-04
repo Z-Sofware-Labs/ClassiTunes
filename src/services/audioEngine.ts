@@ -459,6 +459,41 @@ export class AudioEngine {
       this.audioCtx = new AudioCtxClass();
       this.decks = [this.buildDeck(0), this.buildDeck(1)];
       this.isInitialized = true;
+
+      // Handle output device changes (headphones plugged/unplugged, Bluetooth connected/disconnected, HDMI switch)
+      if (this.audioCtx) {
+        this.audioCtx.onstatechange = () => {
+          if (this.audioCtx?.state === 'interrupted' || this.audioCtx?.state === 'suspended') {
+            if (this.activeAudio && !this.activeAudio.paused) {
+              this.audioCtx.resume().catch(() => {});
+            }
+          }
+        };
+      }
+
+      if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+        navigator.mediaDevices.addEventListener('devicechange', async () => {
+          console.log('[AudioEngine] Audio output device change detected');
+          try {
+            if (this.audioCtx && this.audioCtx.state === 'suspended') {
+              await this.audioCtx.resume();
+            }
+            if (this.activeAudio && !this.activeAudio.paused) {
+              const currentSrc = this.activeAudio.src;
+              const currentTime = this.activeAudio.currentTime;
+              if (currentSrc) {
+                // Kickstart play on newly selected default sound device
+                await this.activeAudio.play().catch(async () => {
+                  this.activeAudio!.currentTime = currentTime;
+                  await this.activeAudio!.play().catch(() => {});
+                });
+              }
+            }
+          } catch (e) {
+            console.warn('[AudioEngine] Device change recovery failed:', e);
+          }
+        });
+      }
     } catch (e) {
       console.warn('WebAudio initialization error:', e);
     }

@@ -115,6 +115,7 @@ export interface AppSettings {
   crossfadeEnabled: boolean;
   crossfadeSeconds: number;
   audioNormalization: boolean;
+  keepAwakeDuringPlayback: boolean;
   defaultTheme: ThemePreference;
   disableTransparency: boolean;
   transcodeOnSync: boolean;
@@ -131,6 +132,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   crossfadeEnabled: false,
   crossfadeSeconds: 5,
   audioNormalization: false,
+  keepAwakeDuringPlayback: false,
   defaultTheme: 'system',
   disableTransparency: false,
   transcodeOnSync: false,

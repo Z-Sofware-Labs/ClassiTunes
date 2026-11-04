@@ -1,4 +1,14 @@
-// Safe Window Controls & Position Persistence Helper for Tauri v1/v2, Electron & Web
+export async function setPlaybackSleepInhibit(inhibit: boolean): Promise<boolean> {
+  if (typeof window !== 'undefined' && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__ || (window as any).__TAURI_METADATA__)) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<boolean>('set_playback_sleep_inhibit', { inhibit });
+    } catch (e) {
+      console.warn('set_playback_sleep_inhibit error:', e);
+    }
+  }
+  return false;
+}
 import { platformInfo, isWindowsTauri } from './platform';
 
 export async function tauriMinimize(): Promise<boolean> {

@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "classitunes"
-version = "3.0.9"
+version = "2.0.9"
 dependencies = [
  "bincode",
  "cpal",

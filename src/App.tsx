@@ -11,7 +11,7 @@ import { AlbumGridView, sortAlbumsList } from './components/AlbumGridView';
 import { StatusBar } from './components/StatusBar';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
+import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata, trimArtworkBlobs, internTrackStrings } from './services/mediaStorage';
 import { Upload, Music, Disc, X } from 'lucide-react';
@@ -1111,6 +1111,15 @@ export default function App() {
   useEffect(() => {
     audioEngine.setNormalizationEnabled(appSettings.audioNormalization);
   }, [appSettings.audioNormalization]);
+
+  // Keep the computer awake only while music is actively playing (and the option is enabled).
+  useEffect(() => {
+    void setPlaybackSleepInhibit(Boolean(appSettings.keepAwakeDuringPlayback && isPlaying));
+  }, [appSettings.keepAwakeDuringPlayback, isPlaying]);
+
+  useEffect(() => {
+    return () => { void setPlaybackSleepInhibit(false); };
+  }, []);
 
   const handleSelectionChange = useCallback((ids: string[]) => {
     setSelectedTrackIds(ids);

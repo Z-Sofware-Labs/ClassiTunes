@@ -2253,6 +2253,73 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
 }
 
 
+/// Whether the "keep awake during playback" assertion is currently requested.
+/// Shared so transfer (sync) guards restore the correct power state when they finish.
+pub static PLAYBACK_SLEEP_INHIBIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(target_os = "windows"))]
+fn playback_inhibit_child() -> &'static std::sync::Mutex<Option<std::process::Child>> {
+    static CHILD: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Child>>> = std::sync::OnceLock::new();
+    CHILD.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[tauri::command]
+fn set_playback_sleep_inhibit(inhibit: bool) -> Result<bool, String> {
+    PLAYBACK_SLEEP_INHIBIT.store(inhibit, std::sync::atomic::Ordering::SeqCst);
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows::Win32::System::Power::{
+            SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+        };
+        // Execution state is per-thread; use a dedicated long-lived thread so the assertion persists.
+        // Command threads may differ between invocations, so spawn a holder thread when inhibiting.
+        static HOLDER: std::sync::OnceLock<std::sync::mpsc::Sender<bool>> = std::sync::OnceLock::new();
+        let tx = HOLDER.get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<bool>();
+            std::thread::Builder::new()
+                .name("classitunes-power".to_string())
+                .spawn(move || {
+                    while let Ok(on) = rx.recv() {
+                        if on {
+                            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+                        } else {
+                            SetThreadExecutionState(ES_CONTINUOUS);
+                        }
+                    }
+                })
+                .ok();
+            tx
+        });
+        let _ = tx.send(inhibit);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(mut guard) = playback_inhibit_child().lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if inhibit {
+                #[cfg(target_os = "macos")]
+                let spawned = std::process::Command::new("caffeinate").args(["-i", "-d"]).spawn();
+                #[cfg(target_os = "linux")]
+                let spawned = std::process::Command::new("systemd-inhibit")
+                    .args(["--what=idle:sleep", "--who=ClassiTunes", "--why=Playing music", "sleep", "infinity"])
+                    .spawn();
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                let spawned: Result<std::process::Child, std::io::Error> =
+                    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "unsupported"));
+                if let Ok(child) = spawned {
+                    *guard = Some(child);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
@@ -2346,7 +2413,8 @@ pub fn run() {
             delete_device_file,
             reveal_file_in_explorer,
             resolve_playable_file_path,
-            read_clipboard_native
+            read_clipboard_native,
+            set_playback_sleep_inhibit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
