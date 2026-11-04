@@ -82,6 +82,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const [isDraggingSeek, setIsDraggingSeek] = useState(false);
   const [seekVal, setSeekVal] = useState(0);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [activeDisplayMode, setActiveDisplayMode] = useState<'player' | 'transfer'>('player');
 
   const isLight = theme === 'light';
 
@@ -114,6 +115,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       setIsDraggingSeek(false);
       const engDur = audioEngine.getDuration();
       setDuration(engDur && isFinite(engDur) && engDur > 0 ? engDur : (currentTrack.duration || 0));
+      // Prioritize player view when a song starts or changes
+      setActiveDisplayMode('player');
     } else {
       setCurrentTime(0);
       setDuration(0);
@@ -121,6 +124,18 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       setIsDraggingSeek(false);
     }
   }, [currentTrack?.id]);
+
+  const hasTransferActive = Boolean((deviceSyncProgress && deviceSyncProgress.active) || (isImporting && importProgress));
+  const hasPlayerActive = Boolean(currentTrack);
+
+  useEffect(() => {
+    if (hasTransferActive && hasPlayerActive) {
+      const interval = setInterval(() => {
+        setActiveDisplayMode((prev) => (prev === 'player' ? 'transfer' : 'player'));
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [hasTransferActive, hasPlayerActive]);
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
@@ -425,7 +440,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         {/* Center Section: LCD Display (True Dead Center) */}
         <div className="flex items-center justify-center w-[512px] shrink-0 mx-auto">
-          <div className={`relative border rounded-md px-2.5 pt-1.5 pb-1 text-center overflow-hidden transition-colors w-full h-[44px] flex flex-col justify-center ${isLight
+          <div className={`relative border rounded-md text-center overflow-hidden transition-colors w-full h-[44px] flex flex-col justify-center ${isLight
             ? 'bg-gradient-to-b from-white via-[#f0f4fa] to-[#dbe5f2] border-[#8a97a8] shadow-[inset_0_1px_3px_rgba(0,0,0,0.15)] text-gray-900'
             : 'bg-gradient-to-b from-[#2a2a2a] to-[#1a1a1a] border-[#333] shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)] text-gray-100'
             }`}>
@@ -433,8 +448,192 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             <div className={`absolute top-0 left-0 right-0 h-1/2 pointer-events-none ${isLight ? 'bg-gradient-to-b from-white/60 to-transparent' : 'bg-gradient-to-b from-white/5 to-transparent'
               }`} />
 
-            {(deviceSyncProgress && deviceSyncProgress.active) || (isImporting && importProgress) ? (
-              <div className="flex flex-col items-center justify-center relative w-full h-full px-2">
+            {hasTransferActive && hasPlayerActive ? (
+              <div className="relative w-full h-[44px] overflow-hidden">
+                <div
+                  className="w-full transition-transform duration-500 ease-in-out"
+                  style={{
+                    transform: activeDisplayMode === 'player' ? 'translateY(0px)' : 'translateY(-44px)',
+                  }}
+                >
+                  {/* Slide 1: Player View */}
+                  <div className="w-full h-[44px] px-2.5 pt-1.5 pb-1 shrink-0 flex flex-col items-center justify-center box-border">
+                    {/* Row 1: Song - Artist with Marquee support for long text */}
+                    <div className="w-full text-center px-4 leading-none pt-[1px] pb-[2px] overflow-hidden">
+                      <MarqueeText
+                        text={currentTrack?.artist ? `${currentTrack.title} — ${currentTrack.artist}` : (currentTrack?.title || '')}
+                        className={`text-[11px] tracking-normal block leading-none ${isLight ? 'text-gray-900 drop-shadow-[0_1px_0_rgba(255,255,255,0.7)]' : 'text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]'}`}
+                      >
+                        <span className="font-semibold">{currentTrack?.title}</span>
+                        {currentTrack?.artist && (
+                          <span className="font-normal opacity-85"> — {currentTrack.artist}</span>
+                        )}
+                      </MarqueeText>
+                    </div>
+
+                    {/* Row 2: LCD Scrubber & Times */}
+                    <div className="w-full flex items-center gap-1.5 mt-0.5 px-1">
+                      <span
+                        className={`text-[10px] tabular-nums font-normal tracking-normal min-w-[34px] text-left leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
+                      >
+                        {formatTime(isDraggingSeek ? seekVal : currentTime)}
+                      </span>
+                      <div
+                        ref={scrubberRef}
+                        onPointerDown={handleSeekPointerDown}
+                        onPointerMove={handleSeekPointerMove}
+                        onPointerUp={handleSeekPointerUp}
+                        onPointerCancel={handleSeekPointerUp}
+                        className="relative flex-1 flex items-center h-3 cursor-pointer select-none touch-none"
+                        role="slider"
+                        aria-label="Seek track position"
+                        aria-valuemin={0}
+                        aria-valuemax={activeDuration || 100}
+                        aria-valuenow={Math.round(isDraggingSeek ? seekVal : currentTime)}
+                        aria-valuetext={formatTime(isDraggingSeek ? seekVal : currentTime)}
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          const step = 5;
+                          if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            const next = Math.max(0, (isDraggingSeek ? seekVal : currentTime) - step);
+                            audioEngine.seek(next);
+                            setCurrentTime(next);
+                            setSeekVal(next);
+                          } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            const next = Math.min(activeDuration, (isDraggingSeek ? seekVal : currentTime) + step);
+                            audioEngine.seek(next);
+                            setCurrentTime(next);
+                            setSeekVal(next);
+                          }
+                        }}
+                      >
+                        <div
+                          className={`absolute left-0 right-0 h-[3px] pointer-events-none rounded-[1px] ${isLight
+                            ? 'bg-[#c5cfe0] border-t border-[#a0abbd]'
+                            : 'bg-[#151515] border-t border-[#0a0a0a] border-b border-[#262626]'
+                            }`}
+                        >
+                          <div
+                            className={`h-full pointer-events-none ${isLight ? 'bg-[#43628e]' : 'bg-[#5b7294]'}`}
+                            style={{ width: `${Math.min(100, Math.max(0, progressPercent))}%` }}
+                          />
+                        </div>
+
+                        <div
+                          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 pointer-events-none transition-transform duration-75"
+                          style={{ left: `${Math.min(100, Math.max(0, progressPercent))}%` }}
+                        >
+                          <div
+                            className={`w-[9px] h-[9px] rounded-full border-[1.5px] border-white shadow-[0_1px_3px_rgba(0,0,0,0.45)] ${isLight ? 'bg-[#2563eb]' : 'bg-[#3b82f6]'
+                              } ${isDraggingSeek ? 'scale-125' : ''}`}
+                          />
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] tabular-nums font-normal tracking-normal min-w-[34px] text-right leading-none ${isLight ? 'text-gray-600' : 'text-gray-400'}`}
+                      >
+                        -{formatTime(remainingTime)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Slide 2: Transfer Status View */}
+                  <div className="w-full h-[44px] px-2.5 pt-1.5 pb-1 shrink-0 flex flex-col items-center justify-center box-border">
+                    <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-1 font-medium overflow-hidden">
+                      <div className="flex items-center justify-center gap-1.5 truncate max-w-full">
+                        <RefreshCw className={`w-3 h-3 shrink-0 ${
+                          deviceSyncProgress?.isComplete ? 'text-emerald-500' : 'text-blue-500 animate-spin'
+                        }`} />
+                        {deviceSyncProgress && deviceSyncProgress.active ? (
+                          <>
+                            <span className={`truncate font-semibold ${isLight ? 'text-gray-900' : 'text-white'}`}>
+                              {deviceSyncProgress.isComplete
+                                ? (deviceSyncProgress.title === 'Sync stopped' || deviceSyncProgress.title === 'Stopping sync...'
+                                    ? `Stopping sync "${deviceSyncProgress.deviceName || 'Device'}"`
+                                    : `Finished syncing "${deviceSyncProgress.deviceName || 'Device'}"`)
+                                : (deviceSyncProgress.title === 'Stopping sync...'
+                                    ? `Stopping sync "${deviceSyncProgress.deviceName || 'Device'}"`
+                                    : `Updating "${deviceSyncProgress.deviceName || 'Device'}"`)}
+                            </span>
+                            {!deviceSyncProgress.isComplete && deviceSyncProgress.total > 0 && deviceSyncProgress.title !== 'Stopping sync...' && (
+                              <span className={`text-[10px] tabular-nums shrink-0 font-medium ${isLight ? 'text-gray-600' : 'text-gray-300'}`}>
+                                ({deviceSyncProgress.current} of {deviceSyncProgress.total})
+                              </span>
+                            )}
+                            {deviceSyncProgress.title && (
+                              <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                                — {deviceSyncProgress.title}
+                              </span>
+                            )}
+                            {!deviceSyncProgress.isComplete && onStopDeviceSync && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onStopDeviceSync();
+                                }}
+                                className="ml-1 p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors shrink-0"
+                                title="Stop sync"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </>
+                        ) : importProgress ? (
+                          <>
+                            <span className={`truncate font-semibold ${isLight ? 'text-gray-900' : 'text-white'}`}>
+                              {importProgress.phase === 'importing' ? 'Importing Music' : 'Scanning Music'}
+                            </span>
+                            {importProgress.total > 0 && (
+                              <span className={`text-[10px] tabular-nums shrink-0 font-medium ${isLight ? 'text-gray-600' : 'text-gray-300'}`}>
+                                ({importProgress.current} of {importProgress.total})
+                              </span>
+                            )}
+                            {importProgress.statusText && (
+                              <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
+                                — {importProgress.statusText}
+                              </span>
+                            )}
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="w-full flex items-center justify-center gap-2 mt-1 px-1">
+                      <div className={`relative flex-1 h-[7px] rounded-full overflow-hidden border shadow-inner ${
+                        isLight ? 'bg-black/10 border-black/15' : 'bg-black/50 border-white/10'
+                      }`}>
+                        {(() => {
+                          const currentVal = deviceSyncProgress?.active ? deviceSyncProgress.current : (importProgress?.current || 0);
+                          const totalVal = deviceSyncProgress?.active ? deviceSyncProgress.total : (importProgress?.total || 0);
+                          const pct = totalVal > 0 ? (currentVal / totalVal) * 100 : 5;
+                          return (
+                            <div
+                              className="h-full bg-gradient-to-r from-blue-600 via-blue-500 to-indigo-500 rounded-full transition-all duration-200 relative overflow-hidden"
+                              style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                            >
+                              <div className="absolute inset-0 bg-[linear-gradient(45deg,rgba(255,255,255,0.3)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.3)_50%,rgba(255,255,255,0.3)_75%,transparent_75%,transparent)] bg-[length:14px_14px] animate-[pulse_2s_infinite]" />
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      <span className={`text-[9px] tabular-nums font-bold min-w-[28px] text-right ${
+                        isLight ? 'text-blue-700' : 'text-blue-400'
+                      }`}>
+                        {(() => {
+                          const currentVal = deviceSyncProgress?.active ? deviceSyncProgress.current : (importProgress?.current || 0);
+                          const totalVal = deviceSyncProgress?.active ? deviceSyncProgress.total : (importProgress?.total || 0);
+                          return totalVal > 0 ? `${Math.round((currentVal / totalVal) * 100)}%` : '0%';
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : hasTransferActive ? (
+              <div className="flex flex-col items-center justify-center relative w-full h-full px-2.5 pt-1.5 pb-1 box-border">
                 {/* Row 1: Status text with sync/import spinner - Centered */}
                 <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-1 font-medium overflow-hidden">
                   <div className="flex items-center justify-center gap-1.5 truncate max-w-full">
@@ -445,15 +644,19 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                       <>
                         <span className={`truncate font-semibold ${isLight ? 'text-gray-900' : 'text-white'}`}>
                           {deviceSyncProgress.isComplete
-                            ? `Finished syncing "${deviceSyncProgress.deviceName || 'Device'}"`
-                            : `Updating "${deviceSyncProgress.deviceName || 'Device'}"`}
+                            ? (deviceSyncProgress.title === 'Sync stopped' || deviceSyncProgress.title === 'Stopping sync...'
+                                ? `Stopping sync "${deviceSyncProgress.deviceName || 'Device'}"`
+                                : `Finished syncing "${deviceSyncProgress.deviceName || 'Device'}"`)
+                            : (deviceSyncProgress.title === 'Stopping sync...'
+                                ? `Stopping sync "${deviceSyncProgress.deviceName || 'Device'}"`
+                                : `Updating "${deviceSyncProgress.deviceName || 'Device'}"`)}
                         </span>
-                        {!deviceSyncProgress.isComplete && deviceSyncProgress.total > 0 && (
+                        {!deviceSyncProgress.isComplete && deviceSyncProgress.total > 0 && deviceSyncProgress.title !== 'Stopping sync...' && (
                           <span className={`text-[10px] tabular-nums shrink-0 font-medium ${isLight ? 'text-gray-600' : 'text-gray-300'}`}>
                             ({deviceSyncProgress.current} of {deviceSyncProgress.total})
                           </span>
                         )}
-                        {!deviceSyncProgress.isComplete && deviceSyncProgress.title && (
+                        {deviceSyncProgress.title && (
                           <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
                             — {deviceSyncProgress.title}
                           </span>

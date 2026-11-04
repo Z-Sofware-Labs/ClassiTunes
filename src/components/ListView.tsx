@@ -1169,14 +1169,20 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   }, [onAddTrackToPlaylist]);
 
   const handleDeleteSelected = useCallback((fallbackTrackId: string) => {
-    const ids = selectedTrackIdsRef.current.length > 0 ? selectedTrackIdsRef.current : [fallbackTrackId];
+    const isCheckboxEngaged = (visibleColumns || []).includes('checkbox') && checkedTrackIds && checkedTrackIds.size > 0;
+    const targetIds = isCheckboxEngaged
+      ? (checkedTrackIds!.has(fallbackTrackId) || selectedTrackIdsRef.current.length <= 1
+          ? Array.from(checkedTrackIds!)
+          : selectedTrackIdsRef.current)
+      : (selectedTrackIdsRef.current.length > 0 ? selectedTrackIdsRef.current : [fallbackTrackId]);
+
     if (onDeleteTracks) {
-      onDeleteTracks(ids);
+      onDeleteTracks(targetIds);
     } else {
-      ids.forEach(id => onDeleteTrack(id));
+      targetIds.forEach(id => onDeleteTrack(id));
     }
     updateSelectedTrackIds([]);
-  }, [onDeleteTracks, onDeleteTrack, updateSelectedTrackIds]);
+  }, [onDeleteTracks, onDeleteTrack, updateSelectedTrackIds, checkedTrackIds, visibleColumns]);
 
   const handleOpenGetInfoRow = useCallback((track: Track) => {
     onOpenGetInfo(track, sortedTracksRef.current);

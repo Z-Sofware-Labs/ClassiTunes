@@ -240,6 +240,8 @@ fn list_windows_mtp_devices() -> Vec<Mp3Device> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let ps_script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 $sh = New-Object -ComObject Shell.Application
 $items = @($sh.Namespace(17).Items() | Where-Object {
@@ -776,6 +778,8 @@ fn list_mtp_device_contents(mount_point: &str) -> Vec<DeviceTrackItem> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let ps_script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 $devName = $env:CT_MTP_DEV
 $storName = $env:CT_MTP_STOR
@@ -1014,17 +1018,68 @@ if ($results.Count -eq 0) {
 
 #[cfg(target_os = "windows")]
 fn delete_mtp_device_file(file_path: &str) -> Result<bool, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let Some((dev_name, storage_name, rel_path)) = parse_mtp_file_path(file_path) else {
         return Err(format!("Invalid MTP file path: {file_path}"));
     };
 
-    let (_, Some(file_item)) = find_mtp_shell_items_native(&dev_name, &storage_name, &rel_path)?
-    else {
-        return Err(format!("MTP file not found on device: {file_path}"));
-    };
+    // 1. Try silent IShellItem deletion via IFileOperation COM
+    if let Ok((_, Some(file_item))) = find_mtp_shell_items_native(&dev_name, &storage_name, &rel_path) {
+        let _ = delete_mtp_shell_item_silently(&file_item);
+    }
 
-    delete_mtp_shell_item_silently(&file_item)?;
+    // 2. PowerShell Shell.Application fallback if IFileOperation didn't delete the physical item
+    let ps_delete_script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$devName = $env:CT_MTP_DEV
+$storName = $env:CT_MTP_STOR
+$relFile = $env:CT_MTP_REL
 
+$sh = New-Object -ComObject Shell.Application
+$d = $sh.Namespace(17).Items() | Where-Object { $_.Name -eq $devName } | Select-Object -First 1
+if (-not $d) { exit 1 }
+$s = $d.GetFolder.Items() | Where-Object { $_.Name -eq $storName } | Select-Object -First 1
+if (-not $s) { $s = @($d.GetFolder.Items())[0] }
+if (-not $s) { exit 1 }
+
+$curr = $s.GetFolder
+$parts = $relFile -split '[\\/]' | Where-Object { $_ -ne '' }
+for ($i = 0; $i -lt ($parts.Length - 1); $i++) {
+  $seg = $parts[$i]
+  $found = $curr.Items() | Where-Object { $_.IsFolder -and $_.Name -ieq $seg } | Select-Object -First 1
+  if (-not $found) { exit 0 } # already gone
+  $curr = $found.GetFolder
+}
+
+$leaf = $parts[-1]
+$leafStem = if ($leaf.Contains('.')) { $leaf.Substring(0, $leaf.LastIndexOf('.')) } else { $leaf }
+$target = $curr.Items() | Where-Object {
+  -not $_.IsFolder -and (
+    $_.Name -ieq $leaf -or
+    $_.Name -ieq $leafStem -or
+    [string]$_.ExtendedProperty('System.FileName') -ieq $leaf
+  )
+} | Select-Object -First 1
+
+if ($target) {
+  $target.InvokeVerb('delete')
+}
+exit 0
+"#;
+
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_delete_script])
+        .env("CT_MTP_DEV", &dev_name)
+        .env("CT_MTP_STOR", &storage_name)
+        .env("CT_MTP_REL", &rel_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    // 3. Clear cache and local audio temp file
     let norm_mtp = format!("MTP:\\{}\\{}\\{}", dev_name, storage_name, rel_path);
     let _ = fs::remove_file(mtp_local_cached_audio_path(&norm_mtp, 0));
 
@@ -1100,6 +1155,8 @@ fn copy_staged_file_to_mtp(
     }
 
     let ps_script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $devName = $env:CT_MTP_DEV
 $storName = $env:CT_MTP_STOR
@@ -1199,6 +1256,7 @@ fn sync_tracks_to_mtp_device(
         .as_deref()
         .unwrap_or("{Artist}/{Album}/{TrackNumber} - {Title}.{ext}");
     let should_transcode = payload.transcode_enabled.unwrap_or(false);
+    let scale_artwork_500 = payload.scale_artwork_500.unwrap_or(true);
     let mirror_sync = payload.mirror_sync.unwrap_or(false);
     let transcode_target_format = crate::transcoder::TranscodeTargetFormat::from_str(
         payload.transcode_format.as_deref().unwrap_or("MP3"),
@@ -1391,7 +1449,7 @@ fn sync_tracks_to_mtp_device(
                     }
                 }
 
-                let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, &artwork_cache);
+                let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, scale_artwork_500, &artwork_cache);
                 let has_artwork = artwork_data_url.as_ref().map_or(false, |s| !s.trim().is_empty());
 
                 // If transcoding is disabled and source file already has complete tags & artwork,
@@ -1682,6 +1740,7 @@ pub struct DeviceSyncPayload {
     pub transcode_bitrate: Option<u32>,
     pub transcode_downmix_mono: Option<bool>,
     pub transcode_downsample_44k: Option<bool>,
+    pub scale_artwork_500: Option<bool>,
     #[serde(default)]
     pub mirror_sync: Option<bool>,
 }
@@ -3097,15 +3156,47 @@ fn collect_device_audio_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) 
     }
 }
 
+fn downscale_artwork_if_needed(bytes: Vec<u8>, mime: &str, max_dim: u32) -> (String, Vec<u8>) {
+    if let Ok(img) = image::load_from_memory(&bytes) {
+        let (width, height) = (img.width(), img.height());
+        if width > max_dim || height > max_dim {
+            let resized = img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3);
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let format = if mime == "image/png" {
+                image::ImageFormat::Png
+            } else {
+                image::ImageFormat::Jpeg
+            };
+            if resized.write_to(&mut buf, format).is_ok() {
+                let out_bytes = buf.into_inner();
+                if !out_bytes.is_empty() {
+                    let out_mime = if format == image::ImageFormat::Png {
+                        "image/png"
+                    } else {
+                        "image/jpeg"
+                    };
+                    return (out_mime.to_string(), out_bytes);
+                }
+            }
+        }
+    }
+    (mime.to_string(), bytes)
+}
+
 fn resolve_track_artwork_data_url(
     enriched_track: &SyncTrackItem,
     src_path: &Path,
+    scale_artwork_500: bool,
     artwork_cache: &Mutex<HashMap<String, Option<String>>>,
 ) -> Option<String> {
-    let cache_key = enriched_track
-        .cover_url
-        .clone()
-        .unwrap_or_else(|| format!("src:{}", src_path.to_string_lossy()));
+    let cache_key = format!(
+        "{}:scale={}",
+        enriched_track
+            .cover_url
+            .clone()
+            .unwrap_or_else(|| format!("src:{}", src_path.to_string_lossy())),
+        scale_artwork_500
+    );
 
     if let Ok(guard) = artwork_cache.lock() {
         if let Some(cached) = guard.get(&cache_key) {
@@ -3119,7 +3210,15 @@ fn resolve_track_artwork_data_url(
         .and_then(crate::load_artwork_bytes)
         .or_else(|| crate::extract_artwork_bytes_from_file_or_folder(src_path));
 
-    let encoded = resolved_art.map(|(mime, bytes)| {
+    let processed_art = resolved_art.map(|(mime, bytes)| {
+        if scale_artwork_500 {
+            downscale_artwork_if_needed(bytes, &mime, 500)
+        } else {
+            (mime, bytes)
+        }
+    });
+
+    let encoded = processed_art.map(|(mime, bytes)| {
         format!("data:{mime};base64,{}", crate::encode_base64(&bytes))
     });
 
@@ -3214,6 +3313,7 @@ pub fn sync_tracks_to_device_impl(
         .unwrap_or("{Artist}/{Album}/{TrackNumber} - {Title}.{ext}");
 
     let should_transcode = payload.transcode_enabled.unwrap_or(false);
+    let scale_artwork_500 = payload.scale_artwork_500.unwrap_or(true);
     let mirror_sync = payload.mirror_sync.unwrap_or(false);
     let transcode_target_format = crate::transcoder::TranscodeTargetFormat::from_str(
         payload.transcode_format.as_deref().unwrap_or("MP3"),
@@ -3426,7 +3526,7 @@ pub fn sync_tracks_to_device_impl(
 
                 let src_size = fs::metadata(src_path).map(|m| m.len()).unwrap_or(0);
                 let track_title = enriched_track.title.clone().unwrap_or_else(|| "Track".to_string());
-                let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, &artwork_cache);
+                let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, scale_artwork_500, &artwork_cache);
                 let has_artwork = artwork_data_url.as_ref().map_or(false, |s| !s.trim().is_empty());
 
                 // 1. CHECK EXISTING FILE ON DEVICE FIRST (WMP pre-inspection before touching or transcoding)

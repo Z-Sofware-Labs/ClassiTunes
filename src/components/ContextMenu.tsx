@@ -81,16 +81,21 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   const isLight = theme === 'light';
   const track = contextMenu?.track;
 
-  const isCheckboxEngaged = Boolean(!isDeviceContext && isCheckboxVisible && checkedTrackIds && checkedTrackIds.size > 0);
+  const isCheckboxEngaged = Boolean(isCheckboxVisible && checkedTrackIds && checkedTrackIds.size > 0);
   const effectiveTrackIds = useMemo(() => {
-    if (selectedTrackIds.length > 0 && (!track || selectedTrackIds.includes(track.id))) {
-      return selectedTrackIds;
-    }
+    // When the checkbox column is enabled and checkboxes are actively checked:
+    // If the right-clicked track is checked (or if empty area was right-clicked, or only 1 row was highlighted),
+    // target ALL checked tracks!
     if (isCheckboxEngaged && checkedTrackIds) {
       const validChecked = tracks.length > 0
         ? tracks.filter(t => checkedTrackIds.has(t.id)).map(t => t.id)
         : Array.from(checkedTrackIds);
-      if (validChecked.length > 0) return validChecked;
+      if (validChecked.length > 0 && (!track || checkedTrackIds.has(track.id) || selectedTrackIds.length <= 1)) {
+        return validChecked;
+      }
+    }
+    if (selectedTrackIds.length > 0 && (!track || selectedTrackIds.includes(track.id))) {
+      return selectedTrackIds;
     }
     return selectedTrackIds.length > 0 ? selectedTrackIds : (track ? [track.id] : []);
   }, [isCheckboxEngaged, checkedTrackIds, selectedTrackIds, track?.id, tracks]);
@@ -348,7 +353,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     <div
       ref={menuRef}
       style={{ left: `${currentCoords.left}px`, top: `${currentCoords.top}px` }}
-      className={`fixed z-50 w-56 rounded-lg shadow-2xl border py-1.5 text-xs select-none ${
+      className={`fixed z-50 min-w-56 max-w-sm w-max rounded-lg shadow-2xl border py-1.5 text-xs select-none whitespace-nowrap ${
         isLight
           ? 'bg-white/95 backdrop-blur-md border-gray-300 text-gray-800 shadow-[0_10px_25px_rgba(0,0,0,0.15)]'
           : 'bg-[#1e1e1e]/95 backdrop-blur-md border-[#3a3a3a] text-gray-200 shadow-[0_10px_30px_rgba(0,0,0,0.6)]'

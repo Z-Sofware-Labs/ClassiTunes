@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   HardDrive, Smartphone, Disc, Check, AlertCircle, RefreshCw, Square, XCircle,
   Folder, Music, ListMusic, ArrowRight, ShieldCheck, Trash2,
@@ -46,6 +46,9 @@ interface DeviceManagerViewProps {
   theme?: 'dark' | 'light';
   checkedTrackIds?: Set<string>;
   isCheckboxColumnVisible?: boolean;
+  onDeviceTracksChange?: (tracks: Track[]) => void;
+  deviceCheckedTrackIds?: Set<string>;
+  onDeviceCheckedTrackIdsChange?: (next: Set<string>) => void;
 }
 
 async function scaleCoverTo500(coverUrl: string): Promise<string> {
@@ -107,6 +110,9 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   theme = 'dark',
   checkedTrackIds: checkedTrackIdsProp,
   isCheckboxColumnVisible: isCheckboxColumnVisibleProp,
+  onDeviceTracksChange,
+  deviceCheckedTrackIds: controlledDeviceCheckedTrackIds,
+  onDeviceCheckedTrackIdsChange,
 }) => {
   const isLight = theme === 'light';
 
@@ -141,6 +147,37 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   const [isLoadingContents, setIsLoadingContents] = useState<boolean>(false);
   const [deviceSelectedTrackIds, setDeviceSelectedTrackIds] = useState<string[]>([]);
   const [deviceContextMenu, setDeviceContextMenu] = useState<ContextMenuState | null>(null);
+
+  // Track checked songs in Contents tab for operations (delete, copy, etc.)
+  const [internalDeviceCheckedTrackIds, setInternalDeviceCheckedTrackIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('device_checked_tracks');
+      if (saved) return new Set(JSON.parse(saved));
+    } catch {}
+    return new Set<string>();
+  });
+
+  const deviceCheckedTrackIds = controlledDeviceCheckedTrackIds ?? internalDeviceCheckedTrackIds;
+  const setDeviceCheckedTrackIds = useCallback((action: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    if (onDeviceCheckedTrackIdsChange) {
+      if (typeof action === 'function') {
+        const next = action(deviceCheckedTrackIds);
+        onDeviceCheckedTrackIdsChange(next);
+      } else {
+        onDeviceCheckedTrackIdsChange(action);
+      }
+    } else {
+      setInternalDeviceCheckedTrackIds(action);
+    }
+  }, [controlledDeviceCheckedTrackIds, deviceCheckedTrackIds, onDeviceCheckedTrackIdsChange]);
+
+  const [deviceVisibleColumns, setDeviceVisibleColumns] = useState<ColumnId[]>(() => {
+    try {
+      const saved = localStorage.getItem('device_visible_columns');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEVICE_DEFAULT_VISIBLE;
+  });
 
   // Load custom template and settings from localStorage
   useEffect(() => {
@@ -225,6 +262,10 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     }));
   }, [deviceContents]);
 
+  useEffect(() => {
+    onDeviceTracksChange?.(deviceTracks);
+  }, [deviceTracks, onDeviceTracksChange]);
+
   // Listen for checkbox selection and column visibility changes across tabs / components
   const [checkedStorageTick, setCheckedStorageTick] = useState(0);
 
@@ -244,11 +285,22 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       setCheckedStorageTick(t => t + 1);
     };
 
+    const handleDeviceCheckedChanged = () => {
+      try {
+        const saved = localStorage.getItem('device_checked_tracks');
+        setDeviceCheckedTrackIds(saved ? new Set(JSON.parse(saved)) : new Set<string>());
+        const savedCols = localStorage.getItem('device_visible_columns');
+        if (savedCols) setDeviceVisibleColumns(JSON.parse(savedCols));
+      } catch {}
+    };
+
     window.addEventListener('storage', handleStorage);
     window.addEventListener('classitunes:checked-changed', handleCustomEvent);
+    window.addEventListener('device:checked-changed', handleDeviceCheckedChanged);
     return () => {
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('classitunes:checked-changed', handleCustomEvent);
+      window.removeEventListener('device:checked-changed', handleDeviceCheckedChanged);
     };
   }, []);
 
@@ -514,6 +566,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       transcodeBitrate,
       transcodeDownmixMono,
       transcodeDownsample44k,
+      scaleArtwork500,
       mirrorSync: true,
     };
 
@@ -579,6 +632,23 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         const path = item?.filePath || (id.startsWith('dev_') ? id.slice(4) : id);
         return !filePaths.includes(path);
       }));
+      setDeviceCheckedTrackIds(prev => {
+        const next = new Set(prev);
+        let changed = false;
+        for (const fp of filePaths) {
+          const devId = `dev_${fp}`;
+          if (next.delete(devId) || next.delete(fp)) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          try {
+            localStorage.setItem('device_checked_tracks', JSON.stringify(Array.from(next)));
+            window.dispatchEvent(new CustomEvent('device:checked-changed'));
+          } catch {}
+        }
+        return changed ? next : prev;
+      });
 
       const deletedPaths: string[] = [];
       for (const fp of filePaths) {
@@ -593,12 +663,11 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
         }
       }
 
-      if (deletedPaths.length > 0 && onRefreshDevices) {
-        onRefreshDevices();
-      } else if (deletedPaths.length < filePaths.length) {
-        // Reload contents if any deletion failed so UI stays accurate
-        void fetchContents(false);
+      if (deletedPaths.length > 0) {
+        onRefreshDevices?.();
       }
+      // Always refresh actual device contents after deletion completes so cache & UI stay perfectly in sync
+      void fetchContents(false);
     } catch (err: any) {
       console.error(`Could not delete file from device: ${err?.message || err}`);
     }
@@ -1075,7 +1144,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-xs font-bold uppercase tracking-wider flex items-center gap-2">
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Syncing {device.name}...</span>
+                    <span>{isStopping ? `Stopping sync on ${device.name}...` : `Syncing ${device.name}...`}</span>
                   </div>
                   <div className="text-xs font-mono font-semibold">
                     {syncProgress.currentIndex} of {syncProgress.totalTracks}
@@ -1209,6 +1278,30 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   onOpenGetInfo={onOpenGetInfo || (() => {})}
                   selectedTrackIds={deviceSelectedTrackIds}
                   onSelectionChange={setDeviceSelectedTrackIds}
+                  checkedTrackIds={deviceCheckedTrackIds}
+                  onToggleCheckTrack={(trackId, e) => {
+                    e.stopPropagation();
+                    setDeviceCheckedTrackIds(prev => {
+                      const next = new Set(prev);
+                      if (next.has(trackId)) next.delete(trackId);
+                      else next.add(trackId);
+                      try {
+                        localStorage.setItem('device_checked_tracks', JSON.stringify(Array.from(next)));
+                        window.dispatchEvent(new CustomEvent('device:checked-changed'));
+                      } catch {}
+                      return next;
+                    });
+                  }}
+                  onToggleCheckAll={() => {
+                    const allIds = deviceTracks.map(t => t.id);
+                    const areAll = allIds.length > 0 && allIds.every(id => deviceCheckedTrackIds.has(id));
+                    const next = areAll ? new Set<string>() : new Set(allIds);
+                    setDeviceCheckedTrackIds(next);
+                    try {
+                      localStorage.setItem('device_checked_tracks', JSON.stringify(Array.from(next)));
+                      window.dispatchEvent(new CustomEvent('device:checked-changed'));
+                    } catch {}
+                  }}
                   onDeleteTrack={(id) => {
                     const fps = resolveDeviceFilePaths([id]);
                     if (fps.length > 0) promptDeleteDeviceFiles(fps);
@@ -1254,6 +1347,8 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                       if (fps.length > 0) promptDeleteDeviceFiles(fps);
                     }}
                     selectedTrackIds={deviceSelectedTrackIds}
+                    checkedTrackIds={deviceCheckedTrackIds}
+                    isCheckboxVisible={deviceVisibleColumns.includes('checkbox')}
                     tracks={deviceTracks}
                     theme={theme}
                     isDeviceContext={true}

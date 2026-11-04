@@ -151,7 +151,12 @@ fn windows_mf_transcode(
     let dest_str = dest.to_string_lossy().to_string();
 
     let ps_script = format!(
-        r#"Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        r#"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$srcPath = $env:CT_TRANSCODE_SRC
+$destPath = $env:CT_TRANSCODE_DEST
+
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
 [void][Windows.Media.Transcoding.MediaTranscoder, Windows.Media, ContentType = WindowsRuntime]
 [void][Windows.Media.MediaProperties.MediaEncodingProfile, Windows.Media, ContentType = WindowsRuntime]
 
@@ -163,8 +168,8 @@ $p = if ('{ext}' -eq 'm4a') {{
 }}
 $p.Audio.Bitrate = {bps}
 
-$srcFile = [System.IO.File]::OpenRead('{src}')
-$destFile = [System.IO.File]::Create('{dest}')
+$srcFile = [System.IO.File]::OpenRead($srcPath)
+$destFile = [System.IO.File]::Create($destPath)
 $src = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($srcFile)
 $dest = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($destFile)
 
@@ -202,14 +207,14 @@ $dest.Dispose()
 $srcFile.Close()
 $destFile.Close()
 "#,
-        src = src_str.replace('\'', "''"),
-        dest = dest_str.replace('\'', "''"),
         ext = options.format.extension(),
         bps = target_bps
     );
 
     let output = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
+        .env("CT_TRANSCODE_SRC", &src_str)
+        .env("CT_TRANSCODE_DEST", &dest_str)
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 

@@ -248,6 +248,26 @@ export default function App() {
   // Connected MP3 / iPod Storage Devices
   const [connectedDevices, setConnectedDevices] = useState<Mp3Device[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<Mp3Device | null>(null);
+  const [selectedDeviceTracks, setSelectedDeviceTracks] = useState<Track[]>([]);
+  const [deviceCheckedTrackIds, setDeviceCheckedTrackIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('device_checked_tracks');
+      if (saved) return new Set(JSON.parse(saved));
+    } catch {}
+    return new Set<string>();
+  });
+
+  useEffect(() => {
+    const handleDeviceCheckedChanged = () => {
+      try {
+        const saved = localStorage.getItem('device_checked_tracks');
+        if (saved) setDeviceCheckedTrackIds(new Set(JSON.parse(saved)));
+        else setDeviceCheckedTrackIds(new Set());
+      } catch {}
+    };
+    window.addEventListener('device:checked-changed', handleDeviceCheckedChanged);
+    return () => window.removeEventListener('device:checked-changed', handleDeviceCheckedChanged);
+  }, []);
   const selectedDeviceRef = useRef<Mp3Device | null>(null);
   selectedDeviceRef.current = selectedDevice;
   const activeSyncDeviceRef = useRef<Mp3Device | null>(null);
@@ -363,6 +383,7 @@ export default function App() {
   };
 
   const handleStopDeviceSync = async () => {
+    setDeviceSyncProgress(prev => prev ? { ...prev, isComplete: false, title: 'Stopping sync...' } : null);
     await cancelDeviceSync();
     setDeviceSyncProgress(prev => prev ? { ...prev, isComplete: true, title: 'Sync stopped' } : null);
   };
@@ -3184,6 +3205,9 @@ function hashString(str: string): string {
                 theme={theme}
                 checkedTrackIds={checkedTrackIds}
                 isCheckboxColumnVisible={visibleColumns.includes('checkbox')}
+                onDeviceTracksChange={setSelectedDeviceTracks}
+                deviceCheckedTrackIds={deviceCheckedTrackIds}
+                onDeviceCheckedTrackIdsChange={setDeviceCheckedTrackIds}
               />
             </Suspense>
           ) : (
@@ -3299,8 +3323,7 @@ function hashString(str: string): string {
 
       {/* Bottom Status Bar */}
       <StatusBar
-        tracks={displayTracks}
-        checkedCount={visibleColumns.includes('checkbox') ? checkedTrackIds.size : undefined}
+        tracks={selectedDevice ? selectedDeviceTracks : displayTracks}
         currentTrack={currentTrack}
         onOpenEQ={() => setIsEQOpen(true)}
         onOpenVisualizer={() => setIsVisualizerOpen(true)}

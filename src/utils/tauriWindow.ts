@@ -1269,6 +1269,7 @@ export interface DeviceSyncPayload {
   transcodeBitrate?: number;
   transcodeDownmixMono?: boolean;
   transcodeDownsample44k?: boolean;
+  scaleArtwork500?: boolean;
   mirrorSync?: boolean;
 }
 
