@@ -52,6 +52,26 @@ export function evaluateSmartPlaylist(playlist: Playlist, allTracks: Track[]): T
     }
   });
 
+  if (playlist.sortBy) {
+    const sortField = playlist.sortBy;
+    const isDesc = playlist.sortOrder === 'desc';
+    filtered.sort((a, b) => {
+      let valA: any = a[sortField as keyof Track];
+      let valB: any = b[sortField as keyof Track];
+      if (valA === undefined || valA === null) valA = '';
+      if (valB === undefined || valB === null) valB = '';
+      if (typeof valA === 'number' || typeof valB === 'number') {
+        const numA = typeof valA === 'number' ? valA : Number(valA) || 0;
+        const numB = typeof valB === 'number' ? valB : Number(valB) || 0;
+        return isDesc ? numB - numA : numA - numB;
+      }
+      const strA = String(valA);
+      const strB = String(valB);
+      const cmp = strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
+      return isDesc ? -cmp : cmp;
+    });
+  }
+
   if (playlist.limit && playlist.limit > 0) {
     filtered = filtered.slice(0, playlist.limit);
   }

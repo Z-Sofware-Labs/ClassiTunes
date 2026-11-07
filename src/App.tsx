@@ -73,32 +73,86 @@ export default function App() {
             p.id === 'smart_late_night_chill'
           );
 
-          // Remove old pre-made playlists
+          // Remove old pre-made playlists (such as Late Night Chill, old 90s Favorites)
           parsed = parsed.filter((p: Playlist) => 
             p.name !== 'Late Night Chill' && 
             p.id !== 'smart_late_night_chill' &&
             p.id !== 'smart_top_hits' &&
-            p.name !== '⭐ 4+ Star Hits'
+            p.name !== '⭐ 4+ Star Hits' &&
+            p.id !== 'smart_90s_favorites' &&
+            p.name !== '90s Favorites'
           );
 
-          // If the user had 'Late Night Chill' on the previous version, upgrade it to 'Top Rated Songs'
-          if (hasLateNightChill) {
-            const hasTopRated = parsed.some((p: Playlist) => p.name === 'Top Rated Songs' || p.id === 'smart_top_rated_songs');
-            if (!hasTopRated) {
-              parsed.push({
-                id: 'smart_top_rated_songs',
-                name: 'Top Rated Songs',
-                isSmart: true,
-                matchType: 'all',
-                rules: [
-                  { id: 'top_rule_1', field: 'rating', operator: 'is', value: '5' }
-                ],
-                trackIds: [],
-              });
-            }
+          // Ensure standard stock playlists exist
+          const hasRecentlyAdded = parsed.some((p: Playlist) => p.name === 'Recently Added' || p.id === 'lib_recently_added');
+          if (!hasRecentlyAdded) {
+            parsed.push({
+              id: 'lib_recently_added',
+              name: 'Recently Added',
+              systemType: 'recently_added',
+              trackIds: [],
+              icon: 'Clock',
+            });
           }
 
-          // Note: '90s Favorites' is kept as-is if present. If the user didn't have it on the previous version, we do not bring it back.
+          const hasTopRated = parsed.some((p: Playlist) => p.name === 'Top Rated' || p.id === 'lib_top_rated' || p.id === 'smart_top_rated_songs');
+          if (!hasTopRated) {
+            parsed.push({
+              id: 'lib_top_rated',
+              name: 'Top Rated',
+              systemType: 'top_rated',
+              trackIds: [],
+              icon: 'Star',
+            });
+          }
+
+          const hasTop25 = parsed.some((p: Playlist) => p.name === 'Top 25 Most Played' || p.id === 'smart_top_25_most_played');
+          if (!hasTop25) {
+            parsed.push({
+              id: 'smart_top_25_most_played',
+              name: 'Top 25 Most Played',
+              isSmart: true,
+              matchType: 'all',
+              rules: [
+                { id: 'top25_rule_1', field: 'playCount', operator: 'greater_than', value: '0' }
+              ],
+              limit: 25,
+              sortBy: 'playCount',
+              sortOrder: 'desc',
+              trackIds: [],
+            });
+          }
+
+          const has80s = parsed.some((p: Playlist) => p.name === "80's Music" || p.id === 'smart_80s_music');
+          if (!has80s) {
+            parsed.push({
+              id: 'smart_80s_music',
+              name: "80's Music",
+              isSmart: true,
+              matchType: 'all',
+              rules: [
+                { id: '80s_rule_1', field: 'year', operator: 'greater_than', value: '1979' },
+                { id: '80s_rule_2', field: 'year', operator: 'less_than', value: '1990' }
+              ],
+              trackIds: [],
+            });
+          }
+
+          const has90s = parsed.some((p: Playlist) => p.name === "90's Music" || p.id === 'smart_90s_music');
+          if (!has90s) {
+            parsed.push({
+              id: 'smart_90s_music',
+              name: "90's Music",
+              isSmart: true,
+              matchType: 'all',
+              rules: [
+                { id: '90s_rule_1', field: 'year', operator: 'greater_than', value: '1989' },
+                { id: '90s_rule_2', field: 'year', operator: 'less_than', value: '2000' }
+              ],
+              trackIds: [],
+            });
+          }
+
           return parsed;
         }
       }
@@ -107,27 +161,6 @@ export default function App() {
     }
     return [
       ...INITIAL_PLAYLISTS,
-      {
-        id: 'smart_90s_favorites',
-        name: '90s Favorites',
-        isSmart: true,
-        matchType: 'all',
-        rules: [
-          { id: '90s_rule_1', field: 'year', operator: 'greater_than', value: '1989' },
-          { id: '90s_rule_2', field: 'year', operator: 'less_than', value: '2000' }
-        ],
-        trackIds: [],
-      },
-      {
-        id: 'smart_top_rated_songs',
-        name: 'Top Rated Songs',
-        isSmart: true,
-        matchType: 'all',
-        rules: [
-          { id: 'top_rule_1', field: 'rating', operator: 'is', value: '5' }
-        ],
-        trackIds: [],
-      }
     ];
   });
 
@@ -3258,6 +3291,8 @@ function hashString(str: string): string {
                   onPlayTrack={playTrack}
                   onUpdateRating={handleUpdateRating}
                   onOpenGetInfo={handleOpenGetInfo}
+                  onDeleteTrack={handleDeleteTrack}
+                  onDeleteTracks={handleDeleteTracks}
                   onTrackContextMenu={handleTrackContextMenu}
                   onBackgroundContextMenu={handleAlbumBackgroundContextMenu}
                   onImportFiles={handleImportFiles}
@@ -3271,6 +3306,7 @@ function hashString(str: string): string {
                   onAlbumSortChange={handleAlbumSortChange}
                   isAlbumGrouped={isAlbumGrouped}
                   onToggleAlbumGrouped={handleToggleAlbumGrouped}
+                  selectedPlaylist={playlists.find(p => p.id === selectedPlaylistId) || null}
                 />
               )}
             </>
@@ -3474,7 +3510,7 @@ function hashString(str: string): string {
       </Suspense>
 
       {deleteRequest && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => finishDeleteRequest('cancel')}>
+        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => finishDeleteRequest('cancel')}>
           <div className={`w-full max-w-md rounded-xl border shadow-2xl p-5 ${theme === 'light' ? 'bg-white border-gray-300 text-gray-900' : 'bg-[#1c1c1c] border-[#3a3a3a] text-gray-100'}`} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-black/10 dark:border-white/10">
               <div className="flex items-center gap-2">

@@ -219,7 +219,7 @@ export const VisualizerModal: React.FC<VisualizerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-between animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-black/90 flex flex-col justify-between animate-in fade-in duration-200">
       {/* Header Bar */}
       <div className="p-4 bg-gradient-to-b from-gray-900/90 to-transparent flex items-center justify-between z-10">
         <div className="flex items-center gap-3">

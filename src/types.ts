@@ -62,6 +62,8 @@ export interface Playlist {
   matchType?: 'all' | 'any';
   rules?: SmartRule[];
   limit?: number;
+  sortBy?: 'title' | 'artist' | 'album' | 'genre' | 'rating' | 'playCount' | 'year' | 'dateAdded';
+  sortOrder?: 'asc' | 'desc';
   systemType?: 'all' | 'recently_added' | 'top_rated' | 'party_shuffle' | 'genre' | 'user';
   genreFilter?: string;
   trackIds: string[];

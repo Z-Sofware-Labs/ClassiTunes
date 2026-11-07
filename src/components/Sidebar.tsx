@@ -1271,7 +1271,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* High-Res Artwork Lightbox Modal */}
       {showFullArtModal && displayTrack && (
         <div 
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6 animate-in fade-in duration-200"
           onClick={() => setShowFullArtModal(false)}
         >
           <div 

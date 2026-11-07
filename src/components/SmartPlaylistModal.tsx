@@ -123,7 +123,7 @@ export const SmartPlaylistModal: React.FC<SmartPlaylistModalProps> = ({
   const isLight = theme === 'light';
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150 select-none">
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 animate-in fade-in duration-150 select-none">
       <div className={`w-full max-w-xl max-h-[90vh] rounded-xl shadow-2xl border overflow-hidden flex flex-col transition-all ${
         isLight
           ? 'bg-gradient-to-b from-[#f0f4f9] via-[#dce4ee] to-[#c5d1e2] border-[#7a8aa3] text-gray-900'

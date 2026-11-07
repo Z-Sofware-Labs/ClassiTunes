@@ -14,6 +14,8 @@ interface AlbumGridViewProps {
   onPlayTrack: (track: Track, albumTracks?: Track[]) => void;
   onUpdateRating: (trackId: string, rating: number) => void;
   onOpenGetInfo: (trackOrTracks: Track | Track[], navigationTracks?: Track[]) => void;
+  onDeleteTrack?: (trackId: string) => void;
+  onDeleteTracks?: (trackIds: string[]) => void;
   onTrackContextMenu?: (track: Track, e: React.MouseEvent, navigationTracks?: Track[]) => void;
   onBackgroundContextMenu?: (e: React.MouseEvent) => void;
   onImportFiles?: (files: FileList | File[] | string[]) => void;
@@ -29,6 +31,7 @@ interface AlbumGridViewProps {
   onAlbumSortChange?: (field: AlbumSortField) => void;
   isAlbumGrouped?: boolean;
   onToggleAlbumGrouped?: (grouped: boolean) => void;
+  selectedPlaylist?: { id: string; name: string; systemType?: string; isFolder?: boolean } | null;
 }
 
 export function cleanSortString(str: string): string {
@@ -217,7 +220,6 @@ function useSharedVisibility(ref: React.RefObject<HTMLDivElement | null>, onVisi
 /** Individual Album Card with Lazy Artwork Resolution via Shared IntersectionObserver */
 const AlbumCard = React.memo<{
   album: Album;
-  activeAlbumTrack: Track | null;
   isSelected: boolean;
   isAlbumPlaying: boolean;
   isPlaying: boolean;
@@ -225,11 +227,10 @@ const AlbumCard = React.memo<{
   onSelectAlbum: (albumId: string, e: React.MouseEvent) => void;
   onPlayAlbumCard: (album: Album) => void;
   onAlbumContextMenu?: (album: Album, e: React.MouseEvent) => void;
-  allSelectedAlbums?: Album[];
+  getAllSelectedAlbums?: () => Album[];
 }>((
 {
   album,
-  activeAlbumTrack,
   isSelected,
   isAlbumPlaying,
   isPlaying,
@@ -237,11 +238,10 @@ const AlbumCard = React.memo<{
   onSelectAlbum,
   onPlayAlbumCard,
   onAlbumContextMenu,
-  allSelectedAlbums,
+  getAllSelectedAlbums,
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(false);
-  const [coverUrl, setCoverUrl] = useState<string | null>(() => {
+  const initialCover = useMemo(() => {
     const cached = artworkCache.get(album.id);
     if (cached) return cached;
     const directAlbum = getImmediateCoverUrl(album.coverUrl);
@@ -257,8 +257,20 @@ const AlbumCard = React.memo<{
       }
     }
     return null;
-  });
+  }, [album.id, album.coverUrl, album.tracks]);
+
+  const [isVisible, setIsVisible] = useState(() => !!initialCover);
+  const [coverUrl, setCoverUrl] = useState<string | null>(initialCover);
   const [imgError, setImgError] = useState(false);
+
+  // Sync initialCover if album prop changes
+  useEffect(() => {
+    if (initialCover) {
+      setCoverUrl(initialCover);
+      setIsVisible(true);
+      setImgError(false);
+    }
+  }, [initialCover]);
 
   // Use shared IntersectionObserver (#10) — no per-card observer instance
   useSharedVisibility(cardRef, () => setIsVisible(true));
@@ -274,7 +286,7 @@ const AlbumCard = React.memo<{
       return;
     }
 
-    const sourceTrack = activeAlbumTrack || album.tracks.find(t => !!t.coverUrl) || album.tracks[0];
+    const sourceTrack = album.tracks.find(t => !!t.coverUrl) || album.tracks[0];
     const sourceKey = sourceTrack?.id || album.id;
     const sourceCoverUrl = sourceTrack?.coverUrl || album.coverUrl;
     const sourceFilePath = sourceTrack?.filePath;
@@ -289,7 +301,7 @@ const AlbumCard = React.memo<{
     return () => {
       isMounted = false;
     };
-  }, [album.id, album.tracks, album.coverUrl, activeAlbumTrack, isVisible]);
+  }, [album.id, album.tracks, album.coverUrl, isVisible]);
 
   const handleCardSelect = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -307,8 +319,9 @@ const AlbumCard = React.memo<{
       ref={cardRef}
       draggable
       onDragStart={(e) => {
-        const selectedAlbums = isSelected && allSelectedAlbums && allSelectedAlbums.length > 1
-          ? allSelectedAlbums
+        const selectedList = getAllSelectedAlbums ? getAllSelectedAlbums() : [album];
+        const selectedAlbums = isSelected && selectedList.length > 1
+          ? selectedList
           : [album];
         const allTrackIds = selectedAlbums.flatMap(a => a.tracks.map(t => t.id));
         const json = JSON.stringify(allTrackIds);
@@ -490,10 +503,7 @@ const AlbumDrawer: React.FC<{
       };
     }
 
-    const activeAlbumTrack = currentTrack && album.tracks.some(t => t.id === currentTrack.id)
-      ? currentTrack
-      : null;
-    const sourceTrack = activeAlbumTrack || album.tracks.find(t => !!t.coverUrl) || album.tracks[0];
+    const sourceTrack = album.tracks.find(t => !!t.coverUrl) || album.tracks[0];
     if (!sourceTrack && !album.coverUrl) return;
     const sourceKey = sourceTrack?.id || album.id;
     const sourceCoverUrl = sourceTrack?.coverUrl || album.coverUrl;
@@ -507,7 +517,7 @@ const AlbumDrawer: React.FC<{
     return () => {
       isMounted = false;
     };
-  }, [album, currentTrack]);
+  }, [album.id, album.tracks, album.coverUrl]);
 
   const totalDurationSeconds = useMemo(() => {
     return album.tracks.reduce((acc, t) => acc + (t.duration || 0), 0);
@@ -786,20 +796,6 @@ const AlbumDrawer: React.FC<{
                   <span>{(selectedTrackIds || []).length === 1 ? 'Song Info' : `Song Info (${(selectedTrackIds || []).length})`}</span>
                 </button>
               )}
-
-              {/* Album Info (always available to open entire album metadata) */}
-              <button
-                onClick={() => onOpenGetInfo(album.tracks)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold border transition-all ${
-                  isLight
-                    ? 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
-                    : 'bg-white/10 hover:bg-white/15 text-gray-200 border-white/10'
-                }`}
-                title="Edit Album Metadata for all songs"
-              >
-                <Info className="w-3.5 h-3.5" />
-                <span>Album Info</span>
-              </button>
             </div>
           </div>
 
@@ -855,6 +851,8 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   onPlayTrack,
   onUpdateRating,
   onOpenGetInfo,
+  onDeleteTrack,
+  onDeleteTracks,
   onTrackContextMenu,
   onBackgroundContextMenu,
   onImportFiles,
@@ -870,6 +868,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   onAlbumSortChange,
   isAlbumGrouped = false,
   onToggleAlbumGrouped,
+  selectedPlaylist,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const firstRowRef = useRef<HTMLDivElement>(null);
@@ -956,6 +955,11 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   const allSelectedAlbums = useMemo(() => {
     return sortedAlbums.filter(a => selectedAlbumIds.includes(a.id));
   }, [sortedAlbums, selectedAlbumIds]);
+
+  const allSelectedAlbumsRef = useRef<Album[]>(allSelectedAlbums);
+  allSelectedAlbumsRef.current = allSelectedAlbums;
+
+  const getAllSelectedAlbums = useCallback(() => allSelectedAlbumsRef.current, []);
 
   const allSelectedTracks = useMemo(() => {
     return allSelectedAlbums.flatMap(a => a.tracks);
@@ -1154,6 +1158,15 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
         } else if (expandedAlbum) {
           onOpenGetInfo(expandedAlbum.tracks);
         }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedDrawerTrackIdsRef.current.length > 0) {
+          e.preventDefault();
+          if (onDeleteTracks) {
+            onDeleteTracks(selectedDrawerTrackIdsRef.current);
+          } else if (onDeleteTrack) {
+            selectedDrawerTrackIdsRef.current.forEach(id => onDeleteTrack(id));
+          }
+        }
       } else if (e.key === 'Escape') {
         if (selectedDrawerTrackIdsRef.current.length > 0) {
           e.preventDefault();
@@ -1180,7 +1193,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   const ROW_GAP = 24; // gap-6 = 24px
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number>(280);
   const ROW_HEIGHT = measuredRowHeight + ROW_GAP;
-  const OVERSCAN_ROWS = 4;
+  const OVERSCAN_ROWS = 8;
 
   // ── Shared IntersectionObserver (#10) ───────────────────────────────────
   const cbMapRef = useRef<Map<Element, VisibilityCallback>>(new Map());
@@ -1260,14 +1273,14 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
     const measure = () => {
       const h = rowEl.getBoundingClientRect().height;
       if (h > 100) {
-        setMeasuredRowHeight((prev) => (Math.abs(prev - h) >= 1 ? Math.round(h) : prev));
+        setMeasuredRowHeight((prev) => (Math.abs(prev - h) >= 2 ? Math.round(h) : prev));
       }
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(rowEl);
     return () => ro.disconnect();
-  });
+  }, [columnsCount]);
 
   // Track scroll position for virtualization (RAF-throttled)
   const rafRef = useRef<number | null>(null);
@@ -1314,7 +1327,6 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
   const { visibleRowStart, visibleRowEnd } = useMemo(() => {
     const totalRows = rows.length;
     if (totalRows <= 20) {
-      // For small libraries, render everything
       return { visibleRowStart: 0, visibleRowEnd: totalRows };
     }
     const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
@@ -1436,6 +1448,13 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
       );
     }
 
+    const isRootLibrary = !selectedPlaylist || selectedPlaylist.id === 'lib_music' || selectedPlaylist.systemType === 'all';
+    if (!isRootLibrary) {
+      return (
+        <div className={`flex-1 w-full h-full select-none ${isLight ? 'bg-white' : 'bg-[#121212]'}`} />
+      );
+    }
+
     return (
       <div className={`flex-1 flex flex-col items-center justify-center p-8 text-center select-none ${
         isLight ? 'bg-white text-gray-500' : 'bg-[#121212] text-gray-500'
@@ -1469,7 +1488,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
         ref={containerRef}
         onMouseDown={handleContainerMouseDown}
         onContextMenu={handleContainerContextMenu}
-        className={`flex-1 overflow-y-auto p-6 select-none custom-scrollbar transition-colors duration-200 ${
+        className={`flex-1 overflow-y-auto p-6 select-none custom-scrollbar ${
           isLight ? 'bg-[#f4f6f9]' : 'bg-[#121212]'
         }`}
         style={{ willChange: 'scroll-position', transform: 'translateZ(0)' }}
@@ -1534,7 +1553,6 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
                                 <AlbumCard
                                   key={album.id}
                                   album={album}
-                                  activeAlbumTrack={activeAlbumTrack}
                                   isSelected={isSelected}
                                   isAlbumPlaying={isAlbumPlaying}
                                   isPlaying={isPlaying}
@@ -1542,7 +1560,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
                                   onSelectAlbum={handleSelectAlbum}
                                   onPlayAlbumCard={handlePlayAlbumCard}
                                   onAlbumContextMenu={handleAlbumContextMenu}
-                                  allSelectedAlbums={allSelectedAlbums}
+                                  getAllSelectedAlbums={getAllSelectedAlbums}
                                 />
                               );
                             })}
@@ -1623,7 +1641,6 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
                           <AlbumCard
                             key={album.id}
                             album={album}
-                            activeAlbumTrack={activeAlbumTrack}
                             isSelected={isSelected}
                             isAlbumPlaying={isAlbumPlaying}
                             isPlaying={isPlaying}
@@ -1631,7 +1648,7 @@ export const AlbumGridView: React.FC<AlbumGridViewProps> = ({
                             onSelectAlbum={handleSelectAlbum}
                             onPlayAlbumCard={handlePlayAlbumCard}
                             onAlbumContextMenu={handleAlbumContextMenu}
-                            allSelectedAlbums={allSelectedAlbums}
+                            getAllSelectedAlbums={getAllSelectedAlbums}
                           />
                         );
                       })}

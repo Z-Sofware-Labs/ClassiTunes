@@ -12,7 +12,7 @@ use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase};
 
@@ -217,7 +217,8 @@ impl DeckDecoder {
         let resolved_path = crate::mp3_device::resolve_device_or_local_file_path(file_path)?;
         let path = Path::new(&resolved_path);
         let file = File::open(path).map_err(|e| format!("Failed to open audio file: {e}"))?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mss_opts = MediaSourceStreamOptions { buffer_len: 128 * 1024 };
+        let mss = MediaSourceStream::new(Box::new(file), mss_opts);
 
         let mut hint = Hint::new();
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {

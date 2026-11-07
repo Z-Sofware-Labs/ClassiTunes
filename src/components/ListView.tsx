@@ -1138,17 +1138,23 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       if (valA === undefined || valA === null) valA = '';
       if (valB === undefined || valB === null) valB = '';
 
-      if (typeof valA === 'string' && typeof valB === 'string') {
-        if (valA === valB) return 0;
-        const strA = valA.toLowerCase();
-        const strB = valB.toLowerCase();
-        if (strA < strB) return sortAsc ? -1 : 1;
-        if (strA > strB) return sortAsc ? 1 : -1;
+      if (typeof valA === 'number' || typeof valB === 'number') {
+        const numA = typeof valA === 'number' ? valA : Number(valA) || 0;
+        const numB = typeof valB === 'number' ? valB : Number(valB) || 0;
+        if (numA !== numB) {
+          return sortAsc ? numA - numB : numB - numA;
+        }
         return 0;
       }
-      
-      if (typeof valA === 'number' && typeof valB === 'number') {
-        return sortAsc ? valA - valB : valB - valA;
+
+      if (typeof valA === 'string' || typeof valB === 'string') {
+        const strA = String(valA || '');
+        const strB = String(valB || '');
+        const cmp = strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
+        if (cmp !== 0) {
+          return sortAsc ? cmp : -cmp;
+        }
+        return 0;
       }
 
       return 0;
@@ -1470,6 +1476,15 @@ const ListViewComponent: React.FC<ListViewProps> = ({
             </button>
           )}
         </div>
+      );
+    }
+
+    const isRootLibrary = !selectedPlaylist || selectedPlaylist.id === 'lib_music' || selectedPlaylist.systemType === 'all';
+
+    // Except for Library itself, if any playlist or smart playlist is empty because there are no songs, show a blank screen
+    if (!isRootLibrary) {
+      return (
+        <div className={`flex-1 w-full h-full select-none ${isLight ? 'bg-white' : 'bg-[#121212]'}`} />
       );
     }
 

@@ -59,7 +59,7 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({ isOpen, onClose 
   const isMac = platformInfo.isMacOS;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 animate-in fade-in duration-150">
       {/* Dark Theme Metallic Window Box */}
       <div className="w-full max-w-lg max-h-[90vh] bg-[#1c1c1c] rounded-xl shadow-2xl border border-[#333] select-none text-gray-200 overflow-hidden flex flex-col">
         {/* Window Header */}

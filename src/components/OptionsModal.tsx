@@ -209,7 +209,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+      className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 animate-in fade-in duration-150"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <input
@@ -879,7 +879,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
 
         {/* Reset Confirmation Overlay */}
         {showResetConfirm && (
-          <div className="absolute inset-0 bg-black/75 backdrop-blur-sm z-20 flex items-center justify-center p-5 animate-in fade-in duration-100">
+          <div className="absolute inset-0 bg-black/75 z-20 flex items-center justify-center p-5 animate-in fade-in duration-100">
             <div className={`w-full max-w-xs rounded-xl border p-4 shadow-2xl flex flex-col items-center text-center ${
               isLight ? 'bg-white border-gray-300 text-gray-800' : 'bg-[#222] border-[#444] text-gray-200'
             }`}>

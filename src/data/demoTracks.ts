@@ -27,6 +27,41 @@ export const INITIAL_PLAYLISTS: Playlist[] = [
     icon: 'Star',
   },
   {
+    id: 'smart_top_25_most_played',
+    name: 'Top 25 Most Played',
+    isSmart: true,
+    matchType: 'all',
+    rules: [
+      { id: 'top25_rule_1', field: 'playCount', operator: 'greater_than', value: '0' }
+    ],
+    limit: 25,
+    sortBy: 'playCount',
+    sortOrder: 'desc',
+    trackIds: [],
+  },
+  {
+    id: 'smart_80s_music',
+    name: "80's Music",
+    isSmart: true,
+    matchType: 'all',
+    rules: [
+      { id: '80s_rule_1', field: 'year', operator: 'greater_than', value: '1979' },
+      { id: '80s_rule_2', field: 'year', operator: 'less_than', value: '1990' }
+    ],
+    trackIds: [],
+  },
+  {
+    id: 'smart_90s_music',
+    name: "90's Music",
+    isSmart: true,
+    matchType: 'all',
+    rules: [
+      { id: '90s_rule_1', field: 'year', operator: 'greater_than', value: '1989' },
+      { id: '90s_rule_2', field: 'year', operator: 'less_than', value: '2000' }
+    ],
+    trackIds: [],
+  },
+  {
     id: 'lib_party_shuffle',
     name: 'Party Shuffle',
     systemType: 'party_shuffle',

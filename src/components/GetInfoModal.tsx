@@ -848,7 +848,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150 select-none text-xs">
+    <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 animate-in fade-in duration-150 select-none text-xs">
       {/* Modal Window Container */}
       <div
         className={`w-full max-w-xl max-h-[90vh] rounded-xl shadow-2xl border overflow-hidden flex flex-col transition-colors ${
@@ -1632,7 +1632,7 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
 
       {/* Unsaved Changes Confirmation Prompt for Navigation */}
       {pendingNavigation && (
-        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-100">
+        <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4 animate-in fade-in duration-100">
           <div
             className={`w-full max-w-sm rounded-xl border shadow-2xl p-5 ${
               isLight ? 'bg-white border-gray-300 text-gray-900' : 'bg-[#222] border-[#3d3d3d] text-gray-100'

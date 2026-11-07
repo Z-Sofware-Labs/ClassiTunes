@@ -581,6 +581,10 @@ export class AudioEngine {
       // Target roughly -18 dBFS RMS; clamp to avoid extreme boosts/cuts and prevent clipping.
       let gainDb = Math.max(-12, Math.min(12, -18 - db));
       const gain = Math.pow(10, gainDb / 20);
+      if (this.normalizationCache.size > 200) {
+        const oldest = this.normalizationCache.keys().next().value;
+        if (oldest) this.normalizationCache.delete(oldest);
+      }
       this.normalizationCache.set(cacheKey, gain);
       return gain;
     } catch (e) {
