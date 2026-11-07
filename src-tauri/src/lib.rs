@@ -1677,7 +1677,8 @@ fn organize_music_file(
     use std::fs;
     use std::path::{Path, PathBuf};
     fn sanitize(value: &str, fallback: &str) -> String {
-        let cleaned: String = value
+        let trimmed = value.trim();
+        let cleaned: String = trimmed
             .chars()
             .map(|c| {
                 if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
@@ -1690,7 +1691,8 @@ fn organize_music_file(
             })
             .collect();
         let cleaned = cleaned.trim_end_matches(['.', ' ']).trim();
-        if cleaned.is_empty() {
+        // Prevent accidental MTP device mount fragments or empty placeholders from creating "mtp" folders
+        if cleaned.is_empty() || cleaned.eq_ignore_ascii_case("mtp") || cleaned.starts_with("mtp_") {
             fallback.to_string()
         } else {
             cleaned.to_string()
@@ -1786,7 +1788,8 @@ fn relocate_organized_music_file(
     use std::path::{Path, PathBuf};
 
     fn sanitize(value: &str, fallback: &str) -> String {
-        let cleaned: String = value
+        let trimmed = value.trim();
+        let cleaned: String = trimmed
             .chars()
             .map(|c| {
                 if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
@@ -1799,7 +1802,8 @@ fn relocate_organized_music_file(
             })
             .collect();
         let cleaned = cleaned.trim_end_matches(['.', ' ']).trim();
-        if cleaned.is_empty() {
+        // Prevent accidental MTP device mount fragments or empty placeholders from creating "mtp" folders
+        if cleaned.is_empty() || cleaned.eq_ignore_ascii_case("mtp") || cleaned.starts_with("mtp_") {
             fallback.to_string()
         } else {
             cleaned.to_string()

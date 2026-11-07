@@ -92,14 +92,16 @@ export class AudioEngine {
 
   private startNativePolling(): void {
     if (this.nativePollTimer !== null) return;
+    let inFlight = false;
     this.nativePollTimer = window.setInterval(async () => {
-      if (!this.usingNativeBackend || !this.isTauriEnv()) return;
+      if (!this.usingNativeBackend || !this.isTauriEnv() || inFlight) return;
+      inFlight = true;
       try {
         const { invoke } = await import('@tauri-apps/api/core');
         const state = await invoke<NativePlaybackState>('native_audio_get_state');
         const prevTime = this.nativeState.currentTime;
         this.nativeState = state;
-        if (Math.abs(state.currentTime - prevTime) > 0.01 || !state.paused) {
+        if (Math.abs(state.currentTime - prevTime) > 0.05 || !state.paused) {
           this.timeUpdateCallbacks.forEach(cb => cb());
         }
         if (state.ended) {
@@ -108,8 +110,10 @@ export class AudioEngine {
         }
       } catch {
         // Ignore transient IPC error during poll
+      } finally {
+        inFlight = false;
       }
-    }, 100);
+    }, 125);
   }
 
   private stopNativePolling(): void {

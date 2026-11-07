@@ -402,7 +402,9 @@ export default function App() {
   useEffect(() => {
     if (!isTauri()) return;
     refreshDevices();
-    const interval = setInterval(refreshDevices, 4000);
+    // Device polling: When idle, check every 25 seconds instead of every 4 seconds
+    // to prevent continuous background process spawning from stealing CPU cycles.
+    const interval = setInterval(refreshDevices, 25000);
     return () => clearInterval(interval);
   }, [refreshDevices]);
 

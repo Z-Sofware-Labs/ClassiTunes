@@ -258,7 +258,8 @@ struct RawMtpStorageEntry {
 fn list_windows_mtp_devices() -> Vec<Mp3Device> {
     if let Ok(guard) = mtp_devices_cache().lock() {
         if let Some((ts, ref cached)) = *guard {
-            if ts.elapsed() < std::time::Duration::from_secs(4) {
+            // Keep MTP cache valid for 20 seconds so repeated calls do not spam powershell processes
+            if ts.elapsed() < std::time::Duration::from_secs(20) {
                 return cached.clone();
             }
         }

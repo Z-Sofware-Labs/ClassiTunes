@@ -287,8 +287,8 @@ impl DeckDecoder {
             time_base,
             duration_secs,
             current_time_secs: 0.0,
-            fifo: VecDeque::with_capacity(16384),
-            interleaved_scratch: Vec::with_capacity(8192),
+            fifo: VecDeque::with_capacity(65536),
+            interleaved_scratch: Vec::with_capacity(16384),
             prev_src_sample: None,
             curr_src_sample: None,
             resample_pos: 0.0,
@@ -296,8 +296,8 @@ impl DeckDecoder {
             normalization_gain,
         };
 
-        // Pre-decode first packet so we verify codec works and prime playback buffer immediately
-        deck.refill_fifo(4096)?;
+        // Pre-decode deep buffer (at least ~0.5-1.0s of frames) to ensure smooth immediate start
+        deck.refill_fifo(32768)?;
         Ok(deck)
     }
 
@@ -403,8 +403,9 @@ impl DeckDecoder {
 
     /// Pull next stereo frame at output_sample_rate using fractional linear interpolation if rates differ or speed != 1.0
     fn next_frame(&mut self, output_sample_rate: u32, speed: f64) -> Option<(f32, f32)> {
-        if self.fifo.len() < 2048 && !self.eof {
-            let _ = self.refill_fifo(4096);
+        // Keep a deep cushion in the FIFO so OS context-switching never starves audio
+        if self.fifo.len() < 16384 && !self.eof {
+            let _ = self.refill_fifo(32768);
         }
 
         let speed = if speed > 0.05 { speed } else { 1.0 };
@@ -441,8 +442,8 @@ impl DeckDecoder {
         while self.resample_pos >= 1.0 {
             self.resample_pos -= 1.0;
             self.prev_src_sample = self.curr_src_sample;
-            if self.fifo.len() < 512 && !self.eof {
-                let _ = self.refill_fifo(4096);
+            if self.fifo.len() < 8192 && !self.eof {
+                let _ = self.refill_fifo(32768);
             }
             if let Some(next_s) = self.fifo.pop_front() {
                 self.curr_src_sample = Some(next_s);
