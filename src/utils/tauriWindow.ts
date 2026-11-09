@@ -1185,6 +1185,39 @@ export async function dbUpdateTrackCover(trackId: string, coverUrl: string): Pro
   }
 }
 
+export async function dbUpdateTrackDuration(trackId: string, duration: number): Promise<boolean> {
+  if (!isTauri() || !trackId || duration <= 0) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_update_track_duration', { trackId, duration });
+  } catch (e) {
+    console.warn('db_update_track_duration failed:', e);
+    return false;
+  }
+}
+
+export async function dbUpdateTracksDurationBatch(updates: Array<[string, number]>): Promise<number> {
+  if (!isTauri() || !updates || updates.length === 0) return 0;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<number>('db_update_tracks_duration_batch', { updates });
+  } catch (e) {
+    console.warn('db_update_tracks_duration_batch failed:', e);
+    return 0;
+  }
+}
+
+export async function dbCompactJournal(): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<boolean>('db_compact_journal');
+  } catch (e) {
+    console.warn('db_compact_journal failed:', e);
+    return false;
+  }
+}
+
 export async function dbDeleteTracks(trackIds: string[]): Promise<boolean> {
   if (!isTauri() || trackIds.length === 0) return false;
   try {

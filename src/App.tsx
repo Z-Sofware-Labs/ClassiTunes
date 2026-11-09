@@ -11,9 +11,9 @@ import { AlbumGridView, sortAlbumsList } from './components/AlbumGridView';
 import { StatusBar } from './components/StatusBar';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
+import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, dbUpdateTracksDurationBatch, dbCompactJournal, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
-import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata, trimArtworkBlobs, internTrackStrings } from './services/mediaStorage';
+import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata, trimArtworkBlobs, internTrackStrings, extractPlaybackMetadataFromTracks } from './services/mediaStorage';
 import { Upload, Music, Disc, X } from 'lucide-react';
 
 // Lazy-loaded dialogs and views to reduce initial bundle size, memory footprint, and startup latency
@@ -51,10 +51,20 @@ export default function App() {
   // Stored separately so mutations during playback do NOT invalidate filteredTracks / albums.
   const [playbackMeta, setPlaybackMeta] = useState<Map<string, Partial<Track>>>(() => new Map());
 
-  // Keep the base track list stable. Playback metadata is merged lazily only for the
-  // tracks actually rendered, so a single playCount/lastPlayed change never allocates
-  // a new Track object for the entire library.
-  const mergedTracks = useMemo(() => tracks, [tracks]);
+  // Stable reference to the full library track list
+  const mergedTracks = tracks;
+
+  // In-memory normalized search key cache: maps track.id -> lowercase search string
+  // Precomputed so large library typing does not allocate or lowercase 4 strings * 10,000 tracks per keystroke.
+  const searchIndexMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      const key = `${t.title || ''} ${t.artist || ''} ${t.album || ''} ${t.genre || ''}`.toLowerCase();
+      map.set(t.id, key);
+    }
+    return map;
+  }, [tracks]);
 
   const getDisplayTrack = useCallback((track: Track): Track => {
     const meta = playbackMeta.get(track.id);
@@ -402,10 +412,19 @@ export default function App() {
   useEffect(() => {
     if (!isTauri()) return;
     refreshDevices();
-    // Device polling: When idle, check every 25 seconds instead of every 4 seconds
-    // to prevent continuous background process spawning from stealing CPU cycles.
-    const interval = setInterval(refreshDevices, 25000);
-    return () => clearInterval(interval);
+
+    // Check on window focus so plugging in a device and switching back to ClassiTunes immediately detects it
+    const handleFocus = () => {
+      void refreshDevices();
+    };
+    window.addEventListener('focus', handleFocus);
+
+    // Responsive device polling: Poll every 4 seconds so plugged in MP3/USB drives appear promptly.
+    const interval = setInterval(refreshDevices, 4000);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      clearInterval(interval);
+    };
   }, [refreshDevices]);
 
   const handleEjectDevice = async (mountPoint: string) => {
@@ -605,6 +624,12 @@ export default function App() {
 
         // 1. Immediately display authoritative restored tracks on screen
         if (restoredTracks.length > 0) {
+          // Derive playback metadata directly from restored tracks to avoid duplicate DB fetch
+          const initialPlaybackMeta = extractPlaybackMetadataFromTracks(restoredTracks);
+          if (initialPlaybackMeta.size > 0) {
+            setPlaybackMeta(initialPlaybackMeta);
+          }
+
           setTracks(prev => {
             const map = new Map<string, Track>();
             restoredTracks.forEach((t: Track) => {
@@ -630,8 +655,18 @@ export default function App() {
           });
         }
 
-      // 2. Asynchronously in the background, check if any albums need artwork backfilling
+      // 2. Asynchronously in the background at low priority, check if any albums need artwork backfilling
       if (isTauri() && restoredTracks.length > 0) {
+        // Read persisted backfill attempt markers from localStorage so files/albums proven to lack artwork aren't reparsed every launch
+        let attemptedBackfills = new Set<string>();
+        try {
+          const raw = localStorage.getItem('classitunes_attempted_artwork_backfills');
+          if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) attemptedBackfills = new Set(arr);
+          }
+        } catch {}
+
         const albumsWithCover = new Set<string>();
         for (const t of restoredTracks) {
           if (t.coverUrl) {
@@ -642,42 +677,67 @@ export default function App() {
         for (const t of restoredTracks) {
           if (!t.coverUrl && t.filePath && !t.id.startsWith('demo_') && !t.id.startsWith('sample_')) {
             const key = (t.album || '').trim().toLowerCase() || t.id;
-            if (!albumsWithCover.has(key) && !repTracksByAlbum.has(key)) {
+            if (!albumsWithCover.has(key) && !repTracksByAlbum.has(key) && !attemptedBackfills.has(key)) {
               repTracksByAlbum.set(key, t);
             }
           }
         }
         if (repTracksByAlbum.size > 0) {
           void (async () => {
-            const repPaths = Array.from(repTracksByAlbum.values()).map(t => t.filePath!);
+            // Yield to browser rendering before running backfill
+            await new Promise(r => setTimeout(r, 1200));
+
+            // Direct path-to-album lookup for O(1) matching instead of scanning all representative albums
+            const pathToAlbumKey = new Map<string, string>();
+            const repPaths: string[] = [];
+            for (const [albumKey, repTrack] of repTracksByAlbum.entries()) {
+              if (repTrack.filePath) {
+                pathToAlbumKey.set(repTrack.filePath, albumKey);
+                repPaths.push(repTrack.filePath);
+              }
+            }
+
             const BATCH = 32;
             const albumCoverMap = new Map<string, string>();
             for (let i = 0; i < repPaths.length; i += BATCH) {
               const slice = repPaths.slice(i, i + BATCH);
               const metaMap = await readTauriMusicMetadataBatch(slice);
-              for (const [albumKey, repTrack] of repTracksByAlbum.entries()) {
-                const meta = repTrack.filePath ? metaMap[repTrack.filePath] : null;
+              for (const p of slice) {
+                const albumKey = pathToAlbumKey.get(p);
+                if (!albumKey) continue;
+                attemptedBackfills.add(albumKey);
+                const meta = metaMap[p];
                 if (meta?.coverUrl) {
                   const resolved = resolveNativeCoverUrlSync(meta.coverUrl) || (await resolveNativeCoverUrl(meta.coverUrl)) || meta.coverUrl;
                   if (resolved) {
                     albumCoverMap.set(albumKey, resolved);
-                    setCachedArtwork(repTrack.id, resolved);
                     setCachedArtwork(albumKey, resolved);
                   }
                 }
               }
             }
+
+            // Persist attempted backfills so subsequent launches don't re-read files without artwork
+            try {
+              localStorage.setItem('classitunes_attempted_artwork_backfills', JSON.stringify(Array.from(attemptedBackfills).slice(-5000)));
+            } catch {}
+
             if (albumCoverMap.size > 0) {
-              setTracks(prev => prev.map(t => {
-                if (t.coverUrl) return t;
-                const key = (t.album || '').trim().toLowerCase() || t.id;
-                const backfilled = albumCoverMap.get(key);
-                if (backfilled) {
-                  setCachedArtwork(t.id, backfilled);
-                  return { ...t, coverUrl: backfilled };
-                }
-                return t;
-              }));
+              setTracks(prev => {
+                let changed = false;
+                const next = prev.map(t => {
+                  if (t.coverUrl) return t;
+                  const key = (t.album || '').trim().toLowerCase() || t.id;
+                  const backfilled = albumCoverMap.get(key);
+                  if (backfilled) {
+                    changed = true;
+                    setCachedArtwork(t.id, backfilled);
+                    return { ...t, coverUrl: backfilled };
+                  }
+                  return t;
+                });
+                return changed ? next : prev;
+              });
             }
           })();
         }
@@ -688,6 +748,9 @@ export default function App() {
         );
         if (tracksNeedingMetadata.length > 0 && isTauri()) {
           void (async () => {
+            // Yield to browser rendering before running metadata backfill
+            await new Promise(r => setTimeout(r, 1600));
+
             const BATCH = 64;
             const metaUpdateMap = new Map<string, { bitrate?: number; sampleRate?: number; duration?: number; format?: string }>();
             for (let i = 0; i < tracksNeedingMetadata.length; i += BATCH) {
@@ -822,8 +885,16 @@ export default function App() {
       }).catch(() => {});
     }
 
+    const handleBeforeUnload = () => {
+      if (isTauri()) {
+        void dbCompactJournal();
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       isCancelled = true;
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       if (tauriUnlisten) {
         tauriUnlisten();
       }
@@ -1055,15 +1126,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let disposed = false;
-    void getAllPlaybackMetadata().then((stored) => {
-      if (!disposed) {
-        setPlaybackMeta(stored);
-      }
-    }).catch(() => {});
-    return () => {
-      disposed = true;
-    };
+    // For non-Tauri browser environments, fall back to loading from IndexedDB
+    if (!isTauri()) {
+      let disposed = false;
+      void getAllPlaybackMetadata().then((stored) => {
+        if (!disposed && stored && stored.size > 0) {
+          setPlaybackMeta(stored);
+        }
+      }).catch(() => {});
+      return () => {
+        disposed = true;
+      };
+    }
   }, []);
 
   useEffect(() => {
@@ -1099,7 +1173,10 @@ export default function App() {
         } catch (e) {
           console.warn('LocalStorage snapshot write skipped', e);
         }
-        saveTracksMetadata(userTracksOnly);
+        // In browser mode without Tauri, IndexedDB holds the authoritative full library snapshot
+        if (!isTauri()) {
+          saveTracksMetadata(userTracksOnly);
+        }
       } catch (e) {
         console.warn('Failed to save tracks to localStorage/IndexedDB', e);
       }
@@ -1331,19 +1408,23 @@ export default function App() {
       }
     }
 
-    // Search Query
+    // Search Query (accelerated with precomputed in-memory searchIndexMap)
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      list = list.filter(t => 
-        t.title.toLowerCase().includes(q) ||
-        t.artist.toLowerCase().includes(q) ||
-        t.album.toLowerCase().includes(q) ||
-        t.genre.toLowerCase().includes(q)
-      );
+      list = list.filter(t => {
+        const key = searchIndexMap.get(t.id);
+        if (key) return key.includes(q);
+        return (
+          t.title.toLowerCase().includes(q) ||
+          t.artist.toLowerCase().includes(q) ||
+          t.album.toLowerCase().includes(q) ||
+          t.genre.toLowerCase().includes(q)
+        );
+      });
     }
 
     return list;
-  }, [tracks, playlists, selectedPlaylistId, searchQuery, partyShuffleSeed]);
+  }, [tracks, playlists, selectedPlaylistId, searchQuery, partyShuffleSeed, searchIndexMap]);
 
   // Merge playbackMeta into filteredTracks for the actual rendered views.
   // This is cheap: only touches the filtered subset, not the whole library.
@@ -1666,22 +1747,46 @@ function hashString(str: string): string {
           const d = quickResolutions.get(t.id);
           return d ? { ...t, duration: d } : t;
         }));
+        if (isTauri()) {
+          const batchArray = Array.from(quickResolutions.entries()) as Array<[string, number]>;
+          void dbUpdateTracksDurationBatch(batchArray);
+        }
       }
 
-      // Second pass: for any remaining without duration, probe via getAudioDuration
+      // Second pass: for any remaining without duration, probe via getAudioDuration in batches of 20
       const remaining = unmeasured.filter(t => !quickResolutions.has(t.id));
-      for (const track of remaining) {
+      const pendingBatch = new Map<string, number>();
+
+      const commitBatch = () => {
+        if (pendingBatch.size === 0) return;
+        const updates = new Map(pendingBatch);
+        pendingBatch.clear();
+        setTracks(prev => prev.map(t => {
+          const d = updates.get(t.id);
+          return d ? { ...t, duration: d } : t;
+        }));
+        if (isTauri()) {
+          const batchArray = Array.from(updates.entries()) as Array<[string, number]>;
+          void dbUpdateTracksDurationBatch(batchArray);
+        }
+      };
+
+      for (let i = 0; i < remaining.length; i++) {
         if (cancelled) break;
+        const track = remaining[i];
         let resolved = 0;
         if (track.audioUrl) {
           resolved = await getAudioDuration(track.audioUrl);
         }
         if (resolved > 0 && !cancelled) {
-          const finalDur = Math.round(resolved * 100) / 100;
-          setTracks(prev => prev.map(t => (t.id === track.id ? { ...t, duration: finalDur } : t)));
+          pendingBatch.set(track.id, Math.round(resolved * 100) / 100);
+          if (pendingBatch.size >= 20 || i === remaining.length - 1) {
+            commitBatch();
+          }
         }
         await new Promise(r => setTimeout(r, 40));
       }
+      commitBatch();
       isResolvingDurationsRef.current = false;
     };
 
@@ -2617,6 +2722,10 @@ function hashString(str: string): string {
         return merged;
       });
 
+      if (finalSortedLibrary.length > 0) {
+        saveTracksMetadata(finalSortedLibrary).catch(() => {});
+      }
+
       if (targetPlaylistId) {
         const newIds = allNewlyParsed.map(t => t.id);
         if (targetPlaylistId === 'new') {
@@ -3057,6 +3166,7 @@ function hashString(str: string): string {
     }
 
     // Merge into tracks state
+    let finalRefreshedLibrary: Track[] = [];
     setTracks(prev => {
       const map = new Map<string, Track>();
       prev.forEach(t => map.set(t.id, t));
@@ -3070,8 +3180,13 @@ function hashString(str: string): string {
       });
       const merged = Array.from(map.values());
       merged.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base', numeric: true }));
+      finalRefreshedLibrary = merged;
       return merged;
     });
+
+    if (finalRefreshedLibrary.length > 0) {
+      saveTracksMetadata(finalRefreshedLibrary).catch(() => {});
+    }
 
     setIsImportingFiles(false);
     setImportProgress(null);

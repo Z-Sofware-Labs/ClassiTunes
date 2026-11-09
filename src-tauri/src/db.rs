@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -69,10 +70,39 @@ struct LibrarySnapshot {
     tracks: Vec<TrackRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum JournalMutation {
+    Playback {
+        id: String,
+        play_count: u32,
+        last_played: Option<String>,
+    },
+    Rating {
+        id: String,
+        rating: u8,
+    },
+    Cover {
+        id: String,
+        cover_url: String,
+    },
+    Duration {
+        id: String,
+        duration: f64,
+    },
+    DurationBatch {
+        updates: Vec<(String, f64)>,
+    },
+    Delete {
+        ids: Vec<String>,
+    },
+}
+
 pub struct LibraryDb {
     db_path: PathBuf,
     tracks_by_id: HashMap<String, TrackRecord>,
     ordered_ids: Vec<String>,
+    journal_entry_count: usize,
 }
 
 static LIBRARY_DB: OnceLock<Mutex<LibraryDb>> = OnceLock::new();
@@ -126,9 +156,14 @@ impl LibraryDb {
             db_path,
             tracks_by_id: HashMap::new(),
             ordered_ids: Vec::new(),
+            journal_entry_count: 0,
         };
         db.load_from_disk();
         db
+    }
+
+    fn journal_path(&self) -> PathBuf {
+        self.db_path.with_extension("journal")
     }
 
     fn load_from_disk(&mut self) {
@@ -138,6 +173,7 @@ impl LibraryDb {
             self.db_path.with_extension("bin.tmp"),
         ];
 
+        let mut loaded = false;
         for p in &paths_to_try {
             if !p.exists() {
                 continue;
@@ -152,12 +188,185 @@ impl LibraryDb {
                             self.ordered_ids.push(track.id.clone());
                             self.tracks_by_id.insert(track.id.clone(), track);
                         }
-                        eprintln!("Successfully loaded {} tracks from {:?}", self.ordered_ids.len(), p);
-                        return;
+                        eprintln!("Successfully loaded {} tracks from snapshot {:?}", self.ordered_ids.len(), p);
+                        loaded = true;
+                        break;
                     }
                 }
             }
         }
+
+        if !loaded {
+            self.tracks_by_id.clear();
+            self.ordered_ids.clear();
+        }
+
+        // Replay mutation journal if present
+        self.replay_journal();
+    }
+
+    fn apply_mutation_in_memory(&mut self, mutation: JournalMutation) {
+        match mutation {
+            JournalMutation::Playback { id, play_count, last_played } => {
+                if let Some(track) = self.tracks_by_id.get_mut(&id) {
+                    track.play_count = play_count;
+                    track.last_played = last_played;
+                }
+            }
+            JournalMutation::Rating { id, rating } => {
+                if let Some(track) = self.tracks_by_id.get_mut(&id) {
+                    track.rating = rating;
+                }
+            }
+            JournalMutation::Cover { id, cover_url } => {
+                if cover_url.is_empty() {
+                    return;
+                }
+                let mut target_album = None;
+                if let Some(track) = self.tracks_by_id.get_mut(&id) {
+                    track.cover_url = Some(cover_url.clone());
+                    let alb = track.album.trim().to_ascii_lowercase();
+                    if !alb.is_empty() && alb != "unknown album" {
+                        target_album = Some(alb);
+                    }
+                }
+                if let Some(alb) = target_album {
+                    for t in self.tracks_by_id.values_mut() {
+                        if t.cover_url.as_deref().unwrap_or("").is_empty()
+                            && t.album.trim().to_ascii_lowercase() == alb
+                        {
+                            t.cover_url = Some(cover_url.clone());
+                        }
+                    }
+                }
+            }
+            JournalMutation::Duration { id, duration } => {
+                if let Some(track) = self.tracks_by_id.get_mut(&id) {
+                    if duration > 0.0 {
+                        track.duration = duration;
+                    }
+                }
+            }
+            JournalMutation::DurationBatch { updates } => {
+                for (id, duration) in updates {
+                    if let Some(track) = self.tracks_by_id.get_mut(&id) {
+                        if duration > 0.0 {
+                            track.duration = duration;
+                        }
+                    }
+                }
+            }
+            JournalMutation::Delete { ids } => {
+                let mut removed = false;
+                for id in ids {
+                    if self.tracks_by_id.remove(&id).is_some() {
+                        removed = true;
+                    }
+                }
+                if removed {
+                    self.ordered_ids.retain(|id| self.tracks_by_id.contains_key(id));
+                }
+            }
+        }
+    }
+
+    fn replay_journal(&mut self) {
+        let jpath = self.journal_path();
+        if !jpath.exists() {
+            self.journal_entry_count = 0;
+            return;
+        }
+
+        let file = match File::open(&jpath) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        let reader = BufReader::new(file);
+        let mut count = 0;
+        let mut valid_lines = Vec::new();
+        let mut has_corruption = false;
+
+        for line_res in reader.lines() {
+            match line_res {
+                Ok(line) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<JournalMutation>(trimmed) {
+                        Ok(mutation) => {
+                            self.apply_mutation_in_memory(mutation);
+                            valid_lines.push(line);
+                            count += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("Corrupt or truncated journal line encountered: {e} -> '{trimmed}'");
+                            has_corruption = true;
+                            // Truncate replay up to the last known good line for safety
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("I/O error reading journal: {e}");
+                    has_corruption = true;
+                    break;
+                }
+            }
+        }
+
+        self.journal_entry_count = count;
+        eprintln!("Replayed {} mutations from journal {:?}", count, jpath);
+
+        // If corruption was detected, rewrite the journal with valid lines or compact immediately
+        if has_corruption || self.journal_entry_count >= 100 {
+            if let Err(e) = self.compact_journal() {
+                eprintln!("Failed to compact journal after replay: {e}");
+            }
+        }
+    }
+
+    fn append_mutation(&mut self, mutation: JournalMutation) -> Result<(), String> {
+        self.apply_mutation_in_memory(mutation.clone());
+
+        let json = serde_json::to_string(&mutation)
+            .map_err(|e| format!("Failed to serialize journal entry: {e}"))?;
+
+        if let Some(parent) = self.db_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let jpath = self.journal_path();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&jpath)
+            .map_err(|e| format!("Failed to open journal for append: {e}"))?;
+
+        writeln!(file, "{}", json)
+            .map_err(|e| format!("Failed to write to journal: {e}"))?;
+        file.sync_data()
+            .or_else(|_| file.sync_all())
+            .map_err(|e| format!("Failed to flush journal to disk: {e}"))?;
+
+        self.journal_entry_count += 1;
+
+        if self.journal_entry_count >= 100 {
+            let _ = self.compact_journal();
+        }
+
+        Ok(())
+    }
+
+    pub fn compact_journal(&mut self) -> Result<(), String> {
+        self.flush_to_disk()?;
+        let jpath = self.journal_path();
+        if jpath.exists() {
+            let _ = fs::remove_file(&jpath);
+        }
+        self.journal_entry_count = 0;
+        Ok(())
     }
 
     fn flush_to_disk(&self) -> Result<(), String> {
@@ -218,7 +427,7 @@ impl LibraryDb {
             }
             self.tracks_by_id.insert(track.id.clone(), track);
         }
-        self.flush_to_disk()
+        self.compact_journal()
     }
 
     pub fn upsert_tracks_batch(&mut self, tracks: Vec<TrackRecord>) -> Result<(), String> {
@@ -228,7 +437,7 @@ impl LibraryDb {
             }
             self.tracks_by_id.insert(track.id.clone(), track);
         }
-        self.flush_to_disk()
+        self.compact_journal()
     }
 
     pub fn update_track_playback(
@@ -237,71 +446,89 @@ impl LibraryDb {
         play_count: u32,
         last_played: Option<String>,
     ) -> Result<bool, String> {
-        if let Some(track) = self.tracks_by_id.get_mut(id) {
-            track.play_count = play_count;
-            track.last_played = last_played;
-            self.flush_to_disk()?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    pub fn update_track_rating(&mut self, id: &str, rating: u8) -> Result<bool, String> {
-        if let Some(track) = self.tracks_by_id.get_mut(id) {
-            track.rating = rating;
-            self.flush_to_disk()?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    pub fn update_track_cover(&mut self, id: &str, cover_url: String) -> Result<bool, String> {
-        if cover_url.is_empty() {
+        if !self.tracks_by_id.contains_key(id) {
             return Ok(false);
         }
-        let mut target_album = None;
-        if let Some(track) = self.tracks_by_id.get_mut(id) {
-            track.cover_url = Some(cover_url.clone());
-            let alb = track.album.trim().to_ascii_lowercase();
-            if !alb.is_empty() && alb != "unknown album" {
-                target_album = Some(alb);
-            }
-        } else {
-            return Ok(false);
-        }
-
-        if let Some(alb) = target_album {
-            for t in self.tracks_by_id.values_mut() {
-                if t.cover_url.as_deref().unwrap_or("").is_empty()
-                    && t.album.trim().to_ascii_lowercase() == alb
-                {
-                    t.cover_url = Some(cover_url.clone());
-                }
-            }
-        }
-        self.flush_to_disk()?;
+        self.append_mutation(JournalMutation::Playback {
+            id: id.to_string(),
+            play_count,
+            last_played,
+        })?;
         Ok(true)
     }
 
+    pub fn update_track_rating(&mut self, id: &str, rating: u8) -> Result<bool, String> {
+        if !self.tracks_by_id.contains_key(id) {
+            return Ok(false);
+        }
+        self.append_mutation(JournalMutation::Rating {
+            id: id.to_string(),
+            rating,
+        })?;
+        Ok(true)
+    }
+
+    pub fn update_track_cover(&mut self, id: &str, cover_url: String) -> Result<bool, String> {
+        if cover_url.is_empty() || !self.tracks_by_id.contains_key(id) {
+            return Ok(false);
+        }
+        self.append_mutation(JournalMutation::Cover {
+            id: id.to_string(),
+            cover_url,
+        })?;
+        Ok(true)
+    }
+
+    pub fn update_track_duration(&mut self, id: &str, duration: f64) -> Result<bool, String> {
+        if duration <= 0.0 || !self.tracks_by_id.contains_key(id) {
+            return Ok(false);
+        }
+        self.append_mutation(JournalMutation::Duration {
+            id: id.to_string(),
+            duration,
+        })?;
+        Ok(true)
+    }
+
+    pub fn update_tracks_duration_batch(&mut self, updates: Vec<(String, f64)>) -> Result<usize, String> {
+        let valid_updates: Vec<(String, f64)> = updates
+            .into_iter()
+            .filter(|(id, d)| *d > 0.0 && self.tracks_by_id.contains_key(id))
+            .collect();
+        if valid_updates.is_empty() {
+            return Ok(0);
+        }
+        let count = valid_updates.len();
+        self.append_mutation(JournalMutation::DurationBatch {
+            updates: valid_updates,
+        })?;
+        Ok(count)
+    }
+
     pub fn delete_tracks(&mut self, ids: &[String]) -> Result<usize, String> {
-        let mut removed = 0;
-        for id in ids {
-            if self.tracks_by_id.remove(id).is_some() {
-                removed += 1;
-            }
+        let to_remove: Vec<String> = ids
+            .iter()
+            .filter(|id| self.tracks_by_id.contains_key(*id))
+            .cloned()
+            .collect();
+        if to_remove.is_empty() {
+            return Ok(0);
         }
-        if removed > 0 {
-            self.ordered_ids.retain(|id| self.tracks_by_id.contains_key(id));
-            self.flush_to_disk()?;
-        }
-        Ok(removed)
+        let count = to_remove.len();
+        self.append_mutation(JournalMutation::Delete { ids: to_remove })?;
+        Ok(count)
     }
 
     pub fn clear(&mut self) -> Result<(), String> {
         self.tracks_by_id.clear();
         self.ordered_ids.clear();
+        self.journal_entry_count = 0;
         if self.db_path.exists() {
             let _ = fs::remove_file(&self.db_path);
+        }
+        let jpath = self.journal_path();
+        if jpath.exists() {
+            let _ = fs::remove_file(&jpath);
         }
         Ok(())
     }
@@ -385,6 +612,24 @@ pub fn db_update_track_cover(track_id: String, cover_url: String) -> Result<bool
 }
 
 #[tauri::command]
+pub fn db_update_track_duration(track_id: String, duration: f64) -> Result<bool, String> {
+    with_db(|db| db.update_track_duration(&track_id, duration))
+}
+
+#[tauri::command]
+pub fn db_update_tracks_duration_batch(updates: Vec<(String, f64)>) -> Result<usize, String> {
+    with_db(|db| db.update_tracks_duration_batch(updates))
+}
+
+#[tauri::command]
+pub fn db_compact_journal() -> Result<bool, String> {
+    with_db(|db| {
+        db.compact_journal()?;
+        Ok(true)
+    })
+}
+
+#[tauri::command]
 pub fn db_delete_tracks(track_ids: Vec<String>) -> Result<bool, String> {
     with_db(|db| {
         db.delete_tracks(&track_ids)?;
@@ -422,6 +667,7 @@ mod tests {
     fn test_library_db_crud_and_persistence() {
         let temp_file = std::env::temp_dir().join(format!("classitunes_test_db_{}.bin", std::process::id()));
         let _ = fs::remove_file(&temp_file);
+        let _ = fs::remove_file(temp_file.with_extension("journal"));
 
         {
             let mut db = LibraryDb::open_at(temp_file.clone());
@@ -465,7 +711,7 @@ mod tests {
             db.update_track_playback("track_1", 3, Some("2026-10-24T01:00:00Z".to_string())).unwrap();
         }
 
-        // Reopen from disk and verify binary persistence
+        // Reopen from disk and verify binary persistence + journal replay
         {
             let mut db = LibraryDb::open_at(temp_file.clone());
             let all = db.get_all_tracks();
@@ -480,5 +726,160 @@ mod tests {
         }
 
         let _ = fs::remove_file(&temp_file);
+        let _ = fs::remove_file(temp_file.with_extension("journal"));
+    }
+
+    #[test]
+    fn test_journal_replay_and_compaction() {
+        let temp_file = std::env::temp_dir().join(format!("classitunes_test_journal_{}.bin", std::process::id()));
+        let jpath = temp_file.with_extension("journal");
+        let _ = fs::remove_file(&temp_file);
+        let _ = fs::remove_file(&jpath);
+
+        let track1 = TrackRecord {
+            id: "t1".to_string(),
+            title: "Track 1".to_string(),
+            artist: "Artist 1".to_string(),
+            album: "Album 1".to_string(),
+            genre: "Pop".to_string(),
+            duration: 180.0,
+            year: Some(2023),
+            track_number: Some(1),
+            track_total: Some(2),
+            disc_number: None,
+            disc_total: None,
+            composer: None,
+            album_artist: None,
+            publisher: None,
+            lyrics: None,
+            replay_gain_db: None,
+            comments: None,
+            rating: 0,
+            play_count: 0,
+            last_played: None,
+            cover_url: None,
+            audio_url: "music/t1.mp3".to_string(),
+            format: None,
+            bpm: None,
+            media_kind: None,
+            bitrate: None,
+            sample_rate: None,
+            size_bytes: None,
+            date_added: "2026-01-01".to_string(),
+            file_path: Some("music/t1.mp3".to_string()),
+        };
+
+        {
+            let mut db = LibraryDb::open_at(temp_file.clone());
+            db.replace_all_tracks(vec![track1]).unwrap();
+            // Snapshot written, journal empty
+            assert!(!jpath.exists() || fs::read_to_string(&jpath).unwrap().is_empty());
+
+            // Apply mutations
+            db.update_track_rating("t1", 4).unwrap();
+            db.update_track_playback("t1", 5, Some("2026-11-09T00:00:00Z".to_string())).unwrap();
+            db.update_track_duration("t1", 195.2).unwrap();
+            db.update_track_cover("t1", "cover.jpg".to_string()).unwrap();
+
+            // Journal must exist and contain mutations
+            assert!(jpath.exists());
+            assert_eq!(db.journal_entry_count, 4);
+        }
+
+        // Reopen without compacting - should replay journal faithfully
+        {
+            let mut db = LibraryDb::open_at(temp_file.clone());
+            let all = db.get_all_tracks();
+            assert_eq!(all.len(), 1);
+            let t = &all[0];
+            assert_eq!(t.rating, 4);
+            assert_eq!(t.play_count, 5);
+            assert_eq!(t.duration, 195.2);
+            assert_eq!(t.cover_url.as_deref(), Some("cover.jpg"));
+
+            // Compact journal
+            db.compact_journal().unwrap();
+            assert!(!jpath.exists());
+            assert_eq!(db.journal_entry_count, 0);
+        }
+
+        // Reopen after compaction
+        {
+            let db = LibraryDb::open_at(temp_file.clone());
+            let all = db.get_all_tracks();
+            assert_eq!(all.len(), 1);
+            let t = &all[0];
+            assert_eq!(t.rating, 4);
+            assert_eq!(t.play_count, 5);
+            assert_eq!(t.duration, 195.2);
+            assert_eq!(t.cover_url.as_deref(), Some("cover.jpg"));
+        }
+
+        let _ = fs::remove_file(&temp_file);
+        let _ = fs::remove_file(&jpath);
+    }
+
+    #[test]
+    fn test_interrupted_corrupt_journal_recovery() {
+        let temp_file = std::env::temp_dir().join(format!("classitunes_test_corrupt_{}.bin", std::process::id()));
+        let jpath = temp_file.with_extension("journal");
+        let _ = fs::remove_file(&temp_file);
+        let _ = fs::remove_file(&jpath);
+
+        let track = TrackRecord {
+            id: "t_rec".to_string(),
+            title: "Safe Track".to_string(),
+            artist: "Safe Artist".to_string(),
+            album: "Safe Album".to_string(),
+            genre: "Jazz".to_string(),
+            duration: 100.0,
+            year: None,
+            track_number: None,
+            track_total: None,
+            disc_number: None,
+            disc_total: None,
+            composer: None,
+            album_artist: None,
+            publisher: None,
+            lyrics: None,
+            replay_gain_db: None,
+            comments: None,
+            rating: 1,
+            play_count: 0,
+            last_played: None,
+            cover_url: None,
+            audio_url: "music/safe.mp3".to_string(),
+            format: None,
+            bpm: None,
+            media_kind: None,
+            bitrate: None,
+            sample_rate: None,
+            size_bytes: None,
+            date_added: "2026-01-01".to_string(),
+            file_path: Some("music/safe.mp3".to_string()),
+        };
+
+        {
+            let mut db = LibraryDb::open_at(temp_file.clone());
+            db.replace_all_tracks(vec![track]).unwrap();
+            db.update_track_rating("t_rec", 5).unwrap();
+        }
+
+        // Simulate an interrupted write / partial power loss by appending garbage to journal
+        {
+            let mut file = OpenOptions::new().append(true).open(&jpath).unwrap();
+            writeln!(file, "{{\"op\":\"rating\",\"id\":\"t_rec\",\"rating\":").unwrap(); // Incomplete JSON
+        }
+
+        // Reopening should not crash; it should replay up to the last good line and recover
+        {
+            let db = LibraryDb::open_at(temp_file.clone());
+            let all = db.get_all_tracks();
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].rating, 5);
+        }
+
+        let _ = fs::remove_file(&temp_file);
+        let _ = fs::remove_file(&jpath);
     }
 }

@@ -467,7 +467,7 @@ export class AudioEngine {
       // Handle output device changes (headphones plugged/unplugged, Bluetooth connected/disconnected, HDMI switch)
       if (this.audioCtx) {
         this.audioCtx.onstatechange = () => {
-          if (this.audioCtx?.state === 'interrupted' || this.audioCtx?.state === 'suspended') {
+          if ((this.audioCtx?.state as string) === 'interrupted' || this.audioCtx?.state === 'suspended') {
             if (this.activeAudio && !this.activeAudio.paused) {
               this.audioCtx.resume().catch(() => {});
             }

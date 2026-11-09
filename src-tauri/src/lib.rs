@@ -489,6 +489,69 @@ pub struct ReadMetadataResult {
     pub size_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CachedMetadataEntry {
+    size_bytes: u64,
+    mtime_ms: u64,
+    metadata: ReadMetadataResult,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct MetadataCacheStore {
+    entries: std::collections::HashMap<String, CachedMetadataEntry>,
+}
+
+static METADATA_CACHE: std::sync::OnceLock<std::sync::Mutex<MetadataCacheStore>> = std::sync::OnceLock::new();
+
+pub fn normalize_file_path(path: &str) -> String {
+    let clean = path.trim().replace('\\', "/");
+    #[cfg(target_os = "windows")]
+    {
+        clean.to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        clean
+    }
+}
+
+fn get_metadata_cache_path() -> std::path::PathBuf {
+    db::get_app_data_dir().join("metadata_cache.bin")
+}
+
+fn with_metadata_cache<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut MetadataCacheStore) -> R,
+{
+    let mutex = METADATA_CACHE.get_or_init(|| {
+        let path = get_metadata_cache_path();
+        if path.exists() {
+            if let Ok(bytes) = std::fs::read(&path) {
+                let config = bincode::config::standard();
+                if let Ok((store, _)) = bincode::serde::decode_from_slice::<MetadataCacheStore, _>(&bytes, config) {
+                    return std::sync::Mutex::new(store);
+                }
+            }
+        }
+        std::sync::Mutex::new(MetadataCacheStore::default())
+    });
+    let mut guard = mutex.lock().unwrap_or_else(|p| p.into_inner());
+    f(&mut guard)
+}
+
+pub fn save_metadata_cache() {
+    with_metadata_cache(|store| {
+        let path = get_metadata_cache_path();
+        let config = bincode::config::standard();
+        if let Ok(encoded) = bincode::serde::encode_to_vec(&*store, config) {
+            let tmp_path = path.with_extension("bin.tmp");
+            if std::fs::write(&tmp_path, &encoded).is_ok() {
+                let _ = std::fs::rename(&tmp_path, &path);
+            }
+        }
+    });
+}
+
 fn parse_replay_gain_string(s: &str) -> Option<f64> {
     let cleaned = s
         .trim()
@@ -656,7 +719,31 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
     }
 
     let file_meta = std::fs::metadata(path).ok();
-    let size_bytes = file_meta.map(|m| m.len());
+    let size_bytes = file_meta.as_ref().map(|m| m.len());
+    let mtime_ms = file_meta.as_ref().and_then(|m| {
+        m.modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+    });
+
+    let norm_path = normalize_file_path(&resolved_path);
+
+    // Fast-path: Check durable metadata cache by file identity (normalized path, size, and mtime)
+    if let (Some(size), Some(mtime)) = (size_bytes, mtime_ms) {
+        let cached = with_metadata_cache(|store| {
+            if let Some(entry) = store.entries.get(&norm_path) {
+                if entry.size_bytes == size && entry.mtime_ms == mtime {
+                    return Some(entry.metadata.clone());
+                }
+            }
+            None
+        });
+        if let Some(meta) = cached {
+            return Ok(meta);
+        }
+    }
+
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
 
     let mut res = ReadMetadataResult {
@@ -978,6 +1065,20 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
         res.sample_rate = Some(44100);
     }
 
+    // Update durable metadata cache on success
+    if let (Some(size), Some(mtime)) = (size_bytes, mtime_ms) {
+        with_metadata_cache(|store| {
+            store.entries.insert(
+                norm_path,
+                CachedMetadataEntry {
+                    size_bytes: size,
+                    mtime_ms: mtime,
+                    metadata: res.clone(),
+                },
+            );
+        });
+    }
+
     Ok(res)
 }
 
@@ -999,7 +1100,7 @@ async fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadata
     tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
 
-        file_paths
+        let items: Vec<BatchMetadataItem> = file_paths
             .into_par_iter()
             .map(|path| {
                 let meta = read_music_metadata_internal(&path).ok();
@@ -1008,7 +1109,9 @@ async fn read_music_metadata_batch(file_paths: Vec<String>) -> Vec<BatchMetadata
                     metadata: meta,
                 }
             })
-            .collect()
+            .collect();
+        save_metadata_cache();
+        items
     })
     .await
     .unwrap_or_default()
@@ -1639,6 +1742,10 @@ fn get_audio_stream_port() -> u16 {
 }
 
 pub(crate) fn write_music_metadata_internal(file_path: &str, tags: Id3TagPayload) -> Result<bool, String> {
+    let norm = normalize_file_path(file_path);
+    with_metadata_cache(|store| {
+        store.entries.remove(&norm);
+    });
     use std::path::Path;
     let path = Path::new(file_path);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -2394,6 +2501,9 @@ pub fn run() {
             db::db_update_track_playback,
             db::db_update_track_rating,
             db::db_update_track_cover,
+            db::db_update_track_duration,
+            db::db_update_tracks_duration_batch,
+            db::db_compact_journal,
             db::db_delete_tracks,
             db::db_clear_all,
             audio_engine::native_audio_play,
@@ -2457,6 +2567,103 @@ mod tests {
         assert_eq!(stats.len(), 1);
         assert!(stats[0].exists);
         assert!(stats[0].is_file);
+    }
+
+    #[test]
+    fn test_path_normalization_cross_platform() {
+        let p = "C:\\Music\\Folder\\Song.MP3";
+        let norm = normalize_file_path(p);
+        assert!(!norm.contains('\\'));
+        #[cfg(target_os = "windows")]
+        assert_eq!(norm, "c:/music/folder/song.mp3");
+    }
+
+    #[test]
+    fn test_metadata_cache_invalidation_on_change() {
+        let temp_dir = std::env::temp_dir().join(format!("classitunes_cache_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let test_file = temp_dir.join("sample.mp3");
+
+        // Write initial file
+        std::fs::write(&test_file, b"initial dummy audio data 12345").unwrap();
+        let path_str = test_file.to_string_lossy().to_string();
+        let norm = normalize_file_path(&path_str);
+
+        // Manually prime cache
+        let meta1 = ReadMetadataResult {
+            title: Some("Initial Title".to_string()),
+            artist: Some("Initial Artist".to_string()),
+            album_artist: None,
+            album: None,
+            composer: None,
+            publisher: None,
+            lyrics: None,
+            replay_gain_db: None,
+            genre: None,
+            year: None,
+            track_number: None,
+            track_total: None,
+            disc_number: None,
+            disc_total: None,
+            bpm: None,
+            comments: None,
+            media_kind: None,
+            cover_url: None,
+            duration: Some(10.0),
+            bitrate: None,
+            sample_rate: None,
+            format: None,
+            size_bytes: Some(30),
+        };
+
+        with_metadata_cache(|store| {
+            store.entries.insert(
+                norm.clone(),
+                CachedMetadataEntry {
+                    size_bytes: 30,
+                    mtime_ms: 1000,
+                    metadata: meta1,
+                },
+            );
+        });
+
+        // Verify cache hit with matching size and mtime
+        let hit = with_metadata_cache(|store| {
+            store.entries.get(&norm).and_then(|e| {
+                if e.size_bytes == 30 && e.mtime_ms == 1000 {
+                    Some(e.metadata.title.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        assert_eq!(hit, Some(Some("Initial Title".to_string())));
+
+        // Size change invalidates cache lookup
+        let miss_size = with_metadata_cache(|store| {
+            store.entries.get(&norm).and_then(|e| {
+                if e.size_bytes == 45 && e.mtime_ms == 1000 {
+                    Some(e.metadata.title.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        assert_eq!(miss_size, None);
+
+        // Mtime change invalidates cache lookup
+        let miss_mtime = with_metadata_cache(|store| {
+            store.entries.get(&norm).and_then(|e| {
+                if e.size_bytes == 30 && e.mtime_ms == 2000 {
+                    Some(e.metadata.title.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        assert_eq!(miss_mtime, None);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

@@ -35,14 +35,15 @@ export function internString(str: string | undefined): string | undefined {
 
 export function internTrackStrings<T extends Record<string, any>>(track: T): T {
   if (!track) return track;
-  if (typeof track.artist === 'string') track.artist = internString(track.artist)!;
-  if (typeof track.album === 'string') track.album = internString(track.album)!;
-  if (typeof track.albumArtist === 'string') track.albumArtist = internString(track.albumArtist);
-  if (typeof track.genre === 'string') track.genre = internString(track.genre)!;
-  if (typeof track.composer === 'string') track.composer = internString(track.composer);
-  if (typeof track.publisher === 'string') track.publisher = internString(track.publisher);
-  if (typeof track.format === 'string') track.format = internString(track.format);
-  if (typeof track.mediaKind === 'string') track.mediaKind = internString(track.mediaKind);
+  const anyTrack = track as any;
+  if (typeof anyTrack.artist === 'string') anyTrack.artist = internString(anyTrack.artist)!;
+  if (typeof anyTrack.album === 'string') anyTrack.album = internString(anyTrack.album)!;
+  if (typeof anyTrack.albumArtist === 'string') anyTrack.albumArtist = internString(anyTrack.albumArtist);
+  if (typeof anyTrack.genre === 'string') anyTrack.genre = internString(anyTrack.genre)!;
+  if (typeof anyTrack.composer === 'string') anyTrack.composer = internString(anyTrack.composer);
+  if (typeof anyTrack.publisher === 'string') anyTrack.publisher = internString(anyTrack.publisher);
+  if (typeof anyTrack.format === 'string') anyTrack.format = internString(anyTrack.format);
+  if (typeof anyTrack.mediaKind === 'string') anyTrack.mediaKind = internString(anyTrack.mediaKind);
   return track;
 }
 
@@ -282,6 +283,27 @@ export async function getPlaybackMetadata(trackId: string): Promise<{ trackId: s
   } catch (e) {
     return null;
   }
+}
+
+export function extractPlaybackMetadataFromTracks(
+  tracks: any[]
+): Map<string, { playCount?: number; lastPlayed?: Date }> {
+  const map = new Map<string, { playCount?: number; lastPlayed?: Date }>();
+  if (!Array.isArray(tracks)) return map;
+  for (const t of tracks) {
+    if (!t || !t.id) continue;
+    const lastPlayed = t.lastPlayed ? new Date(t.lastPlayed) : undefined;
+    if (
+      (typeof t.playCount === 'number' && t.playCount > 0) ||
+      (lastPlayed && !Number.isNaN(lastPlayed.getTime()))
+    ) {
+      map.set(t.id, {
+        playCount: typeof t.playCount === 'number' ? t.playCount : undefined,
+        lastPlayed: Number.isNaN(lastPlayed?.getTime()) ? undefined : lastPlayed,
+      });
+    }
+  }
+  return map;
 }
 
 export async function getAllPlaybackMetadata(): Promise<Map<string, { playCount?: number; lastPlayed?: Date }>> {

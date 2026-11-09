@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Track } from '../types';
 import { Sliders, Maximize2, Disc, Shuffle, Repeat, Repeat1, FileText, Info, Settings, Gauge } from 'lucide-react';
 import { openLogDirectory } from '../utils/tauriWindow';
@@ -58,10 +58,21 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
   const isLight = theme === 'light';
 
-  const totalCount = tracks.length;
-  const totalSeconds = tracks.reduce((acc, t) => acc + (t.duration || 0), 0);
-  const totalMinutes = (totalSeconds / 60).toFixed(1);
-  const totalMB = (tracks.reduce((acc, t) => acc + (t.sizeBytes || 4000000), 0) / (1024 * 1024)).toFixed(1);
+  const { totalCount, totalMinutes, totalMB } = useMemo(() => {
+    const count = tracks.length;
+    let sec = 0;
+    let bytes = 0;
+    for (let i = 0; i < count; i++) {
+      const t = tracks[i];
+      sec += t.duration || 0;
+      bytes += t.sizeBytes || 4000000;
+    }
+    return {
+      totalCount: count,
+      totalMinutes: (sec / 60).toFixed(1),
+      totalMB: (bytes / (1024 * 1024)).toFixed(1),
+    };
+  }, [tracks]);
 
   return (
     <footer className={`relative select-none border-t px-3 py-1 text-[11px] font-sans flex items-center justify-between z-20 shrink-0 transition-colors duration-200 ${isLight

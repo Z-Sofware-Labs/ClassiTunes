@@ -274,9 +274,10 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 $sh = New-Object -ComObject Shell.Application
 $items = @($sh.Namespace(17).Items() | Where-Object {
-  -not $_.IsFileSystem -and $_.IsFolder -and (
-    $_.Path -match 'usb#|ms_comp_mtp|6ac27878-a6fa-4155-ba85-f98f491d4f33' -or
-    $_.Type -match 'Phone|Player|Portable'
+  (-not $_.IsFileSystem -or $_.Path -match '::\{|\\\\') -and $_.IsFolder -and (
+    $_.Path -match 'usb#|ms_comp_mtp|6ac27878-a6fa-4155-ba85-f98f491d4f33|wpd' -or
+    $_.Type -match 'Phone|Player|Portable|Audio|Media|Device|Camera' -or
+    $_.Name -match 'iPod|Walkman|Android|Galaxy|Pixel|Sansa|MP3|Player|iPhone|iPad'
   )
 })
 $out = @()
@@ -2056,6 +2057,86 @@ const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 
 #[cfg(target_os = "windows")]
+fn is_drive_on_removable_or_usb_bus(drive_path: &str) -> bool {
+    use std::mem;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        BusTypeUsb, BusType1394, BusTypeSd, BusTypeMmc,
+    };
+    use windows::Win32::System::Ioctl::{
+        PropertyStandardQuery, StorageDeviceProperty, STORAGE_DEVICE_DESCRIPTOR,
+        STORAGE_PROPERTY_QUERY,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+
+    let drive_letter = drive_path.chars().next().unwrap_or(' ');
+    if !drive_letter.is_ascii_alphabetic() {
+        return false;
+    }
+    let volume_path = format!("\\\\.\\{}:", drive_letter);
+    let wide: Vec<u16> = std::ffi::OsStr::new(&volume_path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let handle = CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        );
+
+        if let Ok(h) = handle {
+            if h == INVALID_HANDLE_VALUE {
+                return false;
+            }
+
+            let mut query = STORAGE_PROPERTY_QUERY {
+                PropertyId: StorageDeviceProperty,
+                QueryType: PropertyStandardQuery,
+                AdditionalParameters: [0; 1],
+            };
+
+            let mut buffer = [0u8; 1024];
+            let mut bytes_returned = 0u32;
+
+            let ok = DeviceIoControl(
+                h,
+                windows::Win32::System::Ioctl::IOCTL_STORAGE_QUERY_PROPERTY,
+                Some(&mut query as *mut _ as *const std::ffi::c_void),
+                mem::size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+                Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
+                buffer.len() as u32,
+                Some(&mut bytes_returned),
+                None,
+            );
+
+            let _ = CloseHandle(h);
+
+            if ok.is_ok() && bytes_returned >= mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() as u32 {
+                let desc = &*(buffer.as_ptr() as *const STORAGE_DEVICE_DESCRIPTOR);
+                if desc.RemovableMedia
+                    || desc.BusType == BusTypeUsb
+                    || desc.BusType == BusTypeSd
+                    || desc.BusType == BusTypeMmc
+                    || desc.BusType == BusType1394
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
 pub fn list_connected_devices_native() -> Vec<Mp3Device> {
     if SYNC_IN_PROGRESS.load(Ordering::Relaxed) {
         if let Ok(guard) = last_known_devices_cache().lock() {
@@ -2103,10 +2184,15 @@ pub fn list_connected_devices_native() -> Vec<Mp3Device> {
                 || root_path.join("MP3").exists()
                 || root_path.join(".is_audio_player").exists();
 
-            let is_removable = drive_type == DRIVE_REMOVABLE;
-            let is_special_fixed = drive_type == DRIVE_FIXED && (is_ipod || is_android || has_audio_folder);
+            let is_system_drive = std::env::var("SystemDrive")
+                .map(|sd| drive_path.starts_with(&sd))
+                .unwrap_or_else(|_| drive_path.starts_with("C:") || drive_path.starts_with("c:"));
 
-            if is_removable || is_special_fixed {
+            let is_removable = drive_type == DRIVE_REMOVABLE;
+            let is_usb_bus = !is_system_drive && is_drive_on_removable_or_usb_bus(&drive_path);
+            let is_special_fixed = drive_type == DRIVE_FIXED && !is_system_drive && (is_ipod || is_android || has_audio_folder);
+
+            if is_removable || is_usb_bus || is_special_fixed {
                 let mut vol_name_buf = [0u16; 260];
                 let mut fs_name_buf = [0u16; 260];
 
