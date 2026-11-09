@@ -3367,6 +3367,7 @@ function hashString(str: string): string {
                 onDeviceTracksChange={setSelectedDeviceTracks}
                 deviceCheckedTrackIds={deviceCheckedTrackIds}
                 onDeviceCheckedTrackIdsChange={setDeviceCheckedTrackIds}
+                searchQuery={searchQuery}
               />
             </Suspense>
           ) : (

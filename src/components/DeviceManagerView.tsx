@@ -49,6 +49,7 @@ interface DeviceManagerViewProps {
   onDeviceTracksChange?: (tracks: Track[]) => void;
   deviceCheckedTrackIds?: Set<string>;
   onDeviceCheckedTrackIdsChange?: (next: Set<string>) => void;
+  searchQuery?: string;
 }
 
 async function scaleCoverTo500(coverUrl: string): Promise<string> {
@@ -113,6 +114,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   onDeviceTracksChange,
   deviceCheckedTrackIds: controlledDeviceCheckedTrackIds,
   onDeviceCheckedTrackIdsChange,
+  searchQuery = '',
 }) => {
   const isLight = theme === 'light';
 
@@ -265,6 +267,19 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
   useEffect(() => {
     onDeviceTracksChange?.(deviceTracks);
   }, [deviceTracks, onDeviceTracksChange]);
+
+  // Scoped search filter for Device Contents
+  const filteredDeviceTracks = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return deviceTracks;
+    return deviceTracks.filter(t =>
+      (t.title && t.title.toLowerCase().includes(q)) ||
+      (t.artist && t.artist.toLowerCase().includes(q)) ||
+      (t.album && t.album.toLowerCase().includes(q)) ||
+      (t.genre && t.genre.toLowerCase().includes(q)) ||
+      (t.filePath && t.filePath.toLowerCase().includes(q))
+    );
+  }, [deviceTracks, searchQuery]);
 
   // Listen for checkbox selection and column visibility changes across tabs / components
   const [checkedStorageTick, setCheckedStorageTick] = useState(0);
@@ -1266,10 +1281,18 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
                   </>
                 )}
               </div>
+            ) : filteredDeviceTracks.length === 0 ? (
+              <div className="p-16 text-center text-xs text-gray-400 flex flex-col items-center justify-center gap-2">
+                <Search className="w-10 h-10 opacity-30 text-gray-400" />
+                <span className="text-sm font-semibold">No songs match "{searchQuery}" on this device.</span>
+                <span className="text-xs opacity-70">
+                  Search is currently scoped to {device.name}. Clear the search box to view all device tracks.
+                </span>
+              </div>
             ) : (
               <div className="flex-1 min-h-0 flex flex-col h-full">
                 <ListView
-                  tracks={deviceTracks}
+                  tracks={filteredDeviceTracks}
                   currentTrack={currentTrack || null}
                   isPlaying={!!isPlaying}
                   playlists={playlists}

@@ -1301,57 +1301,85 @@ fn sync_tracks_to_mtp_device(
     // 1. Pre-inspect existing audio files on the MTP device FIRST before touching or transcoding!
     let existing_mtp_items = list_mtp_device_contents(&payload.mount_point);
     let mut existing_by_rel_key: HashMap<String, DeviceTrackItem> = HashMap::new();
+    let mut existing_by_mtp_identity: HashMap<String, DeviceTrackItem> = HashMap::new();
     for item in existing_mtp_items {
         let key = item.relative_path.replace('\\', "/").to_lowercase();
-        existing_by_rel_key.insert(key, item);
+        existing_by_rel_key.insert(key, item.clone());
+        let id_key = track_identity_key(item.artist.as_deref(), item.title.as_deref());
+        if id_key != "|" {
+            existing_by_mtp_identity.insert(id_key, item);
+        }
     }
 
     use rayon::prelude::*;
 
     // 2. If mirror_sync is true (Sync button pressed), delete any obsolete audio files on the MTP device
     if mirror_sync && !SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
-        let expected_rel_keys: std::collections::HashSet<String> = payload
-            .tracks
-            .par_iter()
-            .filter_map(|track| {
-                let src_path = Path::new(&track.file_path);
-                if !src_path.exists() {
-                    return None;
-                }
-                let ext = if should_transcode {
-                    transcode_target_format.extension().to_string()
-                } else {
-                    src_path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("mp3")
-                        .to_lowercase()
-                };
-                let mut enriched = track.clone();
-                if enriched.title.is_none() || enriched.artist.is_none() || enriched.album.is_none() {
-                    if let Ok(m) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
-                        if enriched.title.is_none() {
-                            enriched.title = m.title;
-                        }
-                        if enriched.artist.is_none() {
-                            enriched.artist = m.artist;
-                        }
-                        if enriched.album.is_none() {
-                            enriched.album = m.album;
+        let (expected_rel_keys, expected_mtp_identities): (std::collections::HashSet<String>, std::collections::HashSet<String>) = {
+            let mut keys = std::collections::HashSet::new();
+            let mut ids = std::collections::HashSet::new();
+
+            let gathered: Vec<(String, String)> = payload
+                .tracks
+                .par_iter()
+                .filter_map(|track| {
+                    let src_path = Path::new(&track.file_path);
+                    if !src_path.exists() {
+                        return None;
+                    }
+                    let ext = if should_transcode {
+                        transcode_target_format.extension().to_string()
+                    } else {
+                        src_path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("mp3")
+                            .to_lowercase()
+                    };
+                    let mut enriched = track.clone();
+                    if enriched.title.is_none() || enriched.artist.is_none() || enriched.album.is_none() {
+                        if let Ok(m) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
+                            if enriched.title.is_none() {
+                                enriched.title = m.title;
+                            }
+                            if enriched.artist.is_none() {
+                                enriched.artist = m.artist;
+                            }
+                            if enriched.album.is_none() {
+                                enriched.album = m.album;
+                            }
                         }
                     }
+                    let rel = render_naming_template(naming_tmpl, &enriched, &ext);
+                    let rel_music = Path::new("Music").join(&rel);
+                    let rel_key = rel_music.to_string_lossy().replace('\\', "/").to_lowercase();
+                    let id_key = track_identity_key(enriched.artist.as_deref(), enriched.title.as_deref());
+                    Some((rel_key, id_key))
+                })
+                .collect();
+
+            for (k, id) in gathered {
+                keys.insert(k);
+                if id != "|" {
+                    ids.insert(id);
                 }
-                let rel = render_naming_template(naming_tmpl, &enriched, &ext);
-                let rel_music = Path::new("Music").join(&rel);
-                Some(rel_music.to_string_lossy().replace('\\', "/").to_lowercase())
-            })
-            .collect();
+            }
+            (keys, ids)
+        };
 
         for (rel_key, existing_item) in &existing_by_rel_key {
             if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
                 break;
             }
-            if !expected_rel_keys.contains(rel_key) {
+            let mut matches_expected = expected_rel_keys.contains(rel_key);
+            if !matches_expected {
+                let id_key = track_identity_key(existing_item.artist.as_deref(), existing_item.title.as_deref());
+                if id_key != "|" && expected_mtp_identities.contains(&id_key) {
+                    matches_expected = true;
+                }
+            }
+
+            if !matches_expected {
                 if delete_mtp_device_file(&existing_item.full_path).is_ok() {
                     tracks_deleted += 1;
                 }
@@ -1455,8 +1483,18 @@ fn sync_tracks_to_mtp_device(
                 let src_size = fs::metadata(src_path).map(|m| m.len()).unwrap_or(0);
                 let track_title = enriched_track.title.clone().unwrap_or_else(|| "Track".to_string());
 
-                // Check if file already exists on MTP device before touching or transcoding!
-                if let Some(existing_item) = existing_by_rel_key.get(&rel_key) {
+                let id_key = track_identity_key(enriched_track.artist.as_deref(), enriched_track.title.as_deref());
+
+                // Check if file already exists on MTP device (by path or by artist+title) before touching or transcoding!
+                let existing_target = existing_by_rel_key.get(&rel_key).or_else(|| {
+                    if id_key != "|" {
+                        existing_by_mtp_identity.get(&id_key)
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(existing_item) = existing_target {
                     if existing_item.size_bytes > 0 {
                         let already_valid = if !should_transcode {
                             existing_item.size_bytes == src_size || existing_item.size_bytes > 1024
@@ -3176,6 +3214,12 @@ fn normalize_device_path_key(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/").to_lowercase()
 }
 
+fn track_identity_key(artist: Option<&str>, title: Option<&str>) -> String {
+    let a = artist.unwrap_or("").trim().to_lowercase();
+    let t = title.unwrap_or("").trim().to_lowercase();
+    format!("{a}|{t}")
+}
+
 fn str_tag_matches(file_val: &Option<String>, expected_val: &Option<String>) -> bool {
     match expected_val.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         None => true,
@@ -3445,74 +3489,118 @@ pub fn sync_tracks_to_device_impl(
     let mut created_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut synced_relative_paths: Vec<PathBuf> = Vec::new();
 
+    // Scan existing device audio files upfront to support both path-based and metadata-based duplicate avoidance
+    let priority_roots = [
+        mount_dir.join("Music"),
+        mount_dir.join("Audio"),
+        mount_dir.join("MP3"),
+        mount_dir.join("iPod_Control"),
+    ];
+    let mut existing_device_files: Vec<PathBuf> = Vec::new();
+    for p_root in &priority_roots {
+        if p_root.exists() {
+            collect_device_audio_files(p_root, 0, &mut existing_device_files);
+        }
+    }
+
     use rayon::prelude::*;
+
+    // Index existing device files by (artist, title) identity to detect renames, existing tracks with
+    // differing path schemes, and prevent duplicate files on the device.
+    let existing_by_identity: std::sync::Arc<HashMap<String, PathBuf>> = {
+        let map: HashMap<String, PathBuf> = existing_device_files
+            .par_iter()
+            .filter_map(|p| {
+                if let Ok(m) = crate::read_music_metadata_internal(&p.to_string_lossy()) {
+                    let id_key = track_identity_key(m.artist.as_deref(), m.title.as_deref());
+                    if id_key != "|" {
+                        return Some((id_key, p.clone()));
+                    }
+                }
+                None
+            })
+            .collect();
+        std::sync::Arc::new(map)
+    };
 
     // Pre-pass: When mirror_sync is true (Sync button pressed), determine all target paths on the device
     // and delete any obsolete audio files on the device that are no longer in the sync selection!
     if mirror_sync && !SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
-        let expected_keys: std::collections::HashSet<String> = payload
-            .tracks
-            .par_iter()
-            .enumerate()
-            .filter_map(|(index, track)| {
-                let src_path = Path::new(&track.file_path);
-                if !src_path.exists() {
-                    return None;
-                }
-                let ext = if should_transcode {
-                    transcode_target_format.extension().to_string()
-                } else {
-                    src_path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("mp3")
-                        .to_lowercase()
-                };
-                let mut enriched = track.clone();
-                if enriched.title.is_none() || enriched.artist.is_none() || enriched.album.is_none() {
-                    if let Ok(m) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
-                        if enriched.title.is_none() {
-                            enriched.title = m.title;
-                        }
-                        if enriched.artist.is_none() {
-                            enriched.artist = m.artist;
-                        }
-                        if enriched.album.is_none() {
-                            enriched.album = m.album;
+        let (expected_keys, expected_identities): (std::collections::HashSet<String>, std::collections::HashSet<String>) = {
+            let mut keys = std::collections::HashSet::new();
+            let mut ids = std::collections::HashSet::new();
+
+            let gathered: Vec<(String, String)> = payload
+                .tracks
+                .par_iter()
+                .enumerate()
+                .filter_map(|(index, track)| {
+                    let src_path = Path::new(&track.file_path);
+                    if !src_path.exists() {
+                        return None;
+                    }
+                    let ext = if should_transcode {
+                        transcode_target_format.extension().to_string()
+                    } else {
+                        src_path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("mp3")
+                            .to_lowercase()
+                    };
+                    let mut enriched = track.clone();
+                    if enriched.title.is_none() || enriched.artist.is_none() || enriched.album.is_none() {
+                        if let Ok(m) = crate::read_music_metadata_internal(&src_path.to_string_lossy()) {
+                            if enriched.title.is_none() {
+                                enriched.title = m.title;
+                            }
+                            if enriched.artist.is_none() {
+                                enriched.artist = m.artist;
+                            }
+                            if enriched.album.is_none() {
+                                enriched.album = m.album;
+                            }
                         }
                     }
-                }
-                let dest_path = if is_ipod {
-                    let f_dir = format!("F{:02}", index % 20);
-                    music_root
-                        .join(&f_dir)
-                        .join(format!("ITUN_{:04}.{}", index + 1, ext))
-                } else {
-                    let rel = render_naming_template(naming_tmpl, &enriched, &ext);
-                    music_root.join(&rel)
-                };
-                Some(normalize_device_path_key(&dest_path))
-            })
-            .collect();
+                    let dest_path = if is_ipod {
+                        let f_dir = format!("F{:02}", index % 20);
+                        music_root
+                            .join(&f_dir)
+                            .join(format!("ITUN_{:04}.{}", index + 1, ext))
+                    } else {
+                        let rel = render_naming_template(naming_tmpl, &enriched, &ext);
+                        music_root.join(&rel)
+                    };
+                    let id_key = track_identity_key(enriched.artist.as_deref(), enriched.title.as_deref());
+                    Some((normalize_device_path_key(&dest_path), id_key))
+                })
+                .collect();
 
-        let priority_roots = [
-            mount_dir.join("Music"),
-            mount_dir.join("Audio"),
-            mount_dir.join("MP3"),
-            mount_dir.join("iPod_Control"),
-        ];
-        let mut existing_device_files: Vec<PathBuf> = Vec::new();
-        for p_root in &priority_roots {
-            if p_root.exists() {
-                collect_device_audio_files(p_root, 0, &mut existing_device_files);
+            for (k, id) in gathered {
+                keys.insert(k);
+                if id != "|" {
+                    ids.insert(id);
+                }
             }
-        }
-        for existing_path in existing_device_files {
+            (keys, ids)
+        };
+
+        for existing_path in &existing_device_files {
             if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
                 break;
             }
-            let key = normalize_device_path_key(&existing_path);
-            if !expected_keys.contains(&key) {
+            let path_key = normalize_device_path_key(existing_path);
+            let mut matches_expected = expected_keys.contains(&path_key);
+            if !matches_expected {
+                if let Ok(m) = crate::read_music_metadata_internal(&existing_path.to_string_lossy()) {
+                    let id_key = track_identity_key(m.artist.as_deref(), m.title.as_deref());
+                    if id_key != "|" && expected_identities.contains(&id_key) {
+                        matches_expected = true;
+                    }
+                }
+            }
+
+            if !matches_expected {
                 if delete_device_file_native(&existing_path.to_string_lossy()).is_ok() {
                     tracks_deleted += 1;
                 }
@@ -3645,12 +3733,29 @@ pub fn sync_tracks_to_device_impl(
                 let artwork_data_url = resolve_track_artwork_data_url(&enriched_track, src_path, scale_artwork_500, &artwork_cache);
                 let has_artwork = artwork_data_url.as_ref().map_or(false, |s| !s.trim().is_empty());
 
+                let id_key = track_identity_key(enriched_track.artist.as_deref(), enriched_track.title.as_deref());
+                let actual_dest_path = if dest_path.exists() {
+                    dest_path.clone()
+                } else if id_key != "|" {
+                    if let Some(existing_p) = existing_by_identity.get(&id_key) {
+                        if existing_p.exists() {
+                            existing_p.clone()
+                        } else {
+                            dest_path.clone()
+                        }
+                    } else {
+                        dest_path.clone()
+                    }
+                } else {
+                    dest_path.clone()
+                };
+
                 // 1. CHECK EXISTING FILE ON DEVICE FIRST (WMP pre-inspection before touching or transcoding)
-                if dest_path.exists() {
-                    if let Ok(dest_meta) = fs::metadata(&dest_path) {
+                if actual_dest_path.exists() {
+                    if let Ok(dest_meta) = fs::metadata(&actual_dest_path) {
                         let dest_len = dest_meta.len();
                         if dest_len > 0 {
-                            let dev_meta_opt = crate::read_music_metadata_internal(&dest_path.to_string_lossy()).ok();
+                            let dev_meta_opt = crate::read_music_metadata_internal(&actual_dest_path.to_string_lossy()).ok();
 
                             let audio_already_valid = if !should_transcode {
                                 if dest_len == src_size {
@@ -3677,7 +3782,7 @@ pub fn sync_tracks_to_device_impl(
 
                             if audio_already_valid {
                                 if let Some(ref dev_meta) = dev_meta_opt {
-                                    if file_metadata_is_complete(dev_meta, &enriched_track, has_artwork, &dest_path) {
+                                    if file_metadata_is_complete(dev_meta, &enriched_track, has_artwork, &actual_dest_path) {
                                         // Device file has valid audio AND complete tags/artwork -> SKIP completely!
                                         return Ok(PreparedStageItem {
                                             global_index: index,
@@ -3685,21 +3790,21 @@ pub fn sync_tracks_to_device_impl(
                                             track_title,
                                             ext,
                                             src_size,
-                                            dest_path,
+                                            dest_path: actual_dest_path,
                                             rel_path_for_list,
                                             action: SyncItemAction::Skip,
                                             stage_error: None,
                                         });
                                     } else {
                                         // Device file has valid audio, only missing artwork or updated tags -> Update in-place!
-                                        let payload = build_sync_tag_payload(&enriched_track, &dest_path, artwork_data_url);
+                                        let payload = build_sync_tag_payload(&enriched_track, &actual_dest_path, artwork_data_url);
                                         return Ok(PreparedStageItem {
                                             global_index: index,
                                             enriched_track,
                                             track_title,
                                             ext,
                                             src_size,
-                                            dest_path,
+                                            dest_path: actual_dest_path,
                                             rel_path_for_list,
                                             action: SyncItemAction::UpdateTagsInPlace(payload),
                                             stage_error: None,
