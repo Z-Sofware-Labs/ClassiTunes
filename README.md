@@ -47,7 +47,6 @@ Available as a native desktop application powered by **Tauri v2** (ultra-lightwe
   - **FLAC & OGG:** Native Vorbis comment tagging.
 - **Embedded Artwork Manager:** Extract, replace, paste, preview, or remove embedded track album art with automatic multi-size scaling.
 - **Lyrics Inspector:** Embedded synchronized and unsynchronized lyrics viewer and editor.
-- **AI Track Insights:** Optional Google Gemini AI integration to summarize song lyrics, explore artist discography, and suggest complementary tracks.
 
 ### 📁 Library Management & Smart Playlists
 - **Multiple Browsing Modes:** Switch smoothly between **Detailed List View** (with sortable columns, star ratings, play counts) and **Album Grid View** with high-resolution artwork cards.
@@ -191,17 +190,7 @@ cd ClassiTunes
 npm install
 ```
 
-### 2. Environment Configuration (Optional)
-For Google Gemini AI song insights and lyric analysis:
-```bash
-cp .env.example .env.local
-```
-Add your API key:
-```env
-GEMINI_API_KEY="your-gemini-api-key-here"
-```
-
-### 3. Development Commands
+### 2. Development Commands
 
 | Command | Description |
 | :--- | :--- |
@@ -211,7 +200,7 @@ GEMINI_API_KEY="your-gemini-api-key-here"
 | `npx tsc --noEmit` | Runs full TypeScript static type checking |
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib` | Executes the native Rust unit and integration test suite |
 
-### 4. Production Packaging
+### 3. Production Packaging
 
 ```bash
 # Builds complete platform installers (NSIS/MSI, DMG, DEB/RPM/AppImage)
