@@ -481,6 +481,8 @@ pub struct EngineSharedState {
     output_channels: usize,
     visualizer_ring: VecDeque<f32>,
     prev_fft_bins: [f32; 128],
+    /// Last rendered stereo sample pair (used for soft sample-hold or zero-crossing interpolation on underrun)
+    last_rendered_sample: (f32, f32),
 }
 
 impl EngineSharedState {
@@ -498,6 +500,7 @@ impl EngineSharedState {
             output_channels,
             visualizer_ring: VecDeque::with_capacity(512),
             prev_fft_bins: [0.0; 128],
+            last_rendered_sample: (0.0, 0.0),
         }
     }
 
@@ -553,15 +556,35 @@ impl EngineSharedState {
                         self.paused = true;
                         self.ended_flag = true;
                         self.crossfade = None;
+                        self.last_rendered_sample = (0.0, 0.0);
+                        frame.fill(0.0);
+                        continue;
                     }
                 }
-                frame.fill(0.0);
+                // Underrun smoothing: Decay the previous sample smoothly towards 0.0 rather than hard-dropping to 0.0
+                // which prevents audible DC-pop or crackle during momentary OS thread/device scheduling stalls.
+                self.last_rendered_sample.0 *= 0.95;
+                self.last_rendered_sample.1 *= 0.95;
+                let smooth_l = self.last_rendered_sample.0;
+                let smooth_r = self.last_rendered_sample.1;
+                let mono = 0.5 * (smooth_l + smooth_r);
+
+                if channels == 1 {
+                    frame[0] = mono;
+                } else {
+                    frame[0] = smooth_l;
+                    frame[1] = smooth_r;
+                    for ch in &mut frame[2..] {
+                        *ch = mono;
+                    }
+                }
                 continue;
             }
 
             let (eq_l, eq_r) = self.eq_chain.process_stereo(l_mix, r_mix);
             let final_l = (eq_l * self.volume).clamp(-1.0, 1.0);
             let final_r = (eq_r * self.volume).clamp(-1.0, 1.0);
+            self.last_rendered_sample = (final_l, final_r);
 
             let mono = 0.5 * (final_l + final_r);
             if self.visualizer_ring.len() >= 256 {
@@ -598,7 +621,6 @@ fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> 
         let sample_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels() as usize;
         let _sample_format = supported_config.sample_format();
-        let _config: cpal::StreamConfig = supported_config.into();
 
         let shared = Arc::new(Mutex::new(EngineSharedState::new(sample_rate, channels)));
         let _ = ENGINE_STATE.set(shared.clone());
@@ -632,7 +654,15 @@ fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> 
                     let sample_rate = supported_config.sample_rate().0;
                     let channels = supported_config.channels() as usize;
                     let sample_format = supported_config.sample_format();
-                    let config: cpal::StreamConfig = supported_config.into();
+                    let mut config: cpal::StreamConfig = supported_config.into();
+
+                    // Resilient Audio Buffer Configuration:
+                    // On Windows WASAPI (and desktop audio graphs), background streams encounter momentary stalls
+                    // when external applications (like YouTube in Edge/Chrome) pause, seek, or rebuild audio clients.
+                    // By requesting an explicit resilient buffer of 2048 frames (~43ms @ 48kHz, ~46ms @ 44.1kHz),
+                    // the audio driver has ample headroom to survive WASAPI mixer re-locks and clock resyncs without
+                    // underruns, crackles, or micro-stutters.
+                    config.buffer_size = cpal::BufferSize::Fixed(2048);
 
                     if let Ok(mut guard) = shared.lock() {
                         guard.output_sample_rate = sample_rate;
@@ -646,64 +676,74 @@ fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> 
                         err_flag_clone.store(true, std::sync::atomic::Ordering::SeqCst);
                     };
 
-                    let stream_res = match sample_format {
-                        cpal::SampleFormat::F32 => {
-                            let shared_clone = shared.clone();
-                            device.build_output_stream(
-                                &config,
-                                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                                    if let Ok(mut guard) = shared_clone.lock() {
-                                        guard.render_interleaved_f32(data);
-                                    } else {
-                                        data.fill(0.0);
-                                    }
-                                },
-                                err_fn,
-                                None,
-                            )
+                    let build_stream = |cfg: &cpal::StreamConfig| -> Result<cpal::Stream, cpal::BuildStreamError> {
+                        match sample_format {
+                            cpal::SampleFormat::F32 => {
+                                let shared_clone = shared.clone();
+                                device.build_output_stream(
+                                    cfg,
+                                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                                        if let Ok(mut guard) = shared_clone.lock() {
+                                            guard.render_interleaved_f32(data);
+                                        } else {
+                                            data.fill(0.0);
+                                        }
+                                    },
+                                    err_fn.clone(),
+                                    None,
+                                )
+                            }
+                            cpal::SampleFormat::I16 => {
+                                let shared_clone = shared.clone();
+                                let mut scratch = Vec::<f32>::new();
+                                device.build_output_stream(
+                                    cfg,
+                                    move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                                        scratch.resize(data.len(), 0.0);
+                                        if let Ok(mut guard) = shared_clone.lock() {
+                                            guard.render_interleaved_f32(&mut scratch);
+                                        } else {
+                                            scratch.fill(0.0);
+                                        }
+                                        for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
+                                            *dst = i16::from_sample(src);
+                                        }
+                                    },
+                                    err_fn.clone(),
+                                    None,
+                                )
+                            }
+                            cpal::SampleFormat::U16 => {
+                                let shared_clone = shared.clone();
+                                let mut scratch = Vec::<f32>::new();
+                                device.build_output_stream(
+                                    cfg,
+                                    move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                                        scratch.resize(data.len(), 0.0);
+                                        if let Ok(mut guard) = shared_clone.lock() {
+                                            guard.render_interleaved_f32(&mut scratch);
+                                        } else {
+                                            scratch.fill(0.0);
+                                        }
+                                        for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
+                                            *dst = u16::from_sample(src);
+                                        }
+                                    },
+                                    err_fn.clone(),
+                                    None,
+                                )
+                            }
+                            _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
                         }
-                        cpal::SampleFormat::I16 => {
-                            let shared_clone = shared.clone();
-                            let mut scratch = Vec::<f32>::new();
-                            device.build_output_stream(
-                                &config,
-                                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                                    scratch.resize(data.len(), 0.0);
-                                    if let Ok(mut guard) = shared_clone.lock() {
-                                        guard.render_interleaved_f32(&mut scratch);
-                                    } else {
-                                        scratch.fill(0.0);
-                                    }
-                                    for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
-                                        *dst = i16::from_sample(src);
-                                    }
-                                },
-                                err_fn,
-                                None,
-                            )
-                        }
-                        cpal::SampleFormat::U16 => {
-                            let shared_clone = shared.clone();
-                            let mut scratch = Vec::<f32>::new();
-                            device.build_output_stream(
-                                &config,
-                                move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                                    scratch.resize(data.len(), 0.0);
-                                    if let Ok(mut guard) = shared_clone.lock() {
-                                        guard.render_interleaved_f32(&mut scratch);
-                                    } else {
-                                        scratch.fill(0.0);
-                                    }
-                                    for (dst, &src) in data.iter_mut().zip(scratch.iter()) {
-                                        *dst = u16::from_sample(src);
-                                    }
-                                },
-                                err_fn,
-                                None,
-                            )
-                        }
-                        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
                     };
+
+                    // Try building stream with requested fixed buffer size first;
+                    // if the driver/hardware endpoint strictly rejects fixed sizing, fallback to default buffer sizing.
+                    let stream_res = build_stream(&config).or_else(|_| {
+                        let mut fallback_cfg = config.clone();
+                        fallback_cfg.buffer_size = cpal::BufferSize::Default;
+                        build_stream(&fallback_cfg)
+                    });
 
                     match stream_res {
                         Ok(stream) => {

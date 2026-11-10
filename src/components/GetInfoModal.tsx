@@ -898,46 +898,8 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
             </span>
           </div>
 
-          {/* ID3 Tag Auto-fill Status Badge & Refresh */}
+          {/* Window Close Button */}
           <div className="flex items-center gap-2 shrink-0">
-            {id3Status === 'extracting' && (
-              <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-800/80 text-cyan-300 text-[10px] animate-pulse">
-                <Sparkles className="w-3 h-3 animate-spin text-cyan-400" />
-                <span>Reading ID3 tags...</span>
-              </div>
-            )}
-
-            {id3Status === 'success' && (
-              <div
-                className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800/70 text-emerald-300 text-[10px] animate-in fade-in"
-                title={id3TagInfo}
-              >
-                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                <span className="font-medium">ID3 Tags Auto-Filled</span>
-              </div>
-            )}
-
-            {id3Status === 'error' && (
-              <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-800/70 text-amber-300 text-[10px]">
-                <AlertCircle className="w-3 h-3 text-amber-400" />
-                <span>Default tags</span>
-              </div>
-            )}
-
-            <button
-              onClick={() => singleTrack && refineWithID3(singleTrack, true)}
-              disabled={isExtractingID3}
-              className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-all ${
-                isLight
-                  ? 'bg-gray-200 hover:bg-gray-300 text-gray-700 border border-gray-300'
-                  : 'bg-[#2a2a2a] hover:bg-[#383838] text-gray-200 border border-[#444]'
-              }`}
-              title="Re-read and auto-fill ID3 tags from audio file"
-            >
-              <RefreshCw className={`w-3 h-3 ${isExtractingID3 ? 'animate-spin text-indigo-400' : ''}`} />
-              <span className="hidden sm:inline">Auto-Fill ID3</span>
-            </button>
-
             {!isMac && (
               <button
                 onClick={onClose}
