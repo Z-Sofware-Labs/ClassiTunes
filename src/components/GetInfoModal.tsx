@@ -603,10 +603,20 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
             }
           }
         } catch (nativeErr) {
-          console.warn('Native clipboard read error, falling back:', nativeErr);
+          console.warn('Native clipboard read error:', nativeErr);
         }
+
+        // In desktop mode, do NOT fall back to navigator.clipboard.read() or readText()
+        // because calling those triggers the browser/WebView2 permission popup dialog.
+        window.alert(
+          `No image found in clipboard. Copy an image, image file, or image URL and press ${
+            isMac ? '⌘V' : 'Ctrl+V'
+          } to paste.`
+        );
+        return;
       }
 
+      // Non-Tauri (web browser dev) fallback only
       if (navigator.clipboard?.read) {
         try {
           const clipboardItems = await navigator.clipboard.read();
@@ -1400,13 +1410,6 @@ export const GetInfoModal: React.FC<GetInfoModalProps> = ({
                   <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>Date Added</span>
                   <span className={isLight ? 'text-gray-600' : 'text-gray-400'}>
                     {singleTrack?.dateAdded ? new Date(singleTrack.dateAdded).toLocaleDateString() : 'Today'}
-                  </span>
-                </div>
-
-                <div>
-                  <span className={`font-bold block ${isLight ? 'text-gray-900' : 'text-gray-100'}`}>ID3 Tags</span>
-                  <span className="text-emerald-500 font-medium flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Auto-Indexed
                   </span>
                 </div>
 

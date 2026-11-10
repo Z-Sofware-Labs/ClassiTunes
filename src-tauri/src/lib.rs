@@ -2130,16 +2130,20 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
         #[cfg(target_os = "windows")]
         {
             use windows::Win32::System::DataExchange::{
-                OpenClipboard, CloseClipboard, GetClipboardData,
+                OpenClipboard, CloseClipboard, GetClipboardData, RegisterClipboardFormatW,
             };
             use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock, GlobalSize};
+            use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
             use windows::Win32::Foundation::{HGLOBAL, HWND};
+            use windows::core::w;
             use std::io::Cursor;
+            use std::path::Path;
 
             const CF_UNICODETEXT: u32 = 13;
             const CF_TEXT: u32 = 1;
             const CF_DIB: u32 = 8;
             const CF_DIBV5: u32 = 17;
+            const CF_HDROP: u32 = 15;
 
             // 1. Try opening clipboard
             unsafe {
@@ -2158,7 +2162,49 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
             }
             let _guard = ClipGuard;
 
-            // 2. Try DIBV5 / DIB image first
+            // Helper to test if a file extension represents an image
+            let is_image_ext = |p: &Path| -> bool {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    let ext = ext.to_ascii_lowercase();
+                    matches!(
+                        ext.as_str(),
+                        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "avif" | "ico" | "tiff"
+                    )
+                } else {
+                    false
+                }
+            };
+
+            // 2. Try registered PNG formats (standard for modern browsers, Photoshop, and tools copying PNG)
+            unsafe {
+                let png_format_names = [w!("PNG"), w!("image/png")];
+                for &fmt_name in &png_format_names {
+                    let fmt_id = RegisterClipboardFormatW(fmt_name);
+                    if fmt_id != 0 {
+                        if let Ok(handle) = GetClipboardData(fmt_id) {
+                            if !handle.0.is_null() {
+                                let hglobal = HGLOBAL(handle.0);
+                                let ptr = GlobalLock(hglobal);
+                                if !ptr.is_null() {
+                                    let size = GlobalSize(hglobal);
+                                    if size > 8 {
+                                        let slice = std::slice::from_raw_parts(ptr as *const u8, size);
+                                        // Check for PNG signature
+                                        if slice.starts_with(b"\x89PNG\r\n\x1a\n") {
+                                            let b64 = crate::encode_base64(slice);
+                                            let _ = GlobalUnlock(hglobal);
+                                            return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                        }
+                                    }
+                                    let _ = GlobalUnlock(hglobal);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Try DIBV5 / DIB image
             unsafe {
                 let dib_handle = GetClipboardData(CF_DIBV5)
                     .or_else(|_| GetClipboardData(CF_DIB));
@@ -2218,7 +2264,36 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
                 }
             }
 
-            // 3. Try Unicode text / plain text
+            // 4. Try CF_HDROP (file copied directly from File Explorer)
+            unsafe {
+                if let Ok(handle) = GetClipboardData(CF_HDROP) {
+                    if !handle.0.is_null() {
+                        let hdrop = HDROP(handle.0);
+                        let file_count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+                        if file_count > 0 {
+                            let mut path_buf = [0u16; 1024];
+                            let len = DragQueryFileW(hdrop, 0, Some(&mut path_buf));
+                            if len > 0 {
+                                let file_path = String::from_utf16_lossy(&path_buf[..len as usize]);
+                                let p = Path::new(&file_path);
+                                if is_image_ext(p) && p.exists() {
+                                    if let Ok(bytes) = std::fs::read(p) {
+                                        if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                                            let mut png_buf = Cursor::new(Vec::new());
+                                            if dyn_img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
+                                                let b64 = crate::encode_base64(&png_buf.into_inner());
+                                                return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5. Try Unicode text / plain text (URL, data URL, or image file path)
             unsafe {
                 if let Ok(handle) = GetClipboardData(CF_UNICODETEXT) {
                     if !handle.0.is_null() {
@@ -2227,8 +2302,23 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
                         if !ptr.is_null() {
                             let u16_slice = std::slice::from_raw_parts(ptr as *const u16, 65536);
                             let len = u16_slice.iter().position(|&c| c == 0).unwrap_or(u16_slice.len());
-                            let text = String::from_utf16_lossy(&u16_slice[..len]);
+                            let text = String::from_utf16_lossy(&u16_slice[..len]).trim().to_string();
                             let _ = GlobalUnlock(hglobal);
+
+                            // If text points to an existing image file on disk, read and encode it
+                            let path = Path::new(&text);
+                            if is_image_ext(path) && path.is_file() {
+                                if let Ok(bytes) = std::fs::read(path) {
+                                    if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                                        let mut png_buf = Cursor::new(Vec::new());
+                                        if dyn_img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
+                                            let b64 = crate::encode_base64(&png_buf.into_inner());
+                                            return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                        }
+                                    }
+                                }
+                            }
+
                             return Ok(Some(text));
                         }
                     }
@@ -2241,8 +2331,22 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
                         if !ptr.is_null() {
                             let u8_slice = std::slice::from_raw_parts(ptr as *const u8, 65536);
                             let len = u8_slice.iter().position(|&c| c == 0).unwrap_or(u8_slice.len());
-                            let text = String::from_utf8_lossy(&u8_slice[..len]).to_string();
+                            let text = String::from_utf8_lossy(&u8_slice[..len]).trim().to_string();
                             let _ = GlobalUnlock(hglobal);
+
+                            let path = Path::new(&text);
+                            if is_image_ext(path) && path.is_file() {
+                                if let Ok(bytes) = std::fs::read(path) {
+                                    if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                                        let mut png_buf = Cursor::new(Vec::new());
+                                        if dyn_img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
+                                            let b64 = crate::encode_base64(&png_buf.into_inner());
+                                            return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                        }
+                                    }
+                                }
+                            }
+
                             return Ok(Some(text));
                         }
                     }
@@ -2253,7 +2357,7 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
         }
         #[cfg(target_os = "macos")]
         {
-            // On macOS, osascript can read image data or text directly from NSPasteboard
+            // On macOS, osascript reads image data, copied files, or text directly from NSPasteboard
             // without requiring any webview clipboard permission prompt.
             let script = r#"
                 set imgData to ""
@@ -2275,7 +2379,7 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
             {
                 let res = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if res == "IMG_PNG" {
-                    // Export clipboard PNG to a temporary file via osascript/python/screencapture or osascript write
+                    // Export clipboard PNG to a temporary file via osascript
                     let export_script = r#"
                         set pngData to (the clipboard as «class PNGf»)
                         set tmpPath to (POSIX path of (path to temporary items)) & "classitunes_clip.png"
@@ -2302,6 +2406,32 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
                         }
                     }
                 } else if !res.is_empty() {
+                    // Check if the text points to an image file or file:// URL
+                    let cleaned_path = if res.starts_with("file://") {
+                        res.trim_start_matches("file://").to_string()
+                    } else {
+                        res.clone()
+                    };
+                    let path = std::path::Path::new(&cleaned_path);
+                    if path.is_file() {
+                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                            let ext = ext.to_ascii_lowercase();
+                            if matches!(
+                                ext.as_str(),
+                                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "avif" | "ico" | "tiff"
+                            ) {
+                                if let Ok(bytes) = std::fs::read(path) {
+                                    if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                                        let mut png_buf = std::io::Cursor::new(Vec::new());
+                                        if dyn_img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
+                                            let b64 = crate::encode_base64(&png_buf.into_inner());
+                                            return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     return Ok(Some(res));
                 }
             }
@@ -2333,23 +2463,56 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
                 }
             }
 
-            // 3. Fallback to text on Linux via wl-paste or xclip
+            // 3. Fallback to text / URI list on Linux via wl-paste or xclip
+            let mut text_opt = None;
             if let Ok(out) = std::process::Command::new("wl-paste")
                 .args(["--no-newline"])
                 .output()
             {
                 if out.status.success() && !out.stdout.is_empty() {
-                    return Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()));
+                    text_opt = Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
                 }
             }
 
-            if let Ok(out) = std::process::Command::new("xclip")
-                .args(["-selection", "clipboard", "-o"])
-                .output()
-            {
-                if out.status.success() && !out.stdout.is_empty() {
-                    return Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()));
+            if text_opt.is_none() {
+                if let Ok(out) = std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard", "-o"])
+                    .output()
+                {
+                    if out.status.success() && !out.stdout.is_empty() {
+                        text_opt = Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+                    }
                 }
+            }
+
+            if let Some(text) = text_opt {
+                // Check if text is a file path or file:// URI (common when copying files in Nautilus / Dolphin)
+                let cleaned_path = if text.starts_with("file://") {
+                    text.trim_start_matches("file://").to_string()
+                } else {
+                    text.clone()
+                };
+                let path = std::path::Path::new(&cleaned_path);
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        let ext = ext.to_ascii_lowercase();
+                        if matches!(
+                            ext.as_str(),
+                            "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "avif" | "ico" | "tiff"
+                        ) {
+                            if let Ok(bytes) = std::fs::read(path) {
+                                if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                                    let mut png_buf = std::io::Cursor::new(Vec::new());
+                                    if dyn_img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
+                                        let b64 = crate::encode_base64(&png_buf.into_inner());
+                                        return Ok(Some(format!("data:image/png;base64,{b64}")));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(Some(text));
             }
 
             Ok(None)
