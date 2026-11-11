@@ -47,7 +47,7 @@ export interface Album {
 
 export interface SmartRule {
   id: string;
-  field: 'title' | 'artist' | 'album' | 'genre' | 'rating' | 'playCount' | 'year' | 'mediaKind' | 'bpm' | 'format';
+  field: 'title' | 'artist' | 'album' | 'genre' | 'rating' | 'playCount' | 'year' | 'mediaKind' | 'bpm' | 'format' | 'lastPlayed';
   operator: 'contains' | 'is' | 'greater_than' | 'less_than' | 'starts_with';
   value: string;
 }
@@ -62,7 +62,7 @@ export interface Playlist {
   matchType?: 'all' | 'any';
   rules?: SmartRule[];
   limit?: number;
-  sortBy?: 'title' | 'artist' | 'album' | 'genre' | 'rating' | 'playCount' | 'year' | 'dateAdded';
+  sortBy?: 'title' | 'artist' | 'album' | 'genre' | 'rating' | 'playCount' | 'year' | 'dateAdded' | 'lastPlayed';
   sortOrder?: 'asc' | 'desc';
   systemType?: 'all' | 'recently_added' | 'top_rated' | 'party_shuffle' | 'genre' | 'user';
   genreFilter?: string;

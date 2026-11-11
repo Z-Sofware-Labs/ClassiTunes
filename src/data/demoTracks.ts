@@ -27,6 +27,18 @@ export const INITIAL_PLAYLISTS: Playlist[] = [
     icon: 'Star',
   },
   {
+    id: 'smart_recently_played',
+    name: 'Recently Played',
+    isSmart: true,
+    matchType: 'all',
+    rules: [
+      { id: 'rp_rule_1', field: 'lastPlayed', operator: 'greater_than', value: '14' }
+    ],
+    sortBy: 'lastPlayed',
+    sortOrder: 'desc',
+    trackIds: [],
+  },
+  {
     id: 'smart_top_25_most_played',
     name: 'Top 25 Most Played',
     isSmart: true,

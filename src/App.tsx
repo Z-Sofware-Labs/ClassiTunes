@@ -83,14 +83,16 @@ export default function App() {
             p.id === 'smart_late_night_chill'
           );
 
-          // Remove old pre-made playlists (such as Late Night Chill, old 90s Favorites)
+          // Remove old pre-made playlists (such as Late Night Chill, old 90s Favorites, sample Top Rated Songs smart playlist)
           parsed = parsed.filter((p: Playlist) => 
             p.name !== 'Late Night Chill' && 
             p.id !== 'smart_late_night_chill' &&
             p.id !== 'smart_top_hits' &&
             p.name !== '⭐ 4+ Star Hits' &&
             p.id !== 'smart_90s_favorites' &&
-            p.name !== '90s Favorites'
+            p.name !== '90s Favorites' &&
+            p.id !== 'smart_top_rated_songs' &&
+            (p.name !== 'Top Rated Songs' || !p.isSmart)
           );
 
           // Ensure standard stock playlists exist
@@ -105,7 +107,7 @@ export default function App() {
             });
           }
 
-          const hasTopRated = parsed.some((p: Playlist) => p.name === 'Top Rated' || p.id === 'lib_top_rated' || p.id === 'smart_top_rated_songs');
+          const hasTopRated = parsed.some((p: Playlist) => (p.name === 'Top Rated' && p.systemType === 'top_rated') || p.id === 'lib_top_rated');
           if (!hasTopRated) {
             parsed.push({
               id: 'lib_top_rated',
@@ -113,6 +115,22 @@ export default function App() {
               systemType: 'top_rated',
               trackIds: [],
               icon: 'Star',
+            });
+          }
+
+          const hasRecentlyPlayed = parsed.some((p: Playlist) => p.name === 'Recently Played' || p.id === 'smart_recently_played');
+          if (!hasRecentlyPlayed) {
+            parsed.push({
+              id: 'smart_recently_played',
+              name: 'Recently Played',
+              isSmart: true,
+              matchType: 'all',
+              rules: [
+                { id: 'rp_rule_1', field: 'lastPlayed', operator: 'greater_than', value: '14' }
+              ],
+              sortBy: 'lastPlayed',
+              sortOrder: 'desc',
+              trackIds: [],
             });
           }
 
@@ -1378,7 +1396,9 @@ export default function App() {
         collectFolderTrackIds(activePlaylist.id);
         list = list.filter(t => trackIdSet.has(t.id));
       } else if (activePlaylist.isSmart) {
-        list = evaluateSmartPlaylist(activePlaylist, list);
+        // If playbackMeta exists, evaluate smart playlist against display tracks to reflect live lastPlayed/playCount/rating
+        const displayList = playbackMeta.size > 0 ? list.map(t => getDisplayTrack(t)) : list;
+        list = evaluateSmartPlaylist(activePlaylist, displayList);
       } else if (activePlaylist.systemType === 'all') {
         // All music
       } else if (activePlaylist.systemType === 'recently_added') {

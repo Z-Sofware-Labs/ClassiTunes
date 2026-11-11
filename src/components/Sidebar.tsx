@@ -1107,14 +1107,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </button>
                     )}
                   </div>
-
-                  {/* Playing Indicator Badge */}
-                  {isDisplayTrackPlaying && maxArtworkSize > 100 && (
-                    <div className="absolute top-1.5 right-1.5 bg-blue-600 text-white px-1.5 py-0.5 rounded text-[9px] font-bold shadow flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-300 animate-ping" />
-                      PLAYING
-                    </div>
-                  )}
                 </div>
               </div>
             ) : (

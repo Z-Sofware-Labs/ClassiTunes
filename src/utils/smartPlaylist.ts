@@ -14,10 +14,26 @@ export function matchesSmartRule(track: Track, rule: SmartRule): boolean {
   else if (rule.field === 'mediaKind') fieldValue = track.mediaKind || 'Music';
   else if (rule.field === 'bpm') fieldValue = track.bpm || 0;
   else if (rule.field === 'format') fieldValue = track.format || (track.audioUrl?.split('.').pop() || 'MP3');
+  else if (rule.field === 'lastPlayed') {
+    const lp = track.lastPlayed;
+    if (!lp) return false;
+    fieldValue = lp instanceof Date ? lp.getTime() : new Date(lp).getTime();
+  }
 
   const targetVal = rule.value ? rule.value.trim().toLowerCase() : '';
 
-  if (rule.field === 'rating' || rule.field === 'playCount' || rule.field === 'year' || rule.field === 'bpm') {
+  if (rule.field === 'lastPlayed') {
+    const numField = Number(fieldValue) || 0;
+    if (!numField) return false;
+    // Allow relative days (e.g. within 14 days) or timestamp or "any" / "0" for has been played
+    const targetDays = Number(targetVal);
+    if (!Number.isNaN(targetDays) && targetDays > 0) {
+      const cutoff = Date.now() - targetDays * 24 * 60 * 60 * 1000;
+      if (rule.operator === 'greater_than' || rule.operator === 'is') return numField >= cutoff;
+      if (rule.operator === 'less_than') return numField < cutoff;
+    }
+    return numField > 0;
+  } else if (rule.field === 'rating' || rule.field === 'playCount' || rule.field === 'year' || rule.field === 'bpm') {
     const numField = typeof fieldValue === 'number' ? fieldValue : Number(fieldValue) || 0;
     const numTarget = Number(targetVal) || 0;
 

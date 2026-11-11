@@ -17,6 +17,7 @@ const FIELD_OPTIONS: { value: SmartRule['field']; label: string }[] = [
   { value: 'bpm', label: 'BPM (Beats Per Minute)' },
   { value: 'format', label: 'File Format (MP3, AAC, FLAC...)' },
   { value: 'genre', label: 'Genre' },
+  { value: 'lastPlayed', label: 'Last Played (Days Ago)' },
   { value: 'mediaKind', label: 'Media Kind (Music, Podcast...)' },
   { value: 'playCount', label: 'Play Count' },
   { value: 'rating', label: 'Rating (0-5 Stars)' },
@@ -187,6 +188,21 @@ export const SmartPlaylistModal: React.FC<SmartPlaylistModalProps> = ({
           <div className="space-y-1.5">
             <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Quick Rules Presets</span>
             <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  handleApplyPreset('Recently Played', [
+                    { id: 'p_rp', field: 'lastPlayed', operator: 'greater_than', value: '14' },
+                  ])
+                }
+                className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                  isLight
+                    ? 'bg-white/80 hover:bg-white border-blue-200 text-blue-900'
+                    : 'bg-blue-950/40 hover:bg-blue-900/60 border-blue-800 text-blue-200'
+                }`}
+              >
+                🕒 Recently Played (14 Days)
+              </button>
               <button
                 type="button"
                 onClick={() =>
