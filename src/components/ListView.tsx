@@ -84,6 +84,66 @@ const ALL_COLUMNS: ColumnConfig[] = [
 export const DEFAULT_VISIBLE: ColumnId[] = ['checkbox', 'trackNumber', 'title', 'duration', 'artist', 'album', 'genre', 'rating', 'playCount'];
 export const ALL_COLUMN_IDS: ColumnId[] = ALL_COLUMNS.map(c => c.id);
 
+export function getInitialSort(
+  storageScope: string = 'classitunes',
+  playlist?: { id: string; systemType?: string; isSmart?: boolean; sortBy?: string; sortOrder?: string } | null,
+  ignoreSaved: boolean = false
+): { field: keyof Track | null; asc: boolean } {
+  if (storageScope === 'device') {
+    if (!ignoreSaved) {
+      try {
+        const saved = localStorage.getItem('device_sort_field');
+        const savedAsc = localStorage.getItem('device_sort_asc');
+        if (saved) return { field: saved as keyof Track, asc: savedAsc !== 'false' };
+      } catch (e) {}
+    }
+    return { field: 'title', asc: true };
+  }
+
+  const pId = playlist?.id || 'lib_music';
+  const prefix = `${storageScope}_playlist_${pId}`;
+
+  if (!ignoreSaved) {
+    try {
+      const saved = localStorage.getItem(`${prefix}_sort_field`);
+      const savedAsc = localStorage.getItem(`${prefix}_sort_asc`);
+      if (saved !== null) {
+        if (saved === 'none' || saved === '') {
+          return { field: null, asc: savedAsc !== 'false' };
+        }
+        return { field: saved as keyof Track, asc: savedAsc !== 'false' };
+      }
+    } catch (e) {}
+
+    // Fallback for lib_music to legacy global key if present
+    if (pId === 'lib_music') {
+      try {
+        const legacySaved = localStorage.getItem(`${storageScope}_sort_field`);
+        const legacyAsc = localStorage.getItem(`${storageScope}_sort_asc`);
+        if (legacySaved) {
+          return { field: legacySaved as keyof Track, asc: legacyAsc !== 'false' };
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Defaults per playlist type
+  if (playlist?.systemType === 'recently_added') {
+    return { field: 'dateAdded', asc: false };
+  }
+  if (playlist?.systemType === 'party_shuffle') {
+    return { field: 'trackNumber', asc: true };
+  }
+  if (playlist?.systemType === 'top_rated') {
+    return { field: 'rating', asc: false };
+  }
+  if (playlist?.isSmart && playlist.sortBy) {
+    return { field: playlist.sortBy as keyof Track, asc: playlist.sortOrder !== 'desc' };
+  }
+
+  return { field: 'title', asc: true };
+}
+
 export function getInitialColumnOrder(storageScope: string = 'classitunes'): ColumnId[] {
   try {
     const saved = localStorage.getItem(`${storageScope}_column_order`);
@@ -705,20 +765,18 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   const initialSelectionRef = useRef<string[]>([]);
   const rowRectsRef = useRef<{ id: string; rect: DOMRect }[]>([]);
 
-  const [sortField, setSortField] = useState<keyof Track>(() => {
-    try {
-      const saved = localStorage.getItem(`${storageScope}_sort_field`);
-      if (saved) return saved as keyof Track;
-    } catch (e) {}
-    return 'title';
-  });
-  const [sortAsc, setSortAsc] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem(`${storageScope}_sort_asc`);
-      if (saved !== null) return saved === 'true';
-    } catch (e) {}
-    return true;
-  });
+  const currentPlaylistId = storageScope === 'device' ? 'device' : (selectedPlaylist?.id || 'lib_music');
+  const [playlistSortMap, setPlaylistSortMap] = useState<Record<string, { field: keyof Track | null; asc: boolean }>>({});
+
+  const currentSort = useMemo(() => {
+    if (playlistSortMap[currentPlaylistId]) {
+      return playlistSortMap[currentPlaylistId];
+    }
+    return getInitialSort(storageScope, selectedPlaylist);
+  }, [playlistSortMap, currentPlaylistId, storageScope, selectedPlaylist]);
+
+  const sortField = currentSort.field;
+  const sortAsc = currentSort.asc;
   const [contextMenuTrackId, setContextMenuTrackId] = useState<string | null>(null);
   const [showColumnPicker, setShowColumnPicker] = useState<boolean>(false);
 
@@ -1106,22 +1164,32 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
   const handleSort = (field: keyof Track) => {
     let nextAsc = true;
-    let nextField = field;
+    let nextField: keyof Track | null = field;
     if (sortField === field) {
       nextAsc = !sortAsc;
-      setSortAsc(nextAsc);
     } else {
-      setSortField(field);
-      setSortAsc(true);
+      nextField = field;
+      nextAsc = true;
     }
+
+    setPlaylistSortMap(prev => ({
+      ...prev,
+      [currentPlaylistId]: { field: nextField, asc: nextAsc }
+    }));
+
     try {
-      localStorage.setItem(`${storageScope}_sort_field`, String(nextField));
-      localStorage.setItem(`${storageScope}_sort_asc`, String(nextAsc));
+      const scopeKey = storageScope === 'device' ? 'device' : `${storageScope}_playlist_${currentPlaylistId}`;
+      localStorage.setItem(`${scopeKey}_sort_field`, String(nextField));
+      localStorage.setItem(`${scopeKey}_sort_asc`, String(nextAsc));
     } catch (e) {}
   };
 
   // Define sortedTracks BEFORE any callbacks/effects that reference it to avoid TDZ ReferenceError
   const sortedTracks = useMemo(() => {
+    if (!sortField || (sortField === 'trackNumber' && selectedPlaylist?.systemType === 'party_shuffle')) {
+      return sortAsc ? tracks : [...tracks].reverse();
+    }
+
     const sorted = [...tracks].sort((a, b) => {
       if (sortField === ('isChecked' as any)) {
         const aChecked = checkedTrackIds.has(a.id);
@@ -1138,11 +1206,25 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       if (valA === undefined || valA === null) valA = '';
       if (valB === undefined || valB === null) valB = '';
 
+      if (sortField === 'dateAdded' || sortField === 'lastPlayed') {
+        const tA = typeof valA === 'number' ? valA : Date.parse(String(valA || '')) || 0;
+        const tB = typeof valB === 'number' ? valB : Date.parse(String(valB || '')) || 0;
+        if (tA !== tB) {
+          return sortAsc ? tA - tB : tB - tA;
+        }
+        const cmpTitle = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+        return sortAsc ? cmpTitle : -cmpTitle;
+      }
+
       if (typeof valA === 'number' || typeof valB === 'number') {
         const numA = typeof valA === 'number' ? valA : Number(valA) || 0;
         const numB = typeof valB === 'number' ? valB : Number(valB) || 0;
         if (numA !== numB) {
           return sortAsc ? numA - numB : numB - numA;
+        }
+        if (sortField !== 'title') {
+          const cmpTitle = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+          return sortAsc ? cmpTitle : -cmpTitle;
         }
         return 0;
       }
@@ -1154,13 +1236,17 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         if (cmp !== 0) {
           return sortAsc ? cmp : -cmp;
         }
+        if (sortField !== 'title') {
+          const cmpTitle = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+          return sortAsc ? cmpTitle : -cmpTitle;
+        }
         return 0;
       }
 
       return 0;
     });
     return sorted;
-  }, [tracks, sortField, sortAsc, checkedTrackIds]);
+  }, [tracks, sortField, sortAsc, checkedTrackIds, selectedPlaylist]);
 
   const sortedTracksRef = useRef<Track[]>(sortedTracks);
   sortedTracksRef.current = sortedTracks;
@@ -1221,12 +1307,20 @@ const ListViewComponent: React.FC<ListViewProps> = ({
     saveColumnOrder([...ALL_COLUMN_IDS]);
     setVisibleColumns(DEFAULT_VISIBLE);
     setColumnWidths(DEFAULT_COLUMN_WIDTHS);
-    setSortField('title');
-    setSortAsc(true);
+    const defaultSort = getInitialSort(storageScope, selectedPlaylist, true);
+    setPlaylistSortMap(prev => ({
+      ...prev,
+      [currentPlaylistId]: defaultSort
+    }));
     try {
       localStorage.removeItem(`${storageScope}_column_widths`);
-      localStorage.removeItem(`${storageScope}_sort_field`);
-      localStorage.removeItem(`${storageScope}_sort_asc`);
+      const scopeKey = storageScope === 'device' ? 'device' : `${storageScope}_playlist_${currentPlaylistId}`;
+      localStorage.removeItem(`${scopeKey}_sort_field`);
+      localStorage.removeItem(`${scopeKey}_sort_asc`);
+      if (currentPlaylistId === 'lib_music') {
+        localStorage.removeItem(`${storageScope}_sort_field`);
+        localStorage.removeItem(`${storageScope}_sort_asc`);
+      }
     } catch (e) {}
   };
 
