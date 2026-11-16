@@ -540,8 +540,22 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                   </div>
 
                   {/* Slide 2: Transfer Status View */}
-                  <div className="w-full h-[44px] px-2.5 pt-1.5 pb-1 shrink-0 flex flex-col items-center justify-center box-border">
-                    <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-1 font-medium overflow-hidden">
+                  <div className="relative w-full h-[44px] px-2.5 pt-1.5 pb-1 shrink-0 flex flex-col items-center justify-center box-border">
+                    {/* Fixed Stop button on the far right */}
+                    {deviceSyncProgress && deviceSyncProgress.active && !deviceSyncProgress.isComplete && onStopDeviceSync && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onStopDeviceSync();
+                        }}
+                        className="absolute right-2 top-1 p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors z-10"
+                        title="Stop sync"
+                      >
+                        <XCircle className="w-3 h-3" />
+                      </button>
+                    )}
+                    <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-6 font-medium overflow-hidden">
                       <div className="flex items-center justify-center gap-1.5 truncate max-w-full">
                         <RefreshCw className={`w-3 h-3 shrink-0 ${
                           deviceSyncProgress?.isComplete ? 'text-emerald-500' : 'text-blue-500 animate-spin'
@@ -566,19 +580,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                               <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
                                 — {deviceSyncProgress.title}
                               </span>
-                            )}
-                            {!deviceSyncProgress.isComplete && onStopDeviceSync && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onStopDeviceSync();
-                                }}
-                                className="ml-1 p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors shrink-0"
-                                title="Stop sync"
-                              >
-                                <XCircle className="w-3.5 h-3.5" />
-                              </button>
                             )}
                           </>
                         ) : importProgress ? (
@@ -634,8 +635,22 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               </div>
             ) : hasTransferActive ? (
               <div className="flex flex-col items-center justify-center relative w-full h-full px-2.5 pt-1.5 pb-1 box-border">
+                {/* Fixed Stop button on the far right */}
+                {deviceSyncProgress && deviceSyncProgress.active && !deviceSyncProgress.isComplete && onStopDeviceSync && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStopDeviceSync();
+                    }}
+                    className="absolute right-2 top-1 p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors z-10"
+                    title="Stop sync"
+                  >
+                    <XCircle className="w-3 h-3" />
+                  </button>
+                )}
                 {/* Row 1: Status text with sync/import spinner - Centered */}
-                <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-1 font-medium overflow-hidden">
+                <div className="w-full flex items-center justify-center text-center text-[11px] leading-tight px-6 font-medium overflow-hidden">
                   <div className="flex items-center justify-center gap-1.5 truncate max-w-full">
                     <RefreshCw className={`w-3 h-3 shrink-0 ${
                       deviceSyncProgress?.isComplete ? 'text-emerald-500' : 'text-blue-500 animate-spin'
@@ -660,19 +675,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                           <span className={`truncate text-[10px] font-normal ${isLight ? 'text-gray-500' : 'text-gray-400'}`}>
                             — {deviceSyncProgress.title}
                           </span>
-                        )}
-                        {!deviceSyncProgress.isComplete && onStopDeviceSync && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onStopDeviceSync();
-                            }}
-                            className="ml-1 p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-gray-400 hover:text-red-500 transition-colors shrink-0"
-                            title="Stop sync"
-                          >
-                            <XCircle className="w-3.5 h-3.5" />
-                          </button>
                         )}
                       </>
                     ) : importProgress ? (

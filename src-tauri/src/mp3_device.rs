@@ -1098,6 +1098,40 @@ $target = $curr.Items() | Where-Object {
 if ($target) {
   $target.InvokeVerb('delete')
 }
+
+# Clean up empty parent directories left behind
+# Traverse backwards up the directory path and delete empty folders
+# Stop at the root storage or protected top-level directories
+$chain = @()
+$walk = $s.GetFolder
+for ($i = 0; $i -lt ($parts.Length - 1); $i++) {
+  $seg = $parts[$i]
+  $found = $walk.Items() | Where-Object { $_.IsFolder -and $_.Name -ieq $seg } | Select-Object -First 1
+  if ($found) {
+    $chain += $found
+    $walk = $found.GetFolder
+  } else {
+    break
+  }
+}
+
+for ($i = $chain.Length - 1; $i -ge 0; $i--) {
+  $fItem = $chain[$i]
+  $fFolder = $fItem.GetFolder
+  $fName = $fItem.Name
+  if ($fName -ieq 'Music' -or $fName -ieq 'Audio' -or $fName -ieq 'MP3' -or $fName -ieq 'iPod_Control') {
+    break
+  }
+  if (@($fFolder.Items()).Count -eq 0) {
+    try {
+      $fItem.InvokeVerb('delete')
+    } catch {
+      break
+    }
+  } else {
+    break
+  }
+}
 exit 0
 "#;
 
@@ -2952,6 +2986,45 @@ pub fn delete_device_file_native(file_path: &str) -> Result<bool, String> {
         guard.retain(|(k_path, _), _| {
             !k_path.eq_ignore_ascii_case(&normalized) && !k_path.eq_ignore_ascii_case(&target_str)
         });
+    }
+
+    // Prune empty parent directories left behind after track deletion
+    // Stop at device root or protected base directories (e.g. drive root C:\, D:\, /Volumes/X, or Music / iPod_Control)
+    let mut check_dir = p.parent();
+    while let Some(dir) = check_dir {
+        // If parent has no name or is a root filesystem component, stop
+        let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+            break;
+        };
+        // Stop pruning if we hit system or top-level device root / control folders
+        if name.eq_ignore_ascii_case("Music")
+            || name.eq_ignore_ascii_case("Audio")
+            || name.eq_ignore_ascii_case("MP3")
+            || name.eq_ignore_ascii_case("iPod_Control")
+            || name.eq_ignore_ascii_case("System Volume Information")
+            || name.starts_with('$')
+            || dir.parent().is_none()
+        {
+            break;
+        }
+
+        // Check if directory is now empty
+        match fs::read_dir(dir) {
+            Ok(mut entries) => {
+                if entries.next().is_none() {
+                    if fs::remove_dir(dir).is_err() {
+                        // Could not remove (permissions or locked), stop pruning upward
+                        break;
+                    }
+                } else {
+                    // Directory still contains items (other songs/subfolders), stop pruning
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+
+        check_dir = dir.parent();
     }
 
     // If deleted file belonged to an iPod, refresh its native iTunesDB
