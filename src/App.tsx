@@ -650,6 +650,10 @@ export default function App() {
 
           setTracks(prev => {
             const map = new Map<string, Track>();
+            const isDesktop = isTauri();
+            // Build normalized path index of restored tracks to prevent duplicates
+            const restoredPathIndex = new Set<string>();
+
             restoredTracks.forEach((t: Track) => {
               const interned = internTrackStrings(t);
               const resolvedCover = interned.coverUrl ? (resolveNativeCoverUrlSync(interned.coverUrl) || interned.coverUrl) : interned.coverUrl;
@@ -662,15 +666,38 @@ export default function App() {
                 }
               }
               map.set(t.id, hydratedTrack);
+              if (t.filePath) {
+                restoredPathIndex.add(t.filePath.replace(/\\/g, '/').toLowerCase());
+              }
             });
-            // Keep any runtime-added tracks in prev that are not in restoredTracks
+
+            // In desktop/Tauri mode, the native database is the single authoritative source of truth.
+            // Only keep runtime tracks from `prev` if they are newly added or demo tracks, but NEVER resurrect
+            // deleted tracks from stale localStorage that point to paths already accounted for or omitted.
             prev.forEach(t => {
-              if (!map.has(t.id)) {
-                map.set(t.id, t);
+              if (t.id.startsWith('demo_') || t.id.startsWith('sample_')) {
+                if (!map.has(t.id)) map.set(t.id, t);
+                return;
+              }
+              if (!isDesktop) {
+                if (!map.has(t.id)) map.set(t.id, t);
+              } else {
+                // In desktop mode, if it's not in native DB and its filePath is known, don't resurrect it
+                const normPath = t.filePath ? t.filePath.replace(/\\/g, '/').toLowerCase() : '';
+                if (normPath && !restoredPathIndex.has(normPath) && !map.has(t.id)) {
+                  // Only retain if it was genuinely added in the current session before restore finished
+                  if (t.dateAdded && Date.now() - new Date(t.dateAdded).getTime() < 30000) {
+                    map.set(t.id, t);
+                  }
+                }
               }
             });
             return Array.from(map.values());
           });
+        } else if (isTauri()) {
+          // If native DB returned 0 user tracks in desktop mode, the library is genuinely empty.
+          // Keep only demo tracks; do not retain stale user tracks from localStorage.
+          setTracks(prev => prev.filter(t => t.id.startsWith('demo_') || t.id.startsWith('sample_')));
         }
 
       // 2. Asynchronously in the background at low priority, check if any albums need artwork backfilling
@@ -1168,8 +1195,8 @@ export default function App() {
       !(t.audioUrl && t.audioUrl.startsWith('synth:'))
     );
 
-    // If tracks is empty, NEVER wipe the user's persistent library
-    if (userTracksOnly.length === 0) return;
+    // If tracks is empty, allow saving empty user library if we have already completed startup restore
+    if (userTracksOnly.length === 0 && !hasRestoredTracksRef.current) return;
 
     const timer = setTimeout(() => {
       try {
@@ -2178,7 +2205,24 @@ function hashString(str: string): string {
       deletePlaybackMetadata(id).catch(() => {});
       clearCachedArtwork(id);
     });
-    setTracks(prev => prev.filter(t => !trackIds.includes(t.id)));
+    setTracks(prev => {
+      const nextTracks = prev.filter(t => !trackIds.includes(t.id));
+      // Synchronously prune deleted tracks from localStorage to prevent resurrection
+      try {
+        const lightweight = nextTracks
+          .filter(t => !t.id.startsWith('demo_') && !t.id.startsWith('sample_'))
+          .map(t => {
+            const { file, coverUrl, audioUrl, ...rest } = t;
+            return {
+              ...rest,
+              coverUrl: (coverUrl && (coverUrl.startsWith('data:') || coverUrl.startsWith('blob:'))) ? undefined : coverUrl,
+              audioUrl: (audioUrl && audioUrl.startsWith('blob:')) ? '' : audioUrl
+            };
+          });
+        localStorage.setItem('classitunes_tracks', JSON.stringify(lightweight));
+      } catch (e) {}
+      return nextTracks;
+    });
     setSelectedTrackIds(prev => prev.filter(id => !trackIds.includes(id)));
     setCheckedTrackIds(prev => {
       const next = new Set(prev);
@@ -2735,7 +2779,29 @@ function hashString(str: string): string {
       let finalSortedLibrary: Track[] = [];
       setTracks(prev => {
         const map = new Map<string, Track>();
-        [...allNewlyParsed, ...prev].forEach(t => map.set(t.id, internTrackStrings(t)));
+        const existingPaths = new Set<string>();
+
+        // Index newly parsed tracks first
+        allNewlyParsed.forEach(t => {
+          map.set(t.id, internTrackStrings(t));
+          if (t.filePath) {
+            existingPaths.add(t.filePath.replace(/\\/g, '/').toLowerCase());
+          }
+        });
+
+        // Add previous tracks, preventing duplicates if pointing to the same file path
+        prev.forEach(t => {
+          const norm = t.filePath ? t.filePath.replace(/\\/g, '/').toLowerCase() : '';
+          if (norm && existingPaths.has(norm)) {
+            // Already superseded by newly parsed track for the same file
+            return;
+          }
+          if (!map.has(t.id)) {
+            map.set(t.id, internTrackStrings(t));
+            if (norm) existingPaths.add(norm);
+          }
+        });
+
         const merged = Array.from(map.values());
         merged.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base', numeric: true }));
         finalSortedLibrary = merged;
