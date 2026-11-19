@@ -650,9 +650,6 @@ export default function App() {
 
           setTracks(prev => {
             const map = new Map<string, Track>();
-            const isDesktop = isTauri();
-            // Build normalized path index of restored tracks to prevent duplicates
-            const restoredPathIndex = new Set<string>();
 
             restoredTracks.forEach((t: Track) => {
               const interned = internTrackStrings(t);
@@ -666,38 +663,16 @@ export default function App() {
                 }
               }
               map.set(t.id, hydratedTrack);
-              if (t.filePath) {
-                restoredPathIndex.add(t.filePath.replace(/\\/g, '/').toLowerCase());
-              }
             });
 
-            // In desktop/Tauri mode, the native database is the single authoritative source of truth.
-            // Only keep runtime tracks from `prev` if they are newly added or demo tracks, but NEVER resurrect
-            // deleted tracks from stale localStorage that point to paths already accounted for or omitted.
+            // Keep demo tracks or any tracks in prev that were not in restoredTracks
             prev.forEach(t => {
-              if (t.id.startsWith('demo_') || t.id.startsWith('sample_')) {
-                if (!map.has(t.id)) map.set(t.id, t);
-                return;
-              }
-              if (!isDesktop) {
-                if (!map.has(t.id)) map.set(t.id, t);
-              } else {
-                // In desktop mode, if it's not in native DB and its filePath is known, don't resurrect it
-                const normPath = t.filePath ? t.filePath.replace(/\\/g, '/').toLowerCase() : '';
-                if (normPath && !restoredPathIndex.has(normPath) && !map.has(t.id)) {
-                  // Only retain if it was genuinely added in the current session before restore finished
-                  if (t.dateAdded && Date.now() - new Date(t.dateAdded).getTime() < 30000) {
-                    map.set(t.id, t);
-                  }
-                }
+              if (!map.has(t.id)) {
+                map.set(t.id, t);
               }
             });
             return Array.from(map.values());
           });
-        } else if (isTauri()) {
-          // If native DB returned 0 user tracks in desktop mode, the library is genuinely empty.
-          // Keep only demo tracks; do not retain stale user tracks from localStorage.
-          setTracks(prev => prev.filter(t => t.id.startsWith('demo_') || t.id.startsWith('sample_')));
         }
 
       // 2. Asynchronously in the background at low priority, check if any albums need artwork backfilling
