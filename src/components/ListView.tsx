@@ -84,6 +84,9 @@ const ALL_COLUMNS: ColumnConfig[] = [
 export const DEFAULT_VISIBLE: ColumnId[] = ['checkbox', 'trackNumber', 'title', 'duration', 'artist', 'album', 'genre', 'rating', 'playCount'];
 export const ALL_COLUMN_IDS: ColumnId[] = ALL_COLUMNS.map(c => c.id);
 
+// Pre-allocated fast collator for massive library sorting (up to 10x faster than inline localeCompare)
+const listCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 export function getInitialSort(
   storageScope: string = 'classitunes',
   playlist?: { id: string; systemType?: string; isSmart?: boolean; sortBy?: string; sortOrder?: string } | null,
@@ -1212,7 +1215,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         if (tA !== tB) {
           return sortAsc ? tA - tB : tB - tA;
         }
-        const cmpTitle = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+        const cmpTitle = listCollator.compare(a.title || '', b.title || '');
         return sortAsc ? cmpTitle : -cmpTitle;
       }
 
@@ -1223,7 +1226,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
           return sortAsc ? numA - numB : numB - numA;
         }
         if (sortField !== 'title') {
-          const cmpTitle = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+          const cmpTitle = listCollator.compare(a.title || '', b.title || '');
           return sortAsc ? cmpTitle : -cmpTitle;
         }
         return 0;
@@ -1232,12 +1235,12 @@ const ListViewComponent: React.FC<ListViewProps> = ({
       if (typeof valA === 'string' || typeof valB === 'string') {
         const strA = String(valA || '');
         const strB = String(valB || '');
-        const cmp = strA.localeCompare(strB, undefined, { numeric: true, sensitivity: 'base' });
+        const cmp = listCollator.compare(strA, strB);
         if (cmp !== 0) {
           return sortAsc ? cmp : -cmp;
         }
         if (sortField !== 'title') {
-          const cmpTitle = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+          const cmpTitle = listCollator.compare(a.title || '', b.title || '');
           return sortAsc ? cmpTitle : -cmpTitle;
         }
         return 0;
@@ -1327,6 +1330,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
   // Windowed Virtualization Calculation: on Linux/WebKitGTK use 35 rows overscan buffer
   // to ensure zero blank frame stutter during high-speed momentum mousewheel/touchpad scrolling
   const OVERSCAN = 30;
+  const CHUNK_STEP = 6; // Quantize window boundaries to avoid re-slicing on every single pixel/row step
   const totalTrackCount = sortedTracks.length;
   const isVirtualizationActive = totalTrackCount > 60;
   const [measuredRowHeight, setMeasuredRowHeight] = useState(estimatedRowHeight);
@@ -1334,11 +1338,15 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
   const rowH = Math.max(20, measuredRowHeight || estimatedRowHeight || 36);
   const contentScrollTop = Math.max(0, scrollTop - tableHeaderHeight);
-  const startIndex = isVirtualizationActive
+  const rawStartIndex = isVirtualizationActive
     ? Math.max(0, Math.floor(contentScrollTop / rowH) - OVERSCAN)
     : 0;
+  // Snap startIndex to multiples of CHUNK_STEP to preserve stable slice references
+  const startIndex = isVirtualizationActive
+    ? Math.floor(rawStartIndex / CHUNK_STEP) * CHUNK_STEP
+    : 0;
   const visibleCount = isVirtualizationActive
-    ? Math.ceil((containerHeight || 600) / rowH) + OVERSCAN * 2
+    ? Math.ceil((containerHeight || 600) / rowH) + OVERSCAN * 2 + CHUNK_STEP
     : totalTrackCount;
   const endIndex = isVirtualizationActive
     ? Math.min(totalTrackCount, startIndex + visibleCount)
