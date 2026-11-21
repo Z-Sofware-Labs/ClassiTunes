@@ -10,6 +10,7 @@ import { ListView, ColumnId, DEFAULT_VISIBLE } from './components/ListView';
 import { AlbumGridView, sortAlbumsList } from './components/AlbumGridView';
 import { StatusBar } from './components/StatusBar';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
+import { normalizeSearchText } from './utils/textUtils';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, dbUpdateTracksDurationBatch, dbCompactJournal, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
@@ -54,13 +55,13 @@ export default function App() {
   // Stable reference to the full library track list
   const mergedTracks = tracks;
 
-  // In-memory normalized search key cache: maps track.id -> lowercase search string
+  // In-memory normalized search key cache: maps track.id -> normalized search string (lowercased, diacritics/macrons stripped)
   // Precomputed so large library typing does not allocate or lowercase 4 strings * 10,000 tracks per keystroke.
   const searchIndexMap = useMemo(() => {
     const map = new Map<string, string>();
     for (let i = 0; i < tracks.length; i++) {
       const t = tracks[i];
-      const key = `${t.title || ''} ${t.artist || ''} ${t.album || ''} ${t.genre || ''}`.toLowerCase();
+      const key = normalizeSearchText(`${t.title || ''} ${t.artist || ''} ${t.album || ''} ${t.genre || ''}`);
       map.set(t.id, key);
     }
     return map;
@@ -1432,15 +1433,15 @@ export default function App() {
 
     // Search Query (accelerated with precomputed in-memory searchIndexMap)
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+      const q = normalizeSearchText(searchQuery);
       list = list.filter(t => {
         const key = searchIndexMap.get(t.id);
         if (key) return key.includes(q);
         return (
-          t.title.toLowerCase().includes(q) ||
-          t.artist.toLowerCase().includes(q) ||
-          t.album.toLowerCase().includes(q) ||
-          t.genre.toLowerCase().includes(q)
+          normalizeSearchText(t.title).includes(q) ||
+          normalizeSearchText(t.artist).includes(q) ||
+          normalizeSearchText(t.album).includes(q) ||
+          normalizeSearchText(t.genre).includes(q)
         );
       });
     }

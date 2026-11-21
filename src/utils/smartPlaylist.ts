@@ -1,4 +1,5 @@
 import { Track, SmartRule, Playlist } from '../types';
+import { normalizeSearchText } from './textUtils';
 
 export function matchesSmartRule(track: Track, rule: SmartRule): boolean {
   if (!rule || !rule.field) return true;
@@ -20,7 +21,7 @@ export function matchesSmartRule(track: Track, rule: SmartRule): boolean {
     fieldValue = lp instanceof Date ? lp.getTime() : new Date(lp).getTime();
   }
 
-  const targetVal = rule.value ? rule.value.trim().toLowerCase() : '';
+  const targetVal = rule.value ? normalizeSearchText(rule.value.trim()) : '';
 
   if (rule.field === 'lastPlayed') {
     const numField = Number(fieldValue) || 0;
@@ -42,7 +43,7 @@ export function matchesSmartRule(track: Track, rule: SmartRule): boolean {
     if (rule.operator === 'less_than') return numField < numTarget;
     return numField === numTarget;
   } else {
-    const strField = String(fieldValue).toLowerCase();
+    const strField = normalizeSearchText(String(fieldValue));
     if (rule.operator === 'contains') return strField.includes(targetVal);
     if (rule.operator === 'is') return strField === targetVal;
     if (rule.operator === 'starts_with') return strField.startsWith(targetVal);

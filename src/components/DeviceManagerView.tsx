@@ -14,6 +14,7 @@ import { Track, Playlist } from '../types';
 import { audioEngine } from '../services/audioEngine';
 import { getCachedArtwork } from '../services/mediaStorage';
 import { evaluateSmartPlaylist } from '../utils/smartPlaylist';
+import { normalizeSearchText } from '../utils/textUtils';
 import { ListView, ColumnId } from './ListView';
 import { ContextMenu, ContextMenuState } from './ContextMenu';
 
@@ -270,14 +271,14 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
 
   // Scoped search filter for Device Contents
   const filteredDeviceTracks = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = normalizeSearchText(searchQuery.trim());
     if (!q) return deviceTracks;
     return deviceTracks.filter(t =>
-      (t.title && t.title.toLowerCase().includes(q)) ||
-      (t.artist && t.artist.toLowerCase().includes(q)) ||
-      (t.album && t.album.toLowerCase().includes(q)) ||
-      (t.genre && t.genre.toLowerCase().includes(q)) ||
-      (t.filePath && t.filePath.toLowerCase().includes(q))
+      (t.title && normalizeSearchText(t.title).includes(q)) ||
+      (t.artist && normalizeSearchText(t.artist).includes(q)) ||
+      (t.album && normalizeSearchText(t.album).includes(q)) ||
+      (t.genre && normalizeSearchText(t.genre).includes(q)) ||
+      (t.filePath && normalizeSearchText(t.filePath).includes(q))
     );
   }, [deviceTracks, searchQuery]);
 
