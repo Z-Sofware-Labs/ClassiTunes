@@ -61,6 +61,7 @@
     "fs:allow-audio-read-recursive",
     "fs:allow-audio-meta-recursive",
     "fs:allow-desktop-read-recursive",
+    "fs:allow-desktop-write-recursive",
     "fs:allow-desktop-meta-recursive",
     "fs:allow-document-read-recursive",
     "fs:allow-document-meta-recursive",

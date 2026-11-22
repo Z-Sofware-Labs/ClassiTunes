@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Track } from '../types';
-import { Sliders, Maximize2, Disc, Shuffle, Repeat, Repeat1, FileText, Info, Settings, Gauge } from 'lucide-react';
+import { Sliders, Maximize2, Disc, Shuffle, Repeat, Repeat1, FileText, Info, Settings, Gauge, FileSpreadsheet, Check } from 'lucide-react';
 import { openLogDirectory } from '../utils/tauriWindow';
 import { audioEngine } from '../services/audioEngine';
 
@@ -18,6 +18,8 @@ interface StatusBarProps {
   onToggleRepeat: () => void;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+  onExportCsv?: () => void;
+  isDeviceView?: boolean;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -32,11 +34,21 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   repeatMode,
   onToggleRepeat,
   theme = 'dark',
+  onExportCsv,
+  isDeviceView = false,
 }) => {
   const [showCoverPreview, setShowCoverPreview] = useState(false);
   const [showSpeedPopover, setShowSpeedPopover] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(() => audioEngine.getPlaybackRate());
+  const [exportFeedback, setExportFeedback] = useState(false);
   const speedPopoverRef = useRef<HTMLDivElement>(null);
+
+  const handleExport = () => {
+    if (isDeviceView || !onExportCsv) return;
+    onExportCsv();
+    setExportFeedback(true);
+    setTimeout(() => setExportFeedback(false), 2000);
+  };
 
   useEffect(() => {
     if (!showSpeedPopover) return;
@@ -121,6 +133,25 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
       {/* Right Quick Toggles */}
       <div className="flex items-center gap-1.5 min-w-[180px] justify-end relative">
+        {/* Export Playlist CSV Button */}
+        <button
+          onClick={handleExport}
+          disabled={isDeviceView}
+          className={`p-1 rounded transition-all flex items-center justify-center ${
+            isDeviceView
+              ? 'opacity-30 cursor-not-allowed text-gray-500'
+              : exportFeedback
+              ? 'text-emerald-500 bg-emerald-500/10'
+              : isLight
+              ? 'hover:bg-black/10 text-gray-700 hover:text-emerald-600'
+              : 'hover:bg-white/10 text-gray-400 hover:text-emerald-400'
+          }`}
+          title={isDeviceView ? 'CSV export disabled for device view' : exportFeedback ? 'Exported to Desktop!' : 'Export current playlist as CSV to Desktop'}
+          aria-label="Export as CSV"
+        >
+          {exportFeedback ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
+        </button>
+
         {/* Options Button */}
         <button
           onClick={onOpenOptions}

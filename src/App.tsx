@@ -11,6 +11,7 @@ import { AlbumGridView, sortAlbumsList } from './components/AlbumGridView';
 import { StatusBar } from './components/StatusBar';
 import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { normalizeSearchText } from './utils/textUtils';
+import { exportPlaylistToDesktopCsv } from './utils/csvExport';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
 import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, dbUpdateTracksDurationBatch, dbCompactJournal, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
@@ -3314,6 +3315,13 @@ function hashString(str: string): string {
     setPlaylists(prev => prev.map(p => p.id === playlistId ? { ...p, name: newName.trim() } : p));
   };
 
+  const handleExportPlaylistCsv = useCallback(async () => {
+    if (selectedDevice) return;
+    const currentPl = playlists.find(p => p.id === selectedPlaylistId);
+    const plName = currentPl?.name || (selectedPlaylistId === 'music' ? 'Music' : 'Playlist');
+    await exportPlaylistToDesktopCsv(plName, displayTracks, visibleColumns);
+  }, [selectedDevice, playlists, selectedPlaylistId, displayTracks, visibleColumns]);
+
   return (
     <div 
       onDragOver={handleDragOverApp}
@@ -3566,6 +3574,8 @@ function hashString(str: string): string {
           else setRepeatMode('off');
         }}
         theme={theme}
+        onExportCsv={handleExportPlaylistCsv}
+        isDeviceView={Boolean(selectedDevice)}
       />
 
       {/* Global Drag & Drop Overlay */}

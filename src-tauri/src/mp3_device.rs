@@ -1424,7 +1424,6 @@ fn sync_tracks_to_mtp_device(
     let artwork_cache: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
 
     struct PreparedMtpItem {
-        global_index: usize,
         enriched_track: SyncTrackItem,
         track_title: String,
         ext: String,
@@ -1539,7 +1538,6 @@ fn sync_tracks_to_mtp_device(
                         };
                         if already_valid {
                             return Ok(PreparedMtpItem {
-                                global_index: index,
                                 enriched_track,
                                 track_title,
                                 ext,
@@ -1562,7 +1560,6 @@ fn sync_tracks_to_mtp_device(
                     if let Some(ref src_meta) = src_meta_opt {
                         if file_metadata_is_complete(src_meta, &enriched_track, has_artwork, src_path) {
                             return Ok(PreparedMtpItem {
-                                global_index: index,
                                 enriched_track,
                                 track_title,
                                 ext,
@@ -1612,7 +1609,6 @@ fn sync_tracks_to_mtp_device(
                 }
 
                 Ok(PreparedMtpItem {
-                    global_index: index,
                     enriched_track,
                     track_title,
                     ext,
@@ -3733,7 +3729,6 @@ pub fn sync_tracks_to_device_impl(
     }
 
     struct PreparedStageItem {
-        global_index: usize,
         enriched_track: SyncTrackItem,
         track_title: String,
         ext: String,
@@ -3899,7 +3894,6 @@ pub fn sync_tracks_to_device_impl(
                                     if file_metadata_is_complete(dev_meta, &enriched_track, has_artwork, &actual_dest_path) {
                                         // Device file has valid audio AND complete tags/artwork -> SKIP completely!
                                         return Ok(PreparedStageItem {
-                                            global_index: index,
                                             enriched_track,
                                             track_title,
                                             ext,
@@ -3913,7 +3907,6 @@ pub fn sync_tracks_to_device_impl(
                                         // Device file has valid audio, only missing artwork or updated tags -> Update in-place!
                                         let payload = build_sync_tag_payload(&enriched_track, &actual_dest_path, artwork_data_url);
                                         return Ok(PreparedStageItem {
-                                            global_index: index,
                                             enriched_track,
                                             track_title,
                                             ext,
@@ -3937,7 +3930,6 @@ pub fn sync_tracks_to_device_impl(
                     if let Some(ref src_meta) = src_meta_opt {
                         if file_metadata_is_complete(src_meta, &enriched_track, has_artwork, src_path) {
                             return Ok(PreparedStageItem {
-                                global_index: index,
                                 enriched_track,
                                 track_title,
                                 ext,
@@ -4001,7 +3993,6 @@ pub fn sync_tracks_to_device_impl(
                 }
 
                 Ok(PreparedStageItem {
-                    global_index: index,
                     enriched_track,
                     track_title,
                     ext,
