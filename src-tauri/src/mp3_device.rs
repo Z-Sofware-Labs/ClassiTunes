@@ -1435,6 +1435,8 @@ fn sync_tracks_to_mtp_device(
         stage_error: Option<String>,
     }
 
+    let mut current_progress_index = 0usize;
+
     for (chunk_idx, chunk) in payload.tracks.chunks(4).enumerate() {
         if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
             errors.push("Sync stopped by user".to_string());
@@ -1628,17 +1630,42 @@ fn sync_tracks_to_mtp_device(
                 errors.push("Sync stopped by user".to_string());
                 break;
             }
+            current_progress_index += 1;
             let item = match item_res {
                 Ok(it) => it,
                 Err(e) => {
                     if e != "Sync stopped by user" {
-                        errors.push(e);
+                        errors.push(e.clone());
                     }
+                    let _ = app.emit(
+                        "device-sync-progress",
+                        SyncProgressEvent {
+                            current_index: current_progress_index,
+                            total_tracks,
+                            current_title: format!("Error: {e}"),
+                            bytes_copied: total_bytes_transferred,
+                            total_bytes: total_bytes_transferred,
+                            is_complete: false,
+                            synced_track: None,
+                        },
+                    );
                     continue;
                 }
             };
             if let Some(err) = item.stage_error {
-                errors.push(err);
+                errors.push(err.clone());
+                let _ = app.emit(
+                    "device-sync-progress",
+                    SyncProgressEvent {
+                        current_index: current_progress_index,
+                        total_tracks,
+                        current_title: item.track_title,
+                        bytes_copied: total_bytes_transferred,
+                        total_bytes: total_bytes_transferred,
+                        is_complete: false,
+                        synced_track: None,
+                    },
+                );
                 continue;
             }
 
@@ -1678,6 +1705,18 @@ fn sync_tracks_to_mtp_device(
                         if is_temp_staged {
                             let _ = fs::remove_file(staged_path);
                         }
+                        let _ = app.emit(
+                            "device-sync-progress",
+                            SyncProgressEvent {
+                                current_index: current_progress_index,
+                                total_tracks,
+                                current_title: item.track_title,
+                                bytes_copied: total_bytes_transferred,
+                                total_bytes: total_bytes_transferred,
+                                is_complete: false,
+                                synced_track: None,
+                            },
+                        );
                         continue;
                     }
                 }
@@ -1722,7 +1761,7 @@ fn sync_tracks_to_mtp_device(
             let _ = app.emit(
                 "device-sync-progress",
                 SyncProgressEvent {
-                    current_index: item.global_index + 1,
+                    current_index: current_progress_index,
                     total_tracks,
                     current_title: item.track_title,
                     bytes_copied: total_bytes_transferred,
@@ -3705,6 +3744,8 @@ pub fn sync_tracks_to_device_impl(
         stage_error: Option<String>,
     }
 
+    let mut current_progress_index = 0usize;
+
     for (chunk_idx, chunk) in payload.tracks.chunks(4).enumerate() {
         if SYNC_ABORT_REQUESTED.load(Ordering::SeqCst) {
             errors.push("Sync stopped by user".to_string());
@@ -3979,19 +4020,43 @@ pub fn sync_tracks_to_device_impl(
                 errors.push("Sync stopped by user".to_string());
                 break;
             }
-
+            current_progress_index += 1;
             let item = match item_res {
                 Ok(it) => it,
                 Err(e) => {
                     if e != "Sync stopped by user" {
-                        errors.push(e);
+                        errors.push(e.clone());
                     }
+                    let _ = app.emit(
+                        "device-sync-progress",
+                        SyncProgressEvent {
+                            current_index: current_progress_index,
+                            total_tracks,
+                            current_title: format!("Error: {e}"),
+                            bytes_copied: total_bytes_transferred,
+                            total_bytes: total_bytes_transferred,
+                            is_complete: false,
+                            synced_track: None,
+                        },
+                    );
                     continue;
                 }
             };
 
             if let Some(err) = item.stage_error {
-                errors.push(err);
+                errors.push(err.clone());
+                let _ = app.emit(
+                    "device-sync-progress",
+                    SyncProgressEvent {
+                        current_index: current_progress_index,
+                        total_tracks,
+                        current_title: item.track_title,
+                        bytes_copied: total_bytes_transferred,
+                        total_bytes: total_bytes_transferred,
+                        is_complete: false,
+                        synced_track: None,
+                    },
+                );
                 continue;
             }
 
@@ -4039,6 +4104,18 @@ pub fn sync_tracks_to_device_impl(
                         }
                         Err(e) => {
                             errors.push(format!("Failed to write {} to device: {e}", item.track_title));
+                            let _ = app.emit(
+                                "device-sync-progress",
+                                SyncProgressEvent {
+                                    current_index: current_progress_index,
+                                    total_tracks,
+                                    current_title: item.track_title,
+                                    bytes_copied: total_bytes_transferred,
+                                    total_bytes: total_bytes_transferred,
+                                    is_complete: false,
+                                    synced_track: None,
+                                },
+                            );
                             continue;
                         }
                     }
@@ -4053,6 +4130,18 @@ pub fn sync_tracks_to_device_impl(
                         Err(e) => {
                             errors.push(format!("Failed to write {} to device: {e}", item.track_title));
                             let _ = fs::remove_file(temp_file);
+                            let _ = app.emit(
+                                "device-sync-progress",
+                                SyncProgressEvent {
+                                    current_index: current_progress_index,
+                                    total_tracks,
+                                    current_title: item.track_title,
+                                    bytes_copied: total_bytes_transferred,
+                                    total_bytes: total_bytes_transferred,
+                                    is_complete: false,
+                                    synced_track: None,
+                                },
+                            );
                             continue;
                         }
                     }
@@ -4096,7 +4185,7 @@ pub fn sync_tracks_to_device_impl(
             let _ = app.emit(
                 "device-sync-progress",
                 SyncProgressEvent {
-                    current_index: item.global_index + 1,
+                    current_index: current_progress_index,
                     total_tracks,
                     current_title: item.track_title,
                     bytes_copied: total_bytes_transferred,

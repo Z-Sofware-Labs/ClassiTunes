@@ -459,12 +459,7 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
       }
 
       if (payload.isComplete) {
-        setIsSyncing(false);
         setIsStopping(false);
-        fetchContents(false);
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', { detail: null }));
-        }, 2500);
       }
     };
 
@@ -542,7 +537,9 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     const scaledCoverCache = new Map<string, Promise<string>>();
     const preparedTracks = await Promise.all(
       tracksToSync.map(async (t) => {
-        let cover = t.coverUrl || getCachedArtwork(t.id) || (t.album ? getCachedArtwork(t.album.trim().toLowerCase()) : undefined);
+        // Prefer the track's own cover or cached artwork by track ID.
+        // Never fall back to generic album-name lookup which can mismatch across different artists / compilations.
+        let cover = t.coverUrl || getCachedArtwork(t.id);
         // Only scale in browser canvas if it's a blob: or oversized data: URL; Rust natively scales file/asset paths!
         if (scaleArtwork500 && cover && (cover.startsWith('blob:') || (cover.startsWith('data:') && cover.length > 180_000))) {
           let pending = scaledCoverCache.get(cover);
@@ -596,6 +593,9 @@ export const DeviceManagerView: React.FC<DeviceManagerViewProps> = ({
     } finally {
       setIsSyncing(false);
       setIsStopping(false);
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('classitunes:device-sync-progress', { detail: null }));
+      }, 2500);
     }
   };
 
