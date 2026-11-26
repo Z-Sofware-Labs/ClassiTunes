@@ -522,12 +522,12 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                         </div>
 
                         <div
-                          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 pointer-events-none transition-transform duration-75"
+                          className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 pointer-events-none"
                           style={{ left: `${Math.min(100, Math.max(0, progressPercent))}%` }}
                         >
                           <div
                             className={`w-[9px] h-[9px] rounded-full border-[1.5px] border-white shadow-[0_1px_3px_rgba(0,0,0,0.45)] ${isLight ? 'bg-[#2563eb]' : 'bg-[#3b82f6]'
-                              } ${isDraggingSeek ? 'scale-125' : ''}`}
+                              }`}
                           />
                         </div>
                       </div>
@@ -800,12 +800,12 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
                     {/* Scrubber Thumb Knob Indicator */}
                     <div
-                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 pointer-events-none transition-transform duration-75"
+                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 pointer-events-none"
                       style={{ left: `${Math.min(100, Math.max(0, progressPercent))}%` }}
                     >
                       <div
                         className={`w-[9px] h-[9px] rounded-full border-[1.5px] border-white shadow-[0_1px_3px_rgba(0,0,0,0.45)] ${isLight ? 'bg-[#2563eb]' : 'bg-[#3b82f6]'
-                          } ${isDraggingSeek ? 'scale-125' : ''}`}
+                          }`}
                       />
                     </div>
                   </div>

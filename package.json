@@ -1,7 +1,7 @@
 {
   "name": "classitunes",
   "private": true,
-  "version": "2.1.14",
+  "version": "2.1.15",
   "author": "Z Software Labs",
   "type": "module",
   "scripts": {
