@@ -13,7 +13,7 @@ import { evaluateSmartPlaylist } from './utils/smartPlaylist';
 import { normalizeSearchText } from './utils/textUtils';
 import { exportPlaylistToDesktopCsv } from './utils/csvExport';
 import { ContextMenu, ContextMenuState } from './components/ContextMenu';
-import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, dbUpdateTracksDurationBatch, dbCompactJournal, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
+import { setupWindowStatePersistence, setPlaybackSleepInhibit, isTauri, processDroppedPaths, organizeTauriMusicFile, relocateTauriMusicFile, deleteTauriFile, deleteTauriFilesBatch, writeTauriMusicMetadata, scanTauriDirectory, readTauriMusicMetadataBatch, batchStatFiles, logToFile, resolveNativeCoverUrl, resolveNativeCoverUrlSync, dbUpdateTrackRating, dbDeleteTracks, dbUpdateTracksDurationBatch, dbCompactJournal, updateTaskbarThumbnailToolbar, Mp3Device, listConnectedDevices, ejectDevice, syncTracksToDevice, cancelDeviceSync, SyncProgressEvent } from './utils/tauriWindow';
 import { platformInfo } from './utils/platform';
 import { hydrateTrackMedia, saveTracksMetadata, getTracksMetadata, deleteMediaFile, clearAllMediaStorage, getCachedArtwork, setCachedArtwork, clearCachedArtwork, dataURLtoBlob, saveMediaFile, savePlaybackMetadata, getAllPlaybackMetadata, deletePlaybackMetadata, trimArtworkBlobs, internTrackStrings, extractPlaybackMetadataFromTracks } from './services/mediaStorage';
 import { Upload, Music, Disc, X } from 'lucide-react';
@@ -2175,32 +2175,48 @@ function hashString(str: string): string {
   const [deleteRequest, setDeleteRequest] = useState<{ ids: string[]; tracks: Track[] } | null>(null);
 
   const removeTracksFromLibrary = useCallback((trackIds: string[]) => {
+    const idSet = new Set(trackIds);
     void dbDeleteTracks(trackIds);
-    trackIds.forEach(id => {
-      deleteMediaFile(`audio_${id}`);
-      deleteMediaFile(`cover_${id}`);
-      deletePlaybackMetadata(id).catch(() => {});
-      clearCachedArtwork(id);
-    });
+
+    // Clean up caches and blob media in chunks so the main thread never hitches
+    const CHUNK_SIZE = 50;
+    const processMediaCleanup = (index: number) => {
+      if (index >= trackIds.length) return;
+      const slice = trackIds.slice(index, index + CHUNK_SIZE);
+      slice.forEach(id => {
+        deleteMediaFile(`audio_${id}`);
+        deleteMediaFile(`cover_${id}`);
+        deletePlaybackMetadata(id).catch(() => {});
+        clearCachedArtwork(id);
+      });
+      if (index + CHUNK_SIZE < trackIds.length) {
+        setTimeout(() => processMediaCleanup(index + CHUNK_SIZE), 0);
+      }
+    };
+    processMediaCleanup(0);
+
     setTracks(prev => {
-      const nextTracks = prev.filter(t => !trackIds.includes(t.id));
-      // Synchronously prune deleted tracks from localStorage to prevent resurrection
-      try {
-        const lightweight = nextTracks
-          .filter(t => !t.id.startsWith('demo_') && !t.id.startsWith('sample_'))
-          .map(t => {
-            const { file, coverUrl, audioUrl, ...rest } = t;
-            return {
-              ...rest,
-              coverUrl: (coverUrl && (coverUrl.startsWith('data:') || coverUrl.startsWith('blob:'))) ? undefined : coverUrl,
-              audioUrl: (audioUrl && audioUrl.startsWith('blob:')) ? '' : audioUrl
-            };
-          });
-        localStorage.setItem('classitunes_tracks', JSON.stringify(lightweight));
-      } catch (e) {}
+      const nextTracks = prev.filter(t => !idSet.has(t.id));
+      // Asynchronously prune deleted tracks from localStorage to prevent UI stutter on large deletions
+      setTimeout(() => {
+        try {
+          const lightweight = nextTracks
+            .filter(t => !t.id.startsWith('demo_') && !t.id.startsWith('sample_'))
+            .map(t => {
+              const { file, coverUrl, audioUrl, ...rest } = t;
+              return {
+                ...rest,
+                coverUrl: (coverUrl && (coverUrl.startsWith('data:') || coverUrl.startsWith('blob:'))) ? undefined : coverUrl,
+                audioUrl: (audioUrl && audioUrl.startsWith('blob:')) ? '' : audioUrl
+              };
+            });
+          localStorage.setItem('classitunes_tracks', JSON.stringify(lightweight));
+        } catch (e) {}
+      }, 0);
       return nextTracks;
     });
-    setSelectedTrackIds(prev => prev.filter(id => !trackIds.includes(id)));
+
+    setSelectedTrackIds(prev => prev.filter(id => !idSet.has(id)));
     setCheckedTrackIds(prev => {
       const next = new Set(prev);
       trackIds.forEach(id => next.delete(id));
@@ -2209,34 +2225,92 @@ function hashString(str: string): string {
       } catch (e) {}
       return next;
     });
-    setPlaylists(prev => prev.map(p => ({ ...p, trackIds: p.trackIds.filter(id => !trackIds.includes(id)) })));
-    if (currentTrack && trackIds.includes(currentTrack.id)) {
+    setPlaylists(prev => prev.map(p => ({ ...p, trackIds: p.trackIds.filter(id => !idSet.has(id)) })));
+    if (currentTrack && idSet.has(currentTrack.id)) {
       setCurrentTrack(null);
       setIsPlaying(false);
       audioEngine.pause();
     }
   }, [currentTrack]);
 
-  const handleDeleteTrack = (trackId: string) => {
+  const handleDeleteTrack = useCallback((trackId: string) => {
     const target = tracks.find(t => t.id === trackId);
-    if (target) setDeleteRequest({ ids: [trackId], tracks: [target] });
-  };
+    if (target) {
+      setDeleteRequest({ ids: [trackId], tracks: [target] });
+    } else {
+      // If track is already gone from tracks state, ensure any pending delete modal is closed
+      setDeleteRequest(null);
+    }
+  }, [tracks]);
 
   const handleDeleteTracks = useCallback((trackIds: string[]) => {
-    const targets = tracks.filter(t => trackIds.includes(t.id));
-    if (targets.length) setDeleteRequest({ ids: trackIds, tracks: targets });
+    const idSet = new Set(trackIds);
+    const targets = tracks.filter(t => idSet.has(t.id));
+    if (targets.length) {
+      setDeleteRequest({ ids: trackIds, tracks: targets });
+    } else {
+      // If tracks are already gone from tracks state, ensure any pending delete modal is closed
+      setDeleteRequest(null);
+    }
   }, [tracks]);
 
   const finishDeleteRequest = useCallback(async (mode: 'library' | 'file' | 'cancel') => {
-    if (!deleteRequest || mode === 'cancel') { setDeleteRequest(null); return; }
-    const { ids, tracks: targets } = deleteRequest;
-    if (mode === 'file') {
-      for (const t of targets) {
-        if (t.filePath && isTauri()) await deleteTauriFile(t.filePath);
-      }
-    }
-    removeTracksFromLibrary(ids);
+    if (!deleteRequest) return;
+    const req = deleteRequest;
+    // Always dismiss the confirmation dialog immediately so the UI responds instantly
     setDeleteRequest(null);
+
+    if (mode === 'cancel') {
+      return;
+    }
+
+    const { ids, tracks: targets } = req;
+
+    try {
+      if (mode === 'file') {
+        const filePathsToDelete = targets
+          .map(t => t.filePath)
+          .filter((fp): fp is string => typeof fp === 'string' && fp.length > 0);
+
+        if (filePathsToDelete.length > 0) {
+          if (filePathsToDelete.length > 20) {
+            flushSync(() => {
+              setIsImportingFiles(true);
+              setImportProgress({
+                current: 0,
+                total: filePathsToDelete.length,
+                statusText: `Deleting ${filePathsToDelete.length} files from disk...`,
+                phase: 'importing'
+              });
+            });
+            await new Promise(r => setTimeout(r, 10));
+          }
+
+          if (isTauri()) {
+            try {
+              await deleteTauriFilesBatch(filePathsToDelete);
+            } catch (e) {
+              console.error('Batch file deletion failed, trying individual removal:', e);
+              for (let i = 0; i < filePathsToDelete.length; i += 25) {
+                const slice = filePathsToDelete.slice(i, i + 25);
+                await Promise.all(slice.map(fp => deleteTauriFile(fp).catch(() => false)));
+                await new Promise(r => setTimeout(r, 0));
+              }
+            }
+          }
+
+          if (filePathsToDelete.length > 20) {
+            setIsImportingFiles(false);
+            setImportProgress(null);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Error during disk file deletion:', err);
+    } finally {
+      // Always remove from library even if physical file was missing, already deleted, or disk deletion errored
+      removeTracksFromLibrary(ids);
+    }
   }, [deleteRequest, removeTracksFromLibrary]);
 
   // Create Playlist & Folder Handlers (Inline creation with immediate inline rename highlight)
@@ -3048,13 +3122,13 @@ function hashString(str: string): string {
     const updatedTrackMap = new Map<string, Track>();
     let completed = 0;
 
-    // On macOS / Tauri, process via native Rust metadata reader to avoid giant fetch->Blob->File->JS parser conversions
+    // On Tauri (Windows / macOS / Linux), process via native Rust metadata reader to avoid giant fetch->Blob->File->JS parser conversions
     if (isTauri()) {
-      const MAC_BATCH_SIZE = isMac ? 8 : 50;
+      const BATCH_SIZE = isMac ? 8 : 50;
       const allPaths = [...newPathsToImport, ...modifiedTracksToUpdate.map(m => m.path)];
 
-      for (let i = 0; i < allPaths.length; i += MAC_BATCH_SIZE) {
-        const chunk = allPaths.slice(i, i + MAC_BATCH_SIZE);
+      for (let i = 0; i < allPaths.length; i += BATCH_SIZE) {
+        const chunk = allPaths.slice(i, i + BATCH_SIZE);
         const metaMap = await readTauriMusicMetadataBatch(chunk);
         const { convertFileSrc } = await import('@tauri-apps/api/core');
 
@@ -3155,9 +3229,9 @@ function hashString(str: string): string {
         await new Promise(r => setTimeout(r, 10));
       }
     } else {
-      // Non-macOS (Windows / Linux) original path remains completely untouched
-      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      // Non-Tauri fallback (browser environment)
       const CONCURRENCY = 8;
+      const { convertFileSrc } = await import('@tauri-apps/api/core').catch(() => ({ convertFileSrc: (p: string) => p }));
 
       // Process new tracks
       for (let i = 0; i < newPathsToImport.length; i += CONCURRENCY) {

@@ -607,6 +607,13 @@ impl EngineSharedState {
 
 static ENGINE_STATE: OnceLock<Arc<Mutex<EngineSharedState>>> = OnceLock::new();
 static STREAM_INIT: OnceLock<bool> = OnceLock::new();
+static DEVICE_REFRESH_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+pub fn native_audio_refresh_output_device() {
+    eprintln!("[NativeAudioEngine] Frontend requested output device refresh");
+    DEVICE_REFRESH_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
 
 fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> {
     if STREAM_INIT.get().is_none() {
@@ -759,9 +766,37 @@ fn get_engine_state() -> Result<&'static Arc<Mutex<EngineSharedState>>, String> 
                                 let _ = tx.send(Ok(()));
                             }
 
-                            // Keep stream playing until an output device error / unplug occurs
+                            let current_device_name = device.name().unwrap_or_default();
+                            let mut poll_counter = 0u32;
+
+                            // Keep stream playing until an output device error, unplug, or default device switch occurs
                             while !stream_error_flag.load(std::sync::atomic::Ordering::SeqCst) {
                                 std::thread::sleep(std::time::Duration::from_millis(250));
+
+                                // Proactive device migration: Check if a refresh was explicitly requested (e.g. from frontend navigator.mediaDevices.ondevicechange)
+                                if DEVICE_REFRESH_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                                    eprintln!("[NativeAudioEngine] Output device refresh triggered by signal");
+                                    break;
+                                }
+
+                                // Periodic device check every ~1 second (4 iterations of 250ms):
+                                // On Windows WASAPI, when Bluetooth connects/disconnects, the OS updates the default audio endpoint,
+                                // but existing WASAPI streams are not terminated by error callbacks. Polling default_output_device
+                                // ensures audio transparently migrates to Bluetooth headsets or back to speakers.
+                                poll_counter = poll_counter.wrapping_add(1);
+                                if poll_counter % 4 == 0 {
+                                    if let Some(new_dev) = cpal::default_host().default_output_device() {
+                                        if let Ok(new_name) = new_dev.name() {
+                                            if !new_name.is_empty() && new_name != current_device_name {
+                                                eprintln!(
+                                                    "[NativeAudioEngine] Default audio device changed from '{}' to '{}'. Migrating stream...",
+                                                    current_device_name, new_name
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             eprintln!("[NativeAudioEngine] Reconnecting audio stream to newly designated default audio device...");
                             std::thread::sleep(std::time::Duration::from_millis(300));

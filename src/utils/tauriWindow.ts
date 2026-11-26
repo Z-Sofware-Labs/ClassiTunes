@@ -1014,6 +1014,21 @@ export async function deleteTauriFile(filePath: string): Promise<boolean> {
   }
 }
 
+export async function deleteTauriFilesBatch(filePaths: string[]): Promise<number> {
+  if (!filePaths || filePaths.length === 0 || !isTauri()) return 0;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<number>('delete_files_batch', { filePaths });
+  } catch (error) {
+    console.error('deleteTauriFilesBatch failed, falling back to serial remove:', error);
+    let count = 0;
+    for (const fp of filePaths) {
+      if (await deleteTauriFile(fp)) count++;
+    }
+    return count;
+  }
+}
+
 export async function writeTauriMusicMetadata(filePath: string, tags: Record<string, unknown>): Promise<boolean> {
   if (!filePath || !isTauri()) return false;
   try {

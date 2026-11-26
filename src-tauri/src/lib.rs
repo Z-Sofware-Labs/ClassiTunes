@@ -656,6 +656,152 @@ fn is_mp4_file(path: &std::path::Path, ext: &str) -> bool {
     false
 }
 
+/// Robust, lightweight binary MP4 atom parser that extracts duration, sample_rate, and bitrate
+/// directly from the `moov` container (`mvhd`, `mp4a`, `esds` boxes) without needing external codec crates.
+fn parse_mp4_audio_properties(path: &std::path::Path) -> (Option<f64>, Option<u32>, Option<u32>) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (None, None, None),
+    };
+    let file_len = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return (None, None, None),
+    };
+
+    let mut pos = 0u64;
+    let mut duration = None;
+    let mut sample_rate = None;
+    let mut bitrate = None;
+
+    while pos + 8 <= file_len {
+        if file.seek(SeekFrom::Start(pos)).is_err() {
+            break;
+        }
+        let mut header = [0u8; 16];
+        let bytes_read = match file.read(&mut header) {
+            Ok(n) if n >= 8 => n,
+            _ => break,
+        };
+
+        let mut size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
+        let atom_type = &header[4..8];
+
+        if size == 1 {
+            if bytes_read < 16 {
+                break;
+            }
+            size = u64::from_be_bytes([
+                header[8], header[9], header[10], header[11],
+                header[12], header[13], header[14], header[15],
+            ]);
+        }
+
+        if size < 8 {
+            break;
+        }
+
+        if atom_type == b"moov" {
+            let read_len = (size as usize).min(4 * 1024 * 1024);
+            let mut moov_buf = vec![0u8; read_len];
+            if file.seek(SeekFrom::Start(pos)).is_ok() && file.read_exact(&mut moov_buf).is_ok() {
+                // 1. Inspect mvhd atom for duration
+                if moov_buf.len() >= 32 {
+                    for i in 0..=moov_buf.len() - 32 {
+                        if &moov_buf[i + 4..i + 8] == b"mvhd" {
+                            let version = moov_buf[i + 8];
+                            if version == 0 && i + 28 <= moov_buf.len() {
+                                let timescale = u32::from_be_bytes([
+                                    moov_buf[i + 20], moov_buf[i + 21], moov_buf[i + 22], moov_buf[i + 23],
+                                ]);
+                                let dur_units = u32::from_be_bytes([
+                                    moov_buf[i + 24], moov_buf[i + 25], moov_buf[i + 26], moov_buf[i + 27],
+                                ]);
+                                if timescale > 0 && dur_units > 0 {
+                                    let d = dur_units as f64 / timescale as f64;
+                                    if d > 0.0 && d.is_finite() {
+                                        duration = Some(d);
+                                    }
+                                }
+                            } else if version == 1 && i + 36 <= moov_buf.len() {
+                                let timescale = u32::from_be_bytes([
+                                    moov_buf[i + 28], moov_buf[i + 29], moov_buf[i + 30], moov_buf[i + 31],
+                                ]);
+                                let dur_units = u64::from_be_bytes([
+                                    moov_buf[i + 32], moov_buf[i + 33], moov_buf[i + 34], moov_buf[i + 35],
+                                    moov_buf[i + 36], moov_buf[i + 37], moov_buf[i + 38], moov_buf[i + 39],
+                                ]);
+                                if timescale > 0 && dur_units > 0 {
+                                    let d = dur_units as f64 / timescale as f64;
+                                    if d > 0.0 && d.is_finite() {
+                                        duration = Some(d);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // 2. Inspect mp4a atom for sample_rate
+                if moov_buf.len() >= 36 {
+                    for i in 0..=moov_buf.len() - 36 {
+                        if &moov_buf[i + 4..i + 8] == b"mp4a" {
+                            let sr = u16::from_be_bytes([moov_buf[i + 32], moov_buf[i + 33]]) as u32;
+                            if sr > 0 {
+                                sample_rate = Some(sr);
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // 3. Inspect esds atom for bitrate
+                if moov_buf.len() >= 20 {
+                    for i in 0..=moov_buf.len() - 20 {
+                        if &moov_buf[i + 4..i + 8] == b"esds" {
+                            let box_size = u32::from_be_bytes([
+                                moov_buf[i], moov_buf[i + 1], moov_buf[i + 2], moov_buf[i + 3],
+                            ]) as usize;
+                            let esds_end = (i + box_size).min(moov_buf.len());
+                            if esds_end >= i + 24 {
+                                for j in (i + 8)..=(esds_end - 16) {
+                                    if moov_buf[j] == 0x04 {
+                                        let mut k = j + 1;
+                                        while k < esds_end && (moov_buf[k] & 0x80) != 0 {
+                                            k += 1;
+                                        }
+                                        k += 1;
+                                        if k + 13 <= esds_end {
+                                            let max_br = u32::from_be_bytes([
+                                                moov_buf[k + 5], moov_buf[k + 6], moov_buf[k + 7], moov_buf[k + 8],
+                                            ]);
+                                            let avg_br = u32::from_be_bytes([
+                                                moov_buf[k + 9], moov_buf[k + 10], moov_buf[k + 11], moov_buf[k + 12],
+                                            ]);
+                                            let chosen = if avg_br > 0 { avg_br } else { max_br };
+                                            if chosen > 0 {
+                                                bitrate = Some((chosen + 500) / 1000);
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        pos += size;
+    }
+
+    (duration, sample_rate, bitrate)
+}
+
 /// Returns true if an ID3/MP4 comment frame is actually technical encoder metadata
 /// (such as iTunes `iTunSMPB` gapless playback padding, `iTunNORM` SoundCheck hex blocks,
 /// or `00000000 ...` hex zero blocks) rather than a human-readable user comment.
@@ -987,7 +1133,21 @@ pub(crate) fn read_music_metadata_internal(file_path: &str) -> Result<ReadMetada
         }
     }
 
-    // 4. Symphonia fallback probe for audio properties (bitrate, sample rate, duration)
+    // 4. MP4 native atom fallback probe for duration, sample_rate, and bitrate
+    if is_mp4 && (res.duration.is_none() || res.sample_rate.is_none() || res.bitrate.is_none()) {
+        let (mp4_dur, mp4_sr, mp4_br) = parse_mp4_audio_properties(path);
+        if res.duration.is_none() {
+            res.duration = mp4_dur;
+        }
+        if res.sample_rate.is_none() {
+            res.sample_rate = mp4_sr;
+        }
+        if res.bitrate.is_none() {
+            res.bitrate = mp4_br;
+        }
+    }
+
+    // 5. Symphonia fallback probe for audio properties (bitrate, sample rate, duration)
     if res.duration.is_none() || res.sample_rate.is_none() || res.bitrate.is_none() {
         use symphonia::core::formats::probe::Hint;
         use symphonia::core::formats::{FormatOptions, TrackType};
@@ -2527,6 +2687,29 @@ async fn read_clipboard_native() -> Result<Option<String>, String> {
 }
 
 
+#[tauri::command]
+async fn delete_files_batch(file_paths: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use rayon::prelude::*;
+        let deleted_count = file_paths
+            .into_par_iter()
+            .filter(|fp| {
+                let resolved = crate::mp3_device::resolve_device_or_local_file_path(fp)
+                    .unwrap_or_else(|_| fp.clone());
+                let path = std::path::Path::new(&resolved);
+                if path.is_file() {
+                    std::fs::remove_file(path).is_ok()
+                } else {
+                    false
+                }
+            })
+            .count();
+        Ok(deleted_count)
+    })
+    .await
+    .map_err(|e| format!("Batch file deletion task failed: {e}"))?
+}
+
 /// Whether the "keep awake during playback" assertion is currently requested.
 /// Shared so transfer (sync) guards restore the correct power state when they finish.
 pub static PLAYBACK_SLEEP_INHIBIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2620,6 +2803,14 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main").or_else(|| app.webview_windows().into_values().next()) {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
@@ -2679,6 +2870,7 @@ pub fn run() {
             audio_engine::native_audio_set_playback_rate,
             audio_engine::native_audio_set_normalization,
             audio_engine::native_audio_set_eq,
+            audio_engine::native_audio_refresh_output_device,
             audio_engine::native_audio_get_state,
             audio_engine::native_audio_get_visualizer,
             update_taskbar_thumbnail_toolbar,
@@ -2691,6 +2883,7 @@ pub fn run() {
             reveal_file_in_explorer,
             resolve_playable_file_path,
             read_clipboard_native,
+            delete_files_batch,
             set_playback_sleep_inhibit
         ])
         .run(tauri::generate_context!())

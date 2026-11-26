@@ -478,6 +478,14 @@ export class AudioEngine {
       if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
         navigator.mediaDevices.addEventListener('devicechange', async () => {
           console.log('[AudioEngine] Audio output device change detected');
+          if (this.usingNativeBackend && this.isTauriEnv()) {
+            try {
+              const { invoke } = await import('@tauri-apps/api/core');
+              await invoke('native_audio_refresh_output_device');
+            } catch (err) {
+              console.warn('[AudioEngine] Failed to notify native audio engine of device change:', err);
+            }
+          }
           try {
             if (this.audioCtx && this.audioCtx.state === 'suspended') {
               await this.audioCtx.resume();
