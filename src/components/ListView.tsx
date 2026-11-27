@@ -320,6 +320,7 @@ const TrackRow = React.memo<TrackRowProps>(({
       style={{
         contentVisibility: 'auto',
         containIntrinsicSize: 'auto 36px',
+        contain: 'layout style paint',
         WebkitUserDrag: 'element',
       } as React.CSSProperties}
     >
@@ -1329,7 +1330,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
 
   // Windowed Virtualization Calculation: on Linux/WebKitGTK use 35 rows overscan buffer
   // to ensure zero blank frame stutter during high-speed momentum mousewheel/touchpad scrolling
-  const OVERSCAN = 30;
+  const OVERSCAN = 10;
   const CHUNK_STEP = 6; // Quantize window boundaries to avoid re-slicing on every single pixel/row step
   const totalTrackCount = sortedTracks.length;
   const isVirtualizationActive = totalTrackCount > 60;
