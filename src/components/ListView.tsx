@@ -1541,7 +1541,7 @@ const ListViewComponent: React.FC<ListViewProps> = ({
         if (badge.parentNode) badge.parentNode.removeChild(badge);
       }, 0);
     } catch {}
-  }, [updateSelectedTrackIds]);
+  }, [updateSelectedTrackIds, visibleColumns, checkedTrackIds]);
 
   const handleDragEnd = useCallback(() => {
     resetDragAndBoxSelection();

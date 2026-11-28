@@ -1,6 +1,6 @@
 [package]
 name = "classitunes"
-version = "2.1.16"
+version = "2.1.17"
 description = "ClassiTunes Music Player"
 authors = ["Z Software Labs"]
 edition = "2021"
