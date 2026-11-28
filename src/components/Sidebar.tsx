@@ -279,10 +279,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       }
       setDragOverPlaylistId(pl.id);
     } else {
-      if (pl.isSmart) return;
-      e.dataTransfer.dropEffect = 'copy';
-      setDropPosition('into');
-      setDragOverPlaylistId(pl.id);
+      // Track drag: allow drop onto any non-smart playlist or folder; still call preventDefault for smart playlists
+      // so the browser shows the correct cursor, but we won't accept the drop in handlePlaylistDrop.
+      e.dataTransfer.dropEffect = pl.isSmart ? 'none' : 'copy';
+      if (!pl.isSmart) {
+        setDropPosition('into');
+        setDragOverPlaylistId(pl.id);
+      }
     }
   };
 
@@ -298,29 +301,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
     e.preventDefault();
     e.stopPropagation();
 
-    // Parse dropped tracks first with fallback to global in-memory store
+    // Parse dropped tracks. Use in-memory store first (Tauri WebView clears dataTransfer on drop),
+    // then fall back to dataTransfer for standard browser environments.
     let droppedTrackIds: string[] | null = null;
-    const rawTrackData = e.dataTransfer.getData('application/classiplayer-tracks') || e.dataTransfer.getData('text/plain');
-    if (rawTrackData) {
-      try {
-        const parsed = JSON.parse(rawTrackData);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          droppedTrackIds = parsed;
-        }
-      } catch {}
-    }
-    if (!droppedTrackIds && Array.isArray((window as any).__activeDraggedTrackIds) && (window as any).__activeDraggedTrackIds.length > 0) {
+    if (Array.isArray((window as any).__activeDraggedTrackIds) && (window as any).__activeDraggedTrackIds.length > 0) {
       droppedTrackIds = (window as any).__activeDraggedTrackIds;
     }
+    if (!droppedTrackIds) {
+      const rawTrackData = e.dataTransfer.getData('application/classiplayer-tracks') || e.dataTransfer.getData('text/plain');
+      if (rawTrackData) {
+        try {
+          const parsed = JSON.parse(rawTrackData);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            droppedTrackIds = parsed;
+          }
+        } catch {}
+      }
+    }
 
-    const sourcePlaylistId = draggingPlaylistId || e.dataTransfer.getData('application/classiplayer-playlist-id');
+    // A playlist drag is only active when draggingPlaylistId state is set (set in handlePlaylistDragStart).
+    // Never read playlist-id from dataTransfer during drop — it may be stale or empty in Tauri's WebView.
+    const sourcePlaylistId = draggingPlaylistId;
     const targetPos = dropPosition;
 
     setDraggingPlaylistId(null);
     setDragOverPlaylistId(null);
     setDropPosition(null);
 
-    // 1. If dropping tracks onto a playlist or folder
+    // 1. If dropping tracks onto a playlist or folder (track drag takes absolute priority)
     if (droppedTrackIds && droppedTrackIds.length > 0 && !sourcePlaylistId) {
       if (!targetPl.isSmart) {
         onDropTracksToPlaylist(droppedTrackIds, targetPl.id);
@@ -411,8 +419,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setDragOverPlaylistId(null);
     setDropPosition(null);
 
-    // 1. Dropping a whole playlist or playlist folder onto a device
-    const playlistId = draggingPlaylistId || e.dataTransfer.getData('application/classiplayer-playlist-id');
+    // 1. Dropping a whole playlist or playlist folder onto a device (only via playlist drag state)
+    const playlistId = draggingPlaylistId;
     if (playlistId) {
       const pl = playlists.find(p => p.id === playlistId);
       if (pl) {
@@ -440,19 +448,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
       }
     }
 
-    // 2. Dropping individual tracks onto a device
+    // 2. Dropping individual tracks onto a device — check in-memory store first (Tauri clears dataTransfer on drop)
     let trackIds: string[] | null = null;
-    const rawTrackData = e.dataTransfer.getData('application/classiplayer-tracks') || e.dataTransfer.getData('text/plain');
-    if (rawTrackData) {
-      try {
-        const parsed = JSON.parse(rawTrackData);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          trackIds = parsed;
-        }
-      } catch {}
-    }
-    if (!trackIds && Array.isArray((window as any).__activeDraggedTrackIds) && (window as any).__activeDraggedTrackIds.length > 0) {
+    if (Array.isArray((window as any).__activeDraggedTrackIds) && (window as any).__activeDraggedTrackIds.length > 0) {
       trackIds = (window as any).__activeDraggedTrackIds;
+    }
+    if (!trackIds) {
+      const rawTrackData = e.dataTransfer.getData('application/classiplayer-tracks') || e.dataTransfer.getData('text/plain');
+      if (rawTrackData) {
+        try {
+          const parsed = JSON.parse(rawTrackData);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            trackIds = parsed;
+          }
+        } catch {}
+      }
     }
 
     if (trackIds && trackIds.length > 0) {
